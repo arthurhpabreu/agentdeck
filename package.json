@@ -1,7 +1,7 @@
 {
   "name": "agentdeck",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
@@ -55,7 +55,7 @@
     "vite": "^7.0.4"
   },
   "description": "Desktop workspace for coding agents, task flows and local knowledge graphs",
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE",
   "author": "Arthur Abreu",
   "repository": {
     "type": "git",

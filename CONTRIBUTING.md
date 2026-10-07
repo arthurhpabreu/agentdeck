@@ -25,4 +25,4 @@ UI tests mock the native Tauri boundary and never submit model tasks. On a machi
 - Describe the problem, resulting behavior, checks performed and limitations in the pull request.
 - Update the relevant English documentation and `CHANGELOG.md` when changing behavior.
 
-Retain the Apache 2.0 license and existing copyright notices. Optional authenticated provider smoke scripts are local diagnostics, not CI prerequisites.
+Contributions are licensed under the Agent Deck Personal Use License in [LICENSE](LICENSE), without transferring their copyright. Preserve applicable third-party notices. Optional authenticated provider smoke scripts are local diagnostics, not CI prerequisites.

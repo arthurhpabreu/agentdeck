@@ -182,9 +182,10 @@ interface PanelProps {
   presentation: DetailPresentation;
   showHeader: boolean;
   autoLaunch?: boolean;
+  nativeQuery?: string;
 }
 
-function NativeSessionPanel({ sessionId, isOpen, onClose, presentation, showHeader, autoLaunch }: PanelProps) {
+function NativeSessionPanel({ sessionId, isOpen, onClose, presentation, showHeader, autoLaunch, nativeQuery }: PanelProps) {
   const { t } = useAppI18n();
   const isGlass = isGlassTheme(useSettingsStore((s) => s.settings.theme));
   const textShadow = isGlass ? "var(--ci-glass-text-shadow)" : "none";
@@ -225,11 +226,12 @@ function NativeSessionPanel({ sessionId, isOpen, onClose, presentation, showHead
 
   const autoLaunched = useRef(false);
   useEffect(() => {
-    if (autoLaunch && cliAvailable === true && !autoLaunched.current) {
+    if ((autoLaunch || nativeQuery) && cliAvailable === true && !autoLaunched.current) {
       autoLaunched.current = true;
-      if (!querySent) handleLaunch();
+      if (nativeQuery) handleSubmitQuery(nativeQuery);
+      else if (!querySent) handleLaunch();
     }
-  }, [autoLaunch, cliAvailable, querySent, handleLaunch]);
+  }, [autoLaunch, nativeQuery, cliAvailable, querySent, handleLaunch, handleSubmitQuery]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -430,11 +432,11 @@ function NativeSessionPanel({ sessionId, isOpen, onClose, presentation, showHead
           style={{ position: "absolute", inset: 0 }}
         >
           {(!querySent || waitingForPtyLaunch) && !installing && (
-            <SessionPromptComposer workdir={session.workdir} pendingQuery={pendingQuery} setPendingQuery={setPendingQuery} queryInputRef={queryInputRef} runner={runner} cliAvailable={cliAvailable} cliCommand={cliCommand} installCmd={installCmd} waitingForPtyLaunch={waitingForPtyLaunch} onSubmit={handleSubmitQuery} onLaunch={handleLaunch} onRunnerChange={handleSwitchRunner} onRunnerPatch={patch => useSessionStore.getState().updateSession(session.id, { runner: { ...runner, ...patch } })} onInstall={handleInstall} onRecheck={recheckCli} />
+            <SessionPromptComposer visible={isOpen} workdir={session.workdir} pendingQuery={pendingQuery} setPendingQuery={setPendingQuery} queryInputRef={queryInputRef} runner={runner} cliAvailable={cliAvailable} cliCommand={cliCommand} installCmd={installCmd} waitingForPtyLaunch={waitingForPtyLaunch} onSubmit={handleSubmitQuery} onLaunch={handleLaunch} onRunnerChange={handleSwitchRunner} onRunnerPatch={patch => useSessionStore.getState().updateSession(session.id, { runner: { ...runner, ...patch } })} onInstall={handleInstall} onRecheck={recheckCli} />
           )}
         </motion.div>
       </div>
-      {querySent && ptyEverActive && !installing && <SessionFollowup sessionId={sessionId} />}
+      {querySent && ptyEverActive && !installing && <SessionFollowup sessionId={sessionId} visible={isOpen} />}
     </motion.div>
   );
 }
@@ -445,6 +447,7 @@ function SessionPanel(props: PanelProps) {
   const [native, setNative] = useState(session?.runner.type === "gemini");
   const [nativeMounted, setNativeMounted] = useState(native);
   const [autoLaunch, setAutoLaunch] = useState(false);
+  const [handoff, setHandoff] = useState({ revision: 0, query: "" });
   const busy = useChatStore(s => s.threads[props.sessionId]?.busy ?? false);
   const runtime = usePtyRuntimeStore(s => s.sessions[props.sessionId]);
   const nativeLive = !!runtime;
@@ -452,7 +455,13 @@ function SessionPanel(props: PanelProps) {
   const ec = effortCopy(locale);
   const stopNative = async () => { setSwitchError(""); try { await stopPtySession(props.sessionId); } catch (error) { setSwitchError(String(error)); } };
   if (!session) return null;
-  const openNative = () => { setNative(true); setNativeMounted(true); setAutoLaunch(true); };
+  const openNative = (query?: string) => {
+    setSwitchError("");
+    if (query && runtime) { setSwitchError(ec.busyNative); return; }
+    if (query) setHandoff(value => ({ revision: value.revision + 1, query }));
+    else if (!runtime) setHandoff(value => ({ revision: value.revision + 1, query: "" }));
+    setNative(true); setNativeMounted(true); setAutoLaunch(true);
+  };
   return <div style={{ position: props.presentation === "overlay" ? "fixed" : "absolute", inset: props.presentation === "overlay" ? "44px 6px 6px" : 0, display: props.isOpen ? "flex" : "none", flexDirection: "column", background: "var(--ci-bg)", minHeight: 0, zIndex: props.presentation === "overlay" ? 200 : 1 }}>
     <div className="ad-session-tabs" role="tablist" aria-label={c.chat}>
       <button role="tab" aria-selected={!native} disabled={session.runner.type === "gemini"} title={c.chat} onClick={() => setNative(false)}><MessageSquare size={14} />{c.chat}</button>
@@ -465,7 +474,7 @@ function SessionPanel(props: PanelProps) {
     {!native && switchError && <div className="ad-notice" role="alert">{switchError}</div>}
     <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
       <div style={{ position: "absolute", inset: 0, display: native ? "none" : "block" }}><StructuredChat session={session} visible={props.isOpen && !native} onNative={openNative} nativeLive={nativeLive} /></div>
-      {nativeMounted && <div style={{ position: "absolute", inset: 0, display: native ? "block" : "none" }}><NativeSessionPanel {...props} presentation="embedded" isOpen={props.isOpen && native} autoLaunch={autoLaunch} /></div>}
+      {nativeMounted && <div style={{ position: "absolute", inset: 0, display: native ? "block" : "none" }}><NativeSessionPanel key={handoff.revision} {...props} presentation="embedded" isOpen={props.isOpen && native} autoLaunch={autoLaunch} nativeQuery={handoff.query} /></div>}
     </div>
   </div>;
 }

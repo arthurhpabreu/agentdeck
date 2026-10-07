@@ -6,7 +6,13 @@ A desktop workspace for running coding agents, understanding their tasks and exp
 
 Agent Deck brings official Codex, Claude Code and Gemini CLIs into a Windows-first Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
 
-## New in 0.5.0
+## New in 0.6.0
+
+- **Commands and skills in every composer:** type `/`, type `$` for Codex skills, or open the searchable picker. Existing user/project definitions and supported plugin metadata are discovered automatically.
+- **Provider-aware execution:** session controls update the chat settings, Claude supports its reported non-interactive commands, and terminal-only commands open the native CLI with the current session binding.
+- **Personal Use License:** free personal use and private modifications; resale, commercial use and redistribution require Arthur Abreu's written permission. Earlier release permissions remain valid.
+
+## Workspace highlights
 
 - **Expandable knowledge graph:** folder clusters, note search, folder filters and one- to three-hop connections. Pan, zoom, fit and bound visible nodes to keep dense graphs readable.
 - **Agent flow map:** floating agent/task cards organized by session and delegation, animated connectors, a detailed inspector and a task board. Pause animations or use system reduced motion.
@@ -43,6 +49,7 @@ The repository is public and can be cloned without requesting access. No API key
 | --- | --- |
 | Agents | Flow map, session list, task board, tools and provider-reported subagent relationships. |
 | Conversations | Claude/Codex chat, follow-up input, attachments, model selection, planning and native terminals. Gemini uses its terminal. |
+| Commands and skills | Searchable suggestions in chat, native startup and follow-up inputs; metadata from installed providers and local definitions. |
 | Git | Independent worktrees, status, diffs, staging and conflict resolution. |
 | Knowledge | Local Markdown/Obsidian sources, searchable note graph and connected-note previews. |
 | Memory | Global/project SQLite memory, bounded retrieval, history, curation and Markdown export. |
@@ -86,10 +93,19 @@ Code mode enables full machine access by default and can be disabled per convers
 - [Setup](docs/setup.md)
 - [Architecture](docs/architecture.md)
 - [Testing](docs/testing.md)
+- [Commands and skills](docs/commands-and-skills.md)
+- [Licensing](docs/licensing.md)
 - [Validation evidence](docs/validation.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE) for the complete terms and retained copyright notice. Repository visibility does not change the license.
+Copyright © 2026 Arthur Abreu. Starting with 0.6.0, Agent Deck uses the
+[Personal Use License](LICENSE). You may use, study and modify the app privately
+for personal, non-commercial purposes. Resale, commercial use and redistribution
+require prior written permission. You may share links to the official downloads.
+
+The public repository makes the source available; this is not an open-source
+license. Version 0.5.0 retains its original Apache 2.0 permissions. Third-party
+dependencies retain their own licenses. See [licensing details](docs/licensing.md).

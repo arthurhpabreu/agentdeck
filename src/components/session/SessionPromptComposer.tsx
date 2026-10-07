@@ -2,10 +2,11 @@ import { ArrowUp, TerminalSquare } from "lucide-react";
 import { useAppI18n } from "../../i18n";
 import { RUNNER_LABELS, type RunnerConfig, type RunnerType } from "../../store/settingsStore";
 import { AgentModelPicker } from "./AgentModelPicker";
+import { CommandTextarea } from "./CommandTextarea";
 
-export function SessionPromptComposer({ workdir, pendingQuery, setPendingQuery, queryInputRef, runner, cliAvailable, cliCommand, installCmd, waitingForPtyLaunch, onSubmit, onLaunch, onRunnerChange, onRunnerPatch, onInstall, onRecheck }: {
+export function SessionPromptComposer({ workdir, pendingQuery, setPendingQuery, queryInputRef, runner, cliAvailable, cliCommand, installCmd, waitingForPtyLaunch, onSubmit, onLaunch, onRunnerChange, onRunnerPatch, onInstall, onRecheck, visible = true }: {
   pendingQuery: string; setPendingQuery: (value: string) => void; queryInputRef: React.RefObject<HTMLTextAreaElement | null>;
-  workdir: string; runner: RunnerConfig; cliAvailable: boolean | null; cliCommand: string; installCmd?: string; waitingForPtyLaunch: boolean;
+  workdir: string; runner: RunnerConfig; cliAvailable: boolean | null; cliCommand: string; installCmd?: string; waitingForPtyLaunch: boolean; visible?: boolean;
   onSubmit: (q: string) => void; onLaunch: () => void; onRunnerChange: (type: RunnerType) => void; onRunnerPatch: (patch: Partial<RunnerConfig>) => void; onInstall: () => void; onRecheck: () => void;
 }) {
   const { t } = useAppI18n();
@@ -25,7 +26,7 @@ export function SessionPromptComposer({ workdir, pendingQuery, setPendingQuery, 
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}><button className="ad-button" onClick={onInstall}>{t("common.installOneClick")}</button><button className="ad-button" onClick={onRecheck}>{t("common.refresh")}</button></div>
       </div>}
       <div className="ad-composer">
-        <textarea ref={queryInputRef} value={pendingQuery} onChange={e => setPendingQuery(e.target.value)} rows={3} placeholder={t("session.promptPlaceholder")} aria-label={t("session.promptTitle")} disabled={waitingForPtyLaunch} onKeyDown={e => {
+        <CommandTextarea visible={visible} inputRef={queryInputRef} runner={runner} workdir={workdir} native value={pendingQuery} onValueChange={setPendingQuery} rows={3} placeholder={t("session.promptPlaceholder")} aria-label={t("session.promptTitle")} disabled={waitingForPtyLaunch} onKeyDown={e => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (!disabled && pendingQuery.trim()) onSubmit(pendingQuery); }
         }} />
         <div className="ad-composer-footer">

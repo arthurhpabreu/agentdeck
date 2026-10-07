@@ -174,7 +174,7 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
       useChatStore.getState().patch(sessionId,{messages:current.messages.filter(m=>m.id!==message.id)});
       return sendChatTurn(sessionId,prompt,attachments);
     }
-    const status=await invoke<string>("steer_chat_turn",{messageId,request:{sessionId,turnId:current.turnId,runnerType:session.runner.type,workdir:session.worktreePath||session.workdir,prompt:prompt.trim(),attachments,mode:session.runner.mode==="plan"?"plan":"code"}});
+    const status=await invoke<string>("steer_chat_turn",{messageId,request:{sessionId,turnId:current.turnId,runnerType:session.runner.type,cliPath:session.runner.cliPath||undefined,projectPath:useWorkspaceStore.getState().workspaces.find(workspace=>workspace.id===session.workspaceId)?.path||session.workdir,workdir:session.worktreePath||session.workdir,prompt:prompt.trim(),attachments,mode:session.runner.mode==="plan"?"plan":"code"}});
     const latest=useChatStore.getState().threads[sessionId];
     if(latest) useChatStore.getState().patch(sessionId,{messages:latest.messages.map(m=>m.id===message.id && m.status==="sending"?{...m,status:status||"queued"}:m)});
     return true;

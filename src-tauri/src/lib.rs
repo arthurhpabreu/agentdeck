@@ -1,4 +1,5 @@
 // Module declarations
+mod agent_catalog;
 mod agent_models;
 mod agent_observability;
 mod chat;
@@ -194,6 +195,7 @@ pub fn run() {
             window::close_popup,
             window::exit_app,
             agent_models::list_agent_models,
+            agent_catalog::list_agent_commands,
             cli_updates::check_cli_update,
             cli_updates::update_agent_cli,
             agent_observability::observe_agent_sessions,

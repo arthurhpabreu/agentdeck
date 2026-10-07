@@ -103,6 +103,9 @@ impl LiveInput {
 }
 pub(super) fn codex_input(request: &ChatTurnRequest) -> Result<Value, String> {
     let mut input = vec![json!({"type":"text","text":build_input(request)?})];
+    for skill in &request.skills {
+        input.push(json!({"type":"skill","name":skill.name,"path":skill.path}));
+    }
     for file in request
         .attachments
         .iter()
@@ -372,6 +375,30 @@ pub(super) fn normalize_item(item: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_skill_inputs_are_explicit_and_cannot_be_injected_by_frontend_paths() {
+        let mut request = super::super::tests::request("codex");
+        request.prompt = "Use $review for this task".into();
+        request.skills = vec![crate::agent_catalog::SkillReference {
+            name: "review".into(),
+            path: "C:/Skills/review/SKILL.md".into(),
+        }];
+        let input = codex_input(&request).unwrap();
+        assert_eq!(
+            input[1],
+            json!({"type":"skill", "name":"review", "path":"C:/Skills/review/SKILL.md"})
+        );
+        let deserialized: ChatTurnRequest = serde_json::from_value(json!({"sessionId":"session", "turnId":"turn", "runnerType":"codex", "workdir":"C:/Projects/test", "prompt":"Task", "skills":[{"name":"forged", "path":"C:/private.txt"}]})).unwrap();
+        assert!(deserialized.skills.is_empty());
+        assert_eq!(
+            codex_input(&deserialized)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
     use std::sync::{Arc, Mutex};
     struct Sink(Arc<Mutex<Vec<u8>>>);
     impl Write for Sink {

@@ -69,6 +69,9 @@ pub struct ChatTurnRequest {
     pub full_access: bool,
     #[serde(default)]
     pub attachments: Vec<ChatAttachment>,
+    // Resolve from the provider catalogue on the server; never trust supplied paths.
+    #[serde(skip_deserializing, default)]
+    pub skills: Vec<crate::agent_catalog::SkillReference>,
 }
 
 struct ChatProcess {
@@ -182,6 +185,11 @@ pub async fn save_chat_attachment(
 }
 
 fn validate_request(request: &ChatTurnRequest) -> Result<(), String> {
+    if request.runner_type == "codex" && request.prompt.trim_start().starts_with('/') {
+        return Err(
+            "Codex slash commands require the native terminal. Invoke skills with $name.".into(),
+        );
+    }
     if !valid_identifier(&request.session_id) || !valid_identifier(&request.turn_id) {
         return Err("Invalid chat session or turn identifier.".into());
     }
@@ -342,6 +350,28 @@ fn build_arguments(request: &ChatTurnRequest) -> Vec<String> {
         }
     }
     args
+}
+
+async fn hydrate_skills(request: &mut ChatTurnRequest) -> Result<(), String> {
+    request.skills.clear();
+    if request.runner_type != "codex" || !request.prompt.contains('$') {
+        return Ok(());
+    }
+    let (prompt, cli, workdir, project) = (
+        request.prompt.clone(),
+        request.cli_path.clone(),
+        request.workdir.clone(),
+        request
+            .project_path
+            .clone()
+            .unwrap_or_else(|| request.workdir.clone()),
+    );
+    request.skills = tauri::async_runtime::spawn_blocking(move || {
+        crate::agent_catalog::resolve_codex_skills(&prompt, &cli, &workdir, &project)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(())
 }
 
 fn build_input(request: &ChatTurnRequest) -> Result<String, String> {
@@ -537,6 +567,7 @@ pub async fn start_chat_turn(
         validate_attachments(&mut request, &directory)?;
     }
     let original_prompt = request.prompt.clone();
+    hydrate_skills(&mut request).await?;
     let project_path = request
         .project_path
         .clone()
@@ -1004,6 +1035,7 @@ pub async fn steer_chat_turn(
         let directory = attachment_dir(&app, &request.session_id)?;
         validate_attachments(&mut request, &directory)?;
     }
+    hydrate_skills(&mut request).await?;
     let status = process
         .input
         .lock()
@@ -1067,6 +1099,7 @@ mod tests {
             ultra_mode: false,
             full_access: false,
             attachments: Vec::new(),
+            skills: Vec::new(),
         }
     }
 

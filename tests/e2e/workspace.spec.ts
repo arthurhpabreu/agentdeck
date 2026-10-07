@@ -1,7 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 import { effortCases } from "./effort-cases";
+import { commandCases } from "./command-cases";
 
 effortCases(setup, openSession);
+commandCases(setup);
 
 test("titlebar CLI indicator opens update management and follows confirmed results", async ({ page }) => {
   await setup(page);
@@ -59,6 +61,7 @@ async function setup(page: Page, locale = "pt-BR") {
         if (command === "recover_workspace_sessions" || command === "backfill_workspace_session_bindings" || command.startsWith("get_git_diff")) return [];
         if (command === "get_git_status") return { staged: [], unstaged: [], untracked: [], conflicts: [], committed: [] };
         if (command === "check_cli") return true;
+        if (command === "list_agent_commands") return w.__agentCommands?.[args.runnerType] ?? null;
         if (command === "get_provider_usage") return [];
         if (command === "observe_agent_sessions") return [];
         if (command === "save_chat_attachment") return { name: args.name, path: "C:\\AppData\\chat-attachments\\" + args.name, mimeType: args.mimeType, size: Math.floor(args.dataBase64.length * 3 / 4) };

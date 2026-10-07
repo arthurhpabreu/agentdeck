@@ -15,14 +15,21 @@ import { chatCopy } from "./chatCopy";
 import { SaveResponseToMemory } from "../memory/SaveResponseToMemory";
 import "./chat.css";
 import { workflowCopy } from "./workflowCopy";
+import { CommandTextarea } from "./CommandTextarea";
+import { fallbackCommands, type AgentCatalogue } from "../../services/agentCommands";
+import { runChatCommand } from "../../services/chatCommands";
+import { commandCopy } from "./commandCopy";
 
 interface PendingAttachment extends ChatAttachment { preview?: string }
 const CHAT_BRAND = "AGENTDECK / WORKSPACE";
 function readBase64(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(reader.error); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.readAsDataURL(file); }); }
 
-export function StructuredChat({ session, visible, onNative, nativeLive = false }: { session: ClaudeSession; visible: boolean; onNative: () => void; nativeLive?: boolean }) {
+export function StructuredChat({ session, visible, onNative, nativeLive = false }: { session: ClaudeSession; visible: boolean; onNative: (query?: string) => void; nativeLive?: boolean }) {
   const { t, locale } = useAppI18n(); const c = chatCopy(locale);
   const w = workflowCopy(locale);
+  const [catalogue, setCatalogue] = useState<AgentCatalogue>({ entries: fallbackCommands(session.runner), warnings: [] });
+  const [browse, setBrowse] = useState<{ revision: number; filter: "all" | "skill" }>();
+  const [commandNotice, setCommandNotice] = useState("");
   const thread = useChatStore(s => s.threads[session.id] ?? emptyThread);
   const worktreeReady = useSessionStore(s => s.worktreeReadyIds.has(session.id));
   const storageError = useChatStore(s => s.storageError);
@@ -56,6 +63,13 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   const submit = async () => {
     if (nativeLive || uploading || !worktreeReady || (!thread.draft.trim() && !attachments.length)) return;
     setError(""); setFollow(true); setSearch(null); setMenu(false);
+    try {
+      if (thread.draft.trimStart().startsWith('/')) {
+        if (attachments.length) throw new Error(commandCopy(locale).attachments);
+        if (runChatCommand(thread.draft, session, catalogue, locale, { browse: filter => setBrowse({ revision: Date.now(), filter }), native: onNative, notice: setCommandNotice })) { patch({ draft: "" }); return; }
+      }
+      setCommandNotice("");
+    } catch (error) { setError(String(error)); return; }
     const ok = await sendChatTurn(session.id, thread.draft.trim() || c.attachmentOnly, attachments.map(({ preview: _, ...file }) => file));
     if (ok) { attachments.forEach(a => a.preview && URL.revokeObjectURL(a.preview)); setAttachments([]); }
   };
@@ -88,13 +102,14 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
     </div>
     {!follow && thread.messages.length > 0 && <button className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => { setFollow(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><ArrowDown size={16} /></button>}
     <div className="ad-chat-bottom">
-      {!thread.busy && thread.messages.some(m => m.turnId === thread.turnId && m.status === "blocked") && <div className="ad-chat-error"><p>{c.nativeHint}</p><button className="ad-button" onClick={onNative}><TerminalSquare size={14} />{c.native}</button></div>}
-      {(error || thread.error) && <div className="ad-chat-error" role="alert"><strong>{c.errorTitle}</strong><p>{error || thread.error}</p>{thread.error && !thread.busy && <button className="ad-button" disabled={nativeLive} onClick={() => { const last = [...thread.messages].reverse().find(m => m.role === "user"); if (last) void sendChatTurn(session.id, last.text, last.attachments ?? []); }}>{c.retry}</button>}<button className="ad-button ad-button-ghost" disabled={thread.busy} onClick={onNative}><TerminalSquare size={14} />{c.native}</button></div>}
+      {commandNotice && <div className="ad-command-notice" role="status"><span>{commandNotice}</span><button type="button" className="ad-icon-button" aria-label={c.cancel} onClick={() => setCommandNotice("")}><X size={13} /></button></div>}
+      {!thread.busy && thread.messages.some(m => m.turnId === thread.turnId && m.status === "blocked") && <div className="ad-chat-error"><p>{c.nativeHint}</p><button className="ad-button" onClick={() => onNative()}><TerminalSquare size={14} />{c.native}</button></div>}
+      {(error || thread.error) && <div className="ad-chat-error" role="alert"><strong>{c.errorTitle}</strong><p>{error || thread.error}</p>{thread.error && !thread.busy && <button className="ad-button" disabled={nativeLive} onClick={() => { const last = [...thread.messages].reverse().find(m => m.role === "user"); if (last) void sendChatTurn(session.id, last.text, last.attachments ?? []); }}>{c.retry}</button>}<button className="ad-button ad-button-ghost" disabled={thread.busy} onClick={() => onNative()}><TerminalSquare size={14} />{c.native}</button></div>}
       {storageError && <p className="ad-chat-error" role="alert">{c.storageError}</p>}
       <div className="ad-composer ad-chat-composer">
         {showGoal && <label className="ad-chat-goal"><Target size={15} /><input aria-label={c.goal} placeholder={c.goalPlaceholder} title={c.goalHint} value={thread.goal ?? ""} disabled={thread.busy} onChange={e => patch({ goal: e.target.value })} /><button className="ad-icon-button" aria-label={c.remove} disabled={thread.busy} onClick={() => { setShowGoal(false); patch({ goal: "" }); }}><X size={14} /></button></label>}
         {!!attachments.length && <div className="ad-attachments">{attachments.map((file, index) => <div className="ad-attachment" key={file.path}>{file.preview ? <img src={file.preview} alt={file.name} /> : <FileText size={22} />}<span><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small></span><button className="ad-icon-button" aria-label={`${c.removeAttachment}: ${file.name}`} onClick={() => { if (file.preview) URL.revokeObjectURL(file.preview); setAttachments(files => files.filter((_, i) => i !== index)); }}><X size={14} /></button></div>)}</div>}
-        <textarea ref={inputRef} rows={2} aria-label={t("session.promptTitle")} placeholder={thread.messages.length ? t("chat.followup") : t("session.promptPlaceholder")} value={thread.draft} onChange={e => patch({ draft: e.target.value })} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void addFiles(files); } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); } if (e.key === "Escape") setMenu(false); }} />
+        <CommandTextarea visible={visible} inputRef={inputRef} runner={session.runner} workdir={session.worktreePath || session.workdir} projectPath={session.workdir} browse={browse} onCatalogue={setCatalogue} disabled={nativeLive} rows={2} aria-label={t("session.promptTitle")} placeholder={thread.messages.length ? t("chat.followup") : t("session.promptPlaceholder")} value={thread.draft} onValueChange={value => patch({ draft: value })} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void addFiles(files); } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); } if (e.key === "Escape") setMenu(false); }} />
         <div className="ad-composer-footer"><div className="ad-add-context"><button className="ad-icon-button ad-add-button" aria-label={c.add} title={c.add} disabled={uploading} aria-expanded={menu} onClick={() => setMenu(!menu)}><Plus size={19} /></button>{menu && <><button className="ad-menu-dismiss" tabIndex={-1} aria-label={c.cancel} onClick={() => setMenu(false)} /><div className="ad-context-menu"><small>{c.add}</small><button onClick={() => { filesRef.current?.click(); setMenu(false); }}><ImagePlus size={16} />{c.files}<kbd>+</kbd></button><button onClick={() => { setShowGoal(!showGoal); setMenu(false); }}><Target size={16} />{c.goal}</button><button onClick={() => { setSketch(true); setMenu(false); }}><Pencil size={16} />{c.sketch}</button><button onClick={() => { setMenu(false); void invoke<string | null>("pick_folder").then(path => { if (path) patch({ draft: `${thread.draft}\n\n@${JSON.stringify(path)}`.trim() }); }).catch(e => setError(String(e))); }}><FolderOpen size={16} />{c.folder}</button></div></>}</div>
           <input hidden ref={filesRef} type="file" multiple onChange={e => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} aria-label={c.attach} />
           <AgentModelPicker runner={session.runner} workdir={session.worktreePath || session.workdir} disabled={thread.busy || nativeLive} onChange={value => useSessionStore.getState().updateSession(session.id, { runner: { ...session.runner, ...value } })} />
@@ -103,7 +118,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
         </div>
       </div>
       <div className="ad-chat-footnote"><span>{uploading ? c.upload : thread.busy ? w.liveHint : c.footer}</span><span title={session.runner.fullAccess !== false ? w.fullHint : c.nativeHint}><ShieldCheck size={12} />{session.runner.mode === "plan" ? c.readOnly : session.runner.fullAccess !== false ? w.fullAccess : c.code}</span></div>
-      {!thread.messages.length && <div className="ad-native-entry"><button className="ad-button ad-button-ghost" onClick={onNative}><TerminalSquare size={14} />{c.openNative}</button><span>{c.nativeHint}</span></div>}
+      {!thread.messages.length && <div className="ad-native-entry"><button className="ad-button ad-button-ghost" onClick={() => onNative()}><TerminalSquare size={14} />{c.openNative}</button><span>{c.nativeHint}</span></div>}
     </div>
     {dragging && <div className="ad-drop-overlay"><Paperclip size={32} /><strong>{c.drop}</strong></div>}
     {sketch && <SketchDialog onClose={() => setSketch(false)} onAttach={file => void addFiles([file])} />}

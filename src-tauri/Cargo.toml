@@ -1,10 +1,10 @@
 [package]
 name = "agentdeck"
-version = "0.5.0"
+version = "0.6.0"
 description = "Agentdeck desktop workspace for official coding agents"
 authors = ["Arthur Abreu"]
 edition = "2021"
-license = "Apache-2.0"
+license-file = "../LICENSE"
 repository = "https://github.com/arthurhpabreu/agentdeck"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

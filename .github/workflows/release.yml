@@ -40,20 +40,28 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release-assets | Out-Null
-          Get-ChildItem src-tauri/target/release/bundle -Recurse -File |
-            Where-Object { $_.Extension -in '.msi', '.exe' } |
-            Copy-Item -Destination release-assets
-          $installers = Get-ChildItem release-assets -File
-          if ($installers.Count -lt 2) { throw "Expected MSI and NSIS installers" }
-          $installers | ForEach-Object {
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          Copy-Item -LiteralPath "src-tauri/target/release/bundle/nsis/Agentdeck_${version}_x64-setup.exe" -Destination release-assets
+          Copy-Item -LiteralPath "src-tauri/target/release/bundle/msi/Agentdeck_${version}_x64_en-US.msi" -Destination release-assets
+          Copy-Item -LiteralPath LICENSE -Destination release-assets
+          Get-ChildItem release-assets -File | Sort-Object Name | ForEach-Object {
             $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
             "$($hash.Hash.ToLower())  $($_.Name)"
-          } | Set-Content release-assets/SHA256SUMS.txt
+          } | Set-Content release-assets/SHA256SUMS.txt -Encoding utf8NoBOM
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          gh release create $env:GITHUB_REF_NAME --draft --generate-notes --title "Agent Deck $env:GITHUB_REF_NAME"
           $assets = Get-ChildItem release-assets -File | Select-Object -ExpandProperty FullName
-          gh release upload $env:GITHUB_REF_NAME @assets
+          $existing = gh release view $env:GITHUB_REF_NAME --json isDraft --jq '.isDraft' 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if ($existing -eq 'false') {
+              Write-Output 'This release is already published; its assets are preserved.'
+              exit 0
+            }
+            gh release upload $env:GITHUB_REF_NAME @assets --clobber
+          } else {
+            gh release create $env:GITHUB_REF_NAME @assets --draft --generate-notes --title "Agent Deck $env:GITHUB_REF_NAME"
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the draft release' }

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- Searchable command and skill picker in structured chats, native startup inputs
+  and terminal follow-ups, with keyboard insertion, source badges and refresh.
+- Existing user/project commands and skills, enabled Claude plugin definitions,
+  native Codex skill discovery, and Gemini extension definitions.
+- Local structured chat controls for model, effort, fast mode, planning and status.
+- Explicit native Codex skill input on initial and additional turns; server-side
+  path resolution prevents forged frontend skill paths.
+- Session-preserving terminal handoff for interactive-only commands, without
+  sending slash commands as positional model prompts.
+
+### Changed
+
+- Agent Deck 0.6.0 uses Arthur Abreu's Personal Use License: personal,
+  non-commercial use and private modifications are permitted; resale, commercial
+  use and redistribution require written permission. The 0.5.0 Apache grant is
+  preserved for earlier copies. Third-party component licenses remain separate.
+- License metadata and installer resources now include the current license.
+
 ## 0.5.0
 
 ### Added

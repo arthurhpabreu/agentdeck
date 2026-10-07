@@ -1,5 +1,33 @@
 # Validation evidence
 
+## 0.6.0
+
+Validated locally on Windows on October 7, 2026.
+
+| Check | Result |
+| --- | --- |
+| Frozen pnpm installation, translations and Rust formatting | Passed. Translation checker covers 402 EN/PT/ES keys. |
+| TypeScript and production build | Passed. |
+| Playwright browser suite | 85 passed, including all nine command/skill scenarios. |
+| Rust library suite | 123 passed, 5 optional tests ignored, no failures. |
+| Installed CLI metadata probes | Explicit opt-in test passed: Claude returned 46 command entries and Codex returned 5 skills, without model prompts. |
+| Windows installers | Optimized x64 build and NSIS/MSI bundles completed. Both report 0.6.0; MSI publisher is Arthur Abreu. |
+| License packaging | Current LICENSE matches the release resource and is present in the MSI file table. |
+| Artifact integrity | PE/OLE containers checked; SHA-256 checksums generated for both installers and LICENSE. |
+
+Command coverage includes namespaced invocations with arguments, local session
+controls without model turns, unknown command rejection, mid-prompt Codex skills,
+additional input while busy, session-preserving terminal handoff, Claude supported
+commands, metadata refresh, Gemini startup/follow-up inputs, Escape, and a narrow
+light window. Native skill inputs are tested separately from frontend paths.
+
+These checks do not establish successful installation on a clean machine or a live
+paid skill execution. Installers remain unsigned. GitHub CI is independent of
+these local results. The draft-release workflow now preserves published assets
+and can update an existing draft; its revised upload path has not been rerun.
+
+## 0.5.0
+
 Agent Deck 0.5.0 was validated locally on Windows on October 7, 2026, using Node.js 24.15.0, pnpm 9.15.4 and the stable Rust toolchain.
 
 | Check | Result |
@@ -28,6 +56,6 @@ The [agent map](images/agent-flow-map.png) and [knowledge graph](images/knowledg
 
 Browser tests verify the UI against mocked desktop commands. They do not authenticate providers, send prompts or establish live agent collaboration. Four optional native tests that require installed clients or account integrations were ignored; live provider checks were not rerun for this change. Recorded subagent states remain distinguishable from live session activity in the interface.
 
-The Windows CI workflow has started on GitHub; its result is separate from the local checks above. The tag-triggered draft-release workflow is configured but has not been validated. NSIS/MSI installers were generated locally and remain unsigned. Installing them on a clean machine has not been tested. macOS and Linux behavior has not been validated.
+The Windows CI workflow passed for the final 0.5.0 documentation commit. The original draft-release job reached packaging but failed because a manually published release already had assets with the same names; that duplicate upload path is addressed in 0.6.0. NSIS/MSI installers were generated locally and remain unsigned. Installing them on a clean machine has not been tested. macOS and Linux behavior has not been validated.
 
 Vite reports existing warnings about large output chunks and mixed static/dynamic imports of Tauri core. These do not prevent the production build; bundle splitting remains a separate performance improvement.

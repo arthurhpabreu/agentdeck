@@ -176,7 +176,7 @@ export function useSessionRunnerController({
     if (ptyReadyRef.current) {
       pendingQueryRef.current = trimmed;
       flushPendingQuery(isWindows ? 120 : 100);
-    } else if (supportsPromptLaunch && !ptyEverActive) {
+    } else if (supportsPromptLaunch && !ptyEverActive && !trimmed.startsWith("/")) {
       setLaunchPrompt(trimmed);
     } else {
       pendingQueryRef.current = trimmed;
