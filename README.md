@@ -22,6 +22,8 @@ Screenshots use synthetic test data. The interface shown is Portuguese; English 
 
 ## Get started
 
+For the packaged Windows app, download the `.exe` or `.msi` from [Releases](https://github.com/arthurhpabreu/agentdeck/releases). Both install the same app; use the `.exe` for the usual interactive setup. Release assets include SHA-256 checksums. Current installers are unsigned and require repository access to download.
+
 Install Git, Node.js 22.12+, Rust stable, Visual Studio C++ build tools and WebView2. See the [setup guide](docs/setup.md) for prerequisites and troubleshooting.
 
 ```sh
