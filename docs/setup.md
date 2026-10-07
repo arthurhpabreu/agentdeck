@@ -10,7 +10,7 @@ For platform details, see the [Tauri prerequisites](https://v2.tauri.app/start/p
 
 ## Fresh checkout
 
-The repository is private. Authenticate Git with an account that has access, then run:
+The repository is public. Clone it and install the pinned dependencies:
 
 ```sh
 git clone https://github.com/arthurhpabreu/agentdeck.git
@@ -67,6 +67,8 @@ MSI generation also requires the Windows VBScript optional feature. See the [Tau
 
 The current app identifier stays `com.tuxao.agentdeck` to preserve existing Agent Deck data. Windows shared memory normally lives under `%APPDATA%\com.tuxao.agentdeck\shared-memory\memory.sqlite3`. Development state is isolated from production state. Personal settings and credentials do not travel with a checkout.
 
-## Initial private publication
+## Repository maintenance
 
-The prepared checkout uses branch `main`. Authenticate GitHub CLI as `arthurhpabreu`, commit the reviewed files and run `powershell -NoProfile -File scripts/publish-private.ps1`. The script checks the signed-in account, repository hygiene and destination visibility, creates the private repository if missing, then pushes `main`. It never changes an existing repository's visibility or force-pushes history.
+The repository uses branch `main`. Maintainers with write access can commit reviewed changes and push to `origin/main`. Contributors should use a fork and pull request.
+
+`scripts/publish-private.ps1` is retained as a utility for initial private publication. It checks the signed-in account, repository hygiene and private destination before pushing. It intentionally refuses an existing public destination and never changes repository visibility or force-pushes history. It is not needed to update this public repository.
