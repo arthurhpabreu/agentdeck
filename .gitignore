@@ -1,0 +1,69 @@
+# Dependencies and generated output (keep both lockfiles and app icons)
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+target/
+src-tauri/gen/
+release-assets/
+*.msi
+*.msix
+*.dmg
+*.exe
+
+# Browser test artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Machine-specific configuration, credentials and private runtime data
+.env
+.env.*
+!.env.example
+*.local
+.local/
+.agentdeck/
+.agentdeck-worktrees*/
+.codex/
+.claude/
+.gemini/
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+*.pfx
+*.p12
+credentials.json
+auth.json
+
+# Historical local QA includes machine/provider evidence and private screenshots.
+# Reviewed synthetic examples belong in docs/images and docs/validation.md instead.
+docs/qa/
+docs/local-archive/
+
+# Logs and temporary output
+logs/
+*.log
+*.tmp
+*.bak
+*.tsbuildinfo
+
+# Editors and operating systems
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.suo
+*.ntvs*
+*.njsproj
+*.sw?

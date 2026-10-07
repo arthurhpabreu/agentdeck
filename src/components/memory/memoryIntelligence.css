@@ -1,0 +1,21 @@
+.ad-memory-intelligence { margin: 14px 0; border: 1px solid var(--border-color, #383b46); border-radius: 9px; padding: 12px; font-size: 12px; }
+.ad-memory-intelligence summary { cursor: pointer; font-weight: 600; }
+.ad-memory-intelligence nav, .ad-intelligence-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.ad-memory-intelligence button { padding: 6px 9px; border: 1px solid var(--border-color, #383b46); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.ad-memory-intelligence button[aria-pressed="true"] { border-color: var(--accent-color, #8b9bff); background: #8b9bff18; }
+.ad-memory-intelligence button:disabled { opacity: .45; cursor: default; }
+.ad-memory-intelligence article { margin: 12px 0; padding: 10px; border: 1px solid var(--border-color, #383b46); border-radius: 7px; }
+.ad-memory-intelligence p { line-height: 1.5; margin: 8px 0; opacity: .82; }
+.ad-memory-intelligence label { display: grid; gap: 5px; margin: 10px 0; }
+.ad-memory-intelligence input:not([type="checkbox"]), .ad-memory-intelligence select, .ad-memory-intelligence textarea { box-sizing: border-box; width: 100%; min-width: 0; background: var(--bg-tertiary, #20232c); color: inherit; border: 1px solid var(--border-color, #383b46); border-radius: 5px; padding: 7px; font: inherit; }
+.ad-memory-intelligence .ad-intelligence-check { display: flex; align-items: center; gap: 8px; }
+.ad-memory-intelligence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font: 11px/1.6 monospace; }
+.ad-memory-intelligence code { display: block; overflow-wrap: anywhere; font-size: 10px; opacity: .8; margin: 6px 0; }
+.ad-memory-intelligence li { margin: 6px 0; overflow-wrap: anywhere; }
+.ad-memory-intelligence small { display: block; opacity: .65; }
+.ad-memory-intelligence [role="alert"] { color: #f5a1a1; opacity: 1; }
+.ad-memory-intelligence :focus-visible { outline: 2px solid var(--accent-color, #8b9bff); outline-offset: 2px; }
+.ad-memory-curation { padding:12px; margin:12px 0; border:1px solid var(--ci-border); border-radius:8px; }
+.ad-memory-curation label { display:flex; align-items:center; gap:8px; }
+.ad-memory-curation p { font-size:12px; line-height:1.5; color:var(--ci-text-muted); margin:8px 0; }
+.ad-memory-curation input { accent-color:var(--ci-accent); }

@@ -1,0 +1,26 @@
+.ad-terminal-rail { flex: 0 0 34px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; border: 0; border-inline-start: 1px solid var(--ci-border); background: var(--ci-toolbar-bg); color: var(--ci-text-muted); cursor: pointer; }
+.ad-terminal-rail span { writing-mode: vertical-rl; font-size: 12px; font-weight: 600; }
+.ad-terminal-rail:hover { background: var(--ci-surface-hi); color: var(--ci-text); }
+.ad-terminal-rail:focus-visible { outline-offset: -3px; }
+.ad-terminal-dock { width: clamp(360px, 40vw, 600px); flex: 0 0 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-inline-start: 1px solid var(--ci-border); background: var(--ci-bg); color: var(--ci-text); }
+.ad-terminal-dock[hidden] { display: none; }
+.ad-terminal-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px 0; flex-shrink: 0; }
+.ad-terminal-header h2 { font-size: 13px; font-weight: 600; flex: 1; }
+.ad-terminal-header > svg { color: var(--ci-accent); }
+.ad-terminal-path { margin: 0; padding: 4px 12px 10px; font-size: 11px; color: var(--ci-text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: text; }
+.ad-terminal-tabs-row { display: flex; gap: 6px; padding: 0 8px 0 6px; border-bottom: 1px solid var(--ci-border); align-items: center; flex-shrink: 0; }
+.ad-terminal-tabs { display: flex; gap: 3px; overflow-x: auto; min-width: 0; flex: 1; }
+.ad-terminal-tab { display: flex; align-items: center; border-bottom: 2px solid transparent; flex-shrink: 0; }
+.ad-terminal-tab[data-active="true"] { border-bottom-color: var(--ci-accent); }
+.ad-terminal-tab button { border: 0; background: transparent; color: var(--ci-text-muted); cursor: pointer; }
+.ad-terminal-tab [role="tab"] { font: inherit; font-size: 12px; padding: 10px; }
+.ad-terminal-tab [aria-selected="true"] { color: var(--ci-text); }
+.ad-terminal-tab-close { display: grid; place-items: center; width: 24px; height: 28px; margin-inline-end: 3px; }
+.ad-terminal-tab button:hover { background: var(--ci-surface-hi); }
+.ad-terminal-tab button:focus-visible { outline-offset: -2px; }
+.ad-terminal-tabs-row > button { flex-shrink: 0; }
+.ad-terminal-viewport { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.ad-terminal-runtime { position: absolute; inset: 0; }
+.ad-terminal-runtime[hidden] { display: none; }
+.ad-terminal-empty { margin: 0; padding: 24px; font-size: 13px; color: var(--ci-text-muted); line-height: 1.7; }
+@media (max-width: 1100px) { .ad-terminal-dock { position: absolute; inset-block: 0; inset-inline-end: 0; width: min(560px, calc(100% - 34px)); z-index: 20; box-shadow: -10px 0 28px #0003; } }

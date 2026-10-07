@@ -1,0 +1,400 @@
+import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { type LocaleSetting, normalizeLocaleSetting } from "../i18n/locale";
+import { mirroredPersistStorage } from "./persistStorage";
+
+export type RunnerType = "claude-code" | "codex" | "gemini";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface RunnerConfig {
+  type: RunnerType;
+  cliPath?: string;
+  cliArgs?: string;
+  model?: string;
+  mode?: "default" | "plan";
+  effort?: ReasoningEffort;
+  fastMode?: boolean;
+  ultraMode?: boolean;
+  fullAccess?: boolean;
+}
+
+export type RunnerProfile = Omit<RunnerConfig, "type">;
+export type RunnerProfiles = Record<RunnerType, RunnerProfile>;
+
+export type ThemeMode = "light" | "dark" | "glass" | "system";
+
+export function isGlassTheme(_theme: ThemeMode): _theme is "glass" {
+  return false;
+}
+
+export function normalizeThemeMode(theme: string | undefined): ThemeMode {
+  if (theme === "liquid" || theme === "glass") return "dark";
+  if (theme === "dark" || theme === "system") return theme;
+  return "light";
+}
+
+export function normalizeSplitPaneSidebarWidth(width: unknown): number {
+  if (typeof width !== "number" || !Number.isFinite(width)) return 320;
+  return Math.min(560, Math.max(280, Math.round(width)));
+}
+
+export function normalizeSplitWidgetPanelWidth(width: unknown): number {
+  if (typeof width !== "number" || !Number.isFinite(width)) return 260;
+  return Math.min(720, Math.max(220, Math.round(width)));
+}
+
+export function normalizePtyFontSize(size: unknown): number {
+  if (typeof size !== "number" || !Number.isFinite(size)) return 13;
+  return Math.min(24, Math.max(8, Math.round(size)));
+}
+
+export interface SplitWidgetTerminalTab {
+  id: string;
+  title: string;
+  ptySessionKey: string;
+}
+
+interface SplitWidgetCanvasItemBase {
+  id: string;
+  type: "terminal" | "usage";
+  col: number;
+  row: number;
+  colSpan: number;
+  rowSpan: number;
+  visible: boolean;
+}
+
+export interface SplitWidgetTerminalItem extends SplitWidgetCanvasItemBase {
+  type: "terminal";
+  tabs: SplitWidgetTerminalTab[];
+  activeTabId: string;
+}
+
+export interface SplitWidgetUsageItem extends SplitWidgetCanvasItemBase {
+  type: "usage";
+}
+
+export type SplitWidgetCanvasItem = SplitWidgetTerminalItem | SplitWidgetUsageItem;
+
+export interface SplitWidgetCanvas {
+  cellSize: number;
+  items: SplitWidgetCanvasItem[];
+  filledSnapshot?: SplitWidgetCanvasItem[] | null;
+}
+
+function createDefaultTerminalTab(index = 1): SplitWidgetTerminalTab {
+  return {
+    id: `terminal-tab-${index}`,
+    title: `Terminal ${index}`,
+    ptySessionKey: `terminal-pty-${index}`,
+  };
+}
+
+function createDefaultTerminalWidget(): SplitWidgetTerminalItem {
+  const defaultTab = createDefaultTerminalTab();
+  return {
+    id: "terminal-widget-1",
+    type: "terminal",
+    col: 2,
+    row: 16,
+    colSpan: 18,
+    rowSpan: 13,
+    visible: true,
+    tabs: [defaultTab],
+    activeTabId: defaultTab.id,
+  };
+}
+
+function createDefaultUsageWidget(): SplitWidgetUsageItem {
+  return {
+    id: "usage-widget-1",
+    type: "usage",
+    col: 2,
+    row: 2,
+    colSpan: 18,
+    rowSpan: 10,
+    visible: true,
+  };
+}
+
+function createDefaultSplitWidgetItems(): SplitWidgetCanvasItem[] {
+  return [createDefaultTerminalWidget(), createDefaultUsageWidget()];
+}
+
+function normalizeSplitWidgetTerminalTab(tab: unknown, index: number): SplitWidgetTerminalTab | null {
+  if (!tab || typeof tab !== "object") return null;
+  const candidate = tab as Partial<SplitWidgetTerminalTab>;
+  const fallback = createDefaultTerminalTab(index + 1);
+  const id = typeof candidate.id === "string" && candidate.id.trim() ? candidate.id : fallback.id;
+  return {
+    id,
+    title: typeof candidate.title === "string" && candidate.title.trim() ? candidate.title.trim() : fallback.title,
+    ptySessionKey: typeof candidate.ptySessionKey === "string" && candidate.ptySessionKey.trim()
+      ? candidate.ptySessionKey.trim()
+      : `terminal-pty-${id}`,
+  };
+}
+
+function normalizeSplitWidgetCanvasItem(item: unknown): SplitWidgetCanvasItem | null {
+  if (!item || typeof item !== "object") return null;
+  const candidate = item as Partial<SplitWidgetCanvasItem>;
+  if (candidate.type !== "terminal" && candidate.type !== "usage") return null;
+  if (!candidate.id || typeof candidate.id !== "string") return null;
+  const base = {
+    id: candidate.id,
+    type: candidate.type,
+    col: typeof candidate.col === "number" && Number.isFinite(candidate.col) ? Math.max(1, Math.round(candidate.col)) : 1,
+    row: typeof candidate.row === "number" && Number.isFinite(candidate.row) ? Math.max(1, Math.round(candidate.row)) : 1,
+    colSpan: typeof candidate.colSpan === "number" && Number.isFinite(candidate.colSpan) ? Math.max(12, Math.round(candidate.colSpan)) : 18,
+    rowSpan: typeof candidate.rowSpan === "number" && Number.isFinite(candidate.rowSpan) ? Math.max(10, Math.round(candidate.rowSpan)) : 13,
+    visible: candidate.visible !== false,
+  };
+
+  if (candidate.type === "terminal") {
+    const terminalCandidate = item as Partial<SplitWidgetTerminalItem>;
+    const tabs = Array.isArray(terminalCandidate.tabs)
+      ? terminalCandidate.tabs
+        .map(normalizeSplitWidgetTerminalTab)
+        .filter((tab): tab is SplitWidgetTerminalTab => tab !== null)
+      : [];
+    const normalizedTabs = tabs.length > 0 ? tabs : [createDefaultTerminalTab()];
+    return {
+      ...base,
+      type: "terminal",
+      tabs: normalizedTabs,
+      activeTabId: typeof terminalCandidate.activeTabId === "string" && normalizedTabs.some((tab) => tab.id === terminalCandidate.activeTabId)
+        ? terminalCandidate.activeTabId
+        : normalizedTabs[0].id,
+    };
+  }
+
+  return {
+    ...base,
+    type: "usage",
+  };
+}
+
+export function normalizeSplitWidgetCanvas(canvas: unknown): SplitWidgetCanvas {
+  const candidate = (canvas && typeof canvas === "object") ? canvas as Partial<SplitWidgetCanvas> : {};
+  const items = Array.isArray(candidate.items)
+    ? candidate.items.map(normalizeSplitWidgetCanvasItem).filter((item): item is SplitWidgetCanvasItem => item !== null)
+    : [];
+  const normalizedItems = items.length > 0 ? [...items] : [];
+
+  if (!normalizedItems.some((item) => item.type === "terminal")) {
+    normalizedItems.unshift(createDefaultTerminalWidget());
+  }
+
+  if (!normalizedItems.some((item) => item.type === "usage")) {
+    normalizedItems.push(createDefaultUsageWidget());
+  }
+
+  return {
+    cellSize: typeof candidate.cellSize === "number" && Number.isFinite(candidate.cellSize)
+      ? Math.max(8, Math.round(candidate.cellSize))
+      : 12,
+    items: normalizedItems,
+    filledSnapshot: Array.isArray(candidate.filledSnapshot)
+      ? candidate.filledSnapshot.map(normalizeSplitWidgetCanvasItem).filter((item): item is SplitWidgetCanvasItem => item !== null)
+      : null,
+  };
+}
+
+export interface Settings {
+  runner: RunnerConfig;
+  runnerProfiles: RunnerProfiles;
+  locale: LocaleSetting;
+  theme: ThemeMode;
+  ptyFontSize: number;
+  splitPaneSidebarWidth: number;
+  splitWidgetPanelWidth: number;
+  splitWidgetPanelCollapsed: boolean;
+  splitWidgetCanvas: SplitWidgetCanvas;
+}
+
+const DEFAULT_RUNNER_PROFILE: RunnerProfile = {
+  cliPath: "",
+  cliArgs: "",
+  effort: "medium",
+  fastMode: false,
+  ultraMode: false,
+  fullAccess: true,
+};
+
+const DEFAULT_RUNNER_PROFILES: RunnerProfiles = {
+  "claude-code": { ...DEFAULT_RUNNER_PROFILE },
+  "codex": { ...DEFAULT_RUNNER_PROFILE },
+  "gemini": { ...DEFAULT_RUNNER_PROFILE },
+};
+
+export function sanitizeRunnerConfig(runner: RunnerConfig): RunnerConfig {
+  return { ...runner, effort: normalizeEffort(runner.effort), fastMode: runner.fastMode === true, ultraMode: runner.ultraMode === true, fullAccess: runner.fullAccess !== false };
+}
+
+export function normalizeEffort(effort: unknown): ReasoningEffort {
+  return ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(effort)) ? effort as ReasoningEffort : "medium";
+}
+
+function normalizeRunnerProfile(profile?: Partial<RunnerProfile>): RunnerProfile {
+  return {
+    model: profile?.model ?? "",
+    mode: profile?.mode === "plan" ? "plan" : "default",
+    effort: normalizeEffort(profile?.effort),
+    fastMode: profile?.fastMode === true,
+    ultraMode: profile?.ultraMode === true,
+    fullAccess: profile?.fullAccess !== false,
+    cliPath: profile?.cliPath ?? DEFAULT_RUNNER_PROFILE.cliPath,
+    cliArgs: profile?.cliArgs ?? DEFAULT_RUNNER_PROFILE.cliArgs,
+  };
+}
+
+function extractRunnerProfile(runner: RunnerConfig): RunnerProfile {
+  return {
+    model: runner.model ?? "",
+    mode: runner.mode ?? "default",
+    effort: normalizeEffort(runner.effort),
+    fastMode: runner.fastMode === true,
+    ultraMode: runner.ultraMode === true,
+    fullAccess: runner.fullAccess !== false,
+    cliPath: runner.cliPath ?? "",
+    cliArgs: runner.cliArgs ?? "",
+  };
+}
+
+function resolveRunnerConfig(
+  type: RunnerType,
+  profiles: RunnerProfiles,
+  currentRunner?: Partial<RunnerConfig>
+): RunnerConfig {
+  const profile = normalizeRunnerProfile(profiles[type]);
+  return sanitizeRunnerConfig({
+    type,
+    ...profile,
+    ...(currentRunner?.type === type ? extractRunnerProfile({ type, ...profile, ...currentRunner }) : {}),
+  });
+}
+
+const DEFAULT_SETTINGS: Settings = {
+  runner: resolveRunnerConfig("claude-code", DEFAULT_RUNNER_PROFILES),
+  runnerProfiles: DEFAULT_RUNNER_PROFILES,
+  locale: "system",
+  theme: "system",
+  ptyFontSize: 13,
+  splitPaneSidebarWidth: 320,
+  splitWidgetPanelWidth: 260,
+  splitWidgetPanelCollapsed: true,
+  splitWidgetCanvas: {
+    cellSize: 12,
+    items: createDefaultSplitWidgetItems(),
+    filledSnapshot: null,
+  },
+};
+
+interface SettingsStore {
+  settings: Settings;
+  settingsOpen: boolean;
+  activeTab: "system" | "appearance" | "components";
+
+  openSettings: (tab?: SettingsStore["activeTab"]) => void;
+  closeSettings: () => void;
+  setTab: (tab: SettingsStore["activeTab"]) => void;
+  patchRunner: (patch: Partial<RunnerConfig>) => void;
+  patchSettings: (patch: Partial<Omit<Settings, "runner" | "runnerProfiles">>) => void;
+  getRunnerConfigForType: (type: RunnerType) => RunnerConfig;
+}
+
+export const useSettingsStore = create<SettingsStore>()(
+  persist(
+    (set, get) => ({
+      settings: DEFAULT_SETTINGS,
+      settingsOpen: false,
+      activeTab: "system",
+
+      openSettings: (tab = "system") =>
+        set({ settingsOpen: true, activeTab: tab }),
+      closeSettings: () => set({ settingsOpen: false }),
+      setTab: (tab) => set({ activeTab: tab }),
+
+      patchRunner: (patch) =>
+        set((s) => {
+          const currentRunner = s.settings.runner;
+          const nextType = patch.type ?? currentRunner.type;
+          const baseRunner = nextType === currentRunner.type
+            ? currentRunner
+            : resolveRunnerConfig(nextType, s.settings.runnerProfiles);
+          const nextRunner = sanitizeRunnerConfig({
+            ...baseRunner,
+            ...patch,
+            type: nextType,
+          });
+          return {
+            settings: {
+              ...s.settings,
+              runner: nextRunner,
+              runnerProfiles: {
+                ...s.settings.runnerProfiles,
+                [nextType]: extractRunnerProfile(nextRunner),
+              },
+            },
+          };
+        }),
+
+      patchSettings: (patch) =>
+        set((s) => ({ settings: { ...s.settings, ...patch } })),
+
+      getRunnerConfigForType: (type) => {
+        const { settings } = get();
+        return resolveRunnerConfig(type, settings.runnerProfiles, settings.runner);
+      },
+    }),
+    {
+      name: "agentdeck-settings",
+      storage: createJSONStorage(() => mirroredPersistStorage),
+      partialize: (s) => ({ settings: s.settings }),
+      merge: (persisted: unknown, current) => {
+        const p = persisted as Partial<typeof current>;
+        const persistedSettings = (p.settings ?? {}) as Partial<Settings> & {
+          locale?: string;
+          theme?: string;
+          splitPaneSidebarWidth?: unknown;
+          splitWidgetPanelWidth?: unknown;
+          splitWidgetPanelCollapsed?: unknown;
+          splitWidgetCanvas?: unknown;
+          ptyFontSize?: unknown;
+        };
+        const runnerProfiles: RunnerProfiles = {
+          "claude-code": normalizeRunnerProfile(persistedSettings.runnerProfiles?.["claude-code"]),
+          "codex": normalizeRunnerProfile(persistedSettings.runnerProfiles?.codex),
+          "gemini": normalizeRunnerProfile(persistedSettings.runnerProfiles?.gemini),
+        };
+        return {
+          ...current,
+          ...p,
+          settings: {
+            ...DEFAULT_SETTINGS,
+            ...Object.fromEntries(Object.entries(persistedSettings).filter(([key]) => key !== "apiKeys")),
+            locale: normalizeLocaleSetting(persistedSettings.locale),
+            theme: normalizeThemeMode(persistedSettings.theme),
+            ptyFontSize: normalizePtyFontSize(persistedSettings.ptyFontSize),
+            splitPaneSidebarWidth: normalizeSplitPaneSidebarWidth(persistedSettings.splitPaneSidebarWidth),
+            splitWidgetPanelWidth: normalizeSplitWidgetPanelWidth(persistedSettings.splitWidgetPanelWidth),
+            splitWidgetPanelCollapsed: persistedSettings.splitWidgetPanelCollapsed === true,
+            splitWidgetCanvas: normalizeSplitWidgetCanvas(persistedSettings.splitWidgetCanvas),
+            runnerProfiles,
+            runner: resolveRunnerConfig(
+              persistedSettings.runner?.type ?? DEFAULT_SETTINGS.runner.type,
+              runnerProfiles,
+              persistedSettings.runner
+            ),
+          },
+        };
+      },
+    }
+  )
+);
+
+export const RUNNER_LABELS: Record<RunnerType, string> = {
+  "claude-code": "Claude Code",
+  "codex": "OpenAI Codex",
+  "gemini": "Google Gemini",
+};

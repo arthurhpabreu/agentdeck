@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: npm install --global corepack --force
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm check:repo
+      - run: corepack pnpm check:i18n
+      - run: corepack pnpm build
+      - run: corepack pnpm exec playwright install chromium
+      - run: corepack pnpm test:ui
+        env:
+          PLAYWRIGHT_CHANNEL: chromium
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ui-failure-traces
+          path: test-results/
+          retention-days: 7

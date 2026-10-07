@@ -1,0 +1,10 @@
+.ad-graph-shell { display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; background: var(--ci-surface); border: 1px solid var(--ci-border); border-radius: 10px; overflow: hidden; }
+.ad-graph-viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab; background-image: radial-gradient(var(--ci-border-med) .8px, transparent .8px); background-size: 24px 24px; }
+.ad-graph-viewport:active { cursor: grabbing; }
+.ad-graph-viewport:focus-visible { outline: 2px solid var(--ci-accent); outline-offset: -3px; }
+.ad-graph-world { position: absolute; transform-origin: 0 0; }
+.ad-graph-toolbar { display: flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 7px 10px; border-top: 1px solid var(--ci-border); background: var(--ci-bg); color: var(--ci-text-muted); font-size: 11px; }
+.ad-graph-toolbar > span { flex: 1; min-width: 0; }
+.ad-graph-toolbar button { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--ci-border); border-radius: 6px; background: var(--ci-surface); color: var(--ci-text); cursor: pointer; }
+.ad-graph-toolbar button:hover { border-color: var(--ci-accent); }
+.ad-graph-toolbar output { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }

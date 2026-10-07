@@ -1,0 +1,122 @@
+import { Component, lazy, Suspense, type ReactNode } from "react";
+import { useAppI18n } from "../i18n";
+import { type ClaudeSession } from "../store/sessionStore";
+import { ExplorerPane } from "./explore/ExplorerPane";
+const EditorSplitHost = lazy(() => import("./editor/EditorSplitHost").then((module) => ({ default: module.EditorSplitHost })));
+
+class ExploreErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return {
+      error: error instanceof Error ? error.stack ?? error.message : String(error),
+    };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error("[explore-mode] render crash", error);
+    window.dispatchEvent(new CustomEvent("explore-boundary-error", {
+      detail: {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack ?? null : null,
+      },
+    }));
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          width: "100%",
+          height: "100%",
+          padding: 16,
+          boxSizing: "border-box",
+          overflow: "auto",
+          background: "var(--ci-surface)",
+          color: "var(--ci-deleted-text)",
+          fontSize: 12,
+          lineHeight: 1.7,
+          whiteSpace: "pre-wrap",
+          fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+        }}>
+          {this.state.error}
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function EmptyEditorState({ message }: { message: string }) {
+  return (
+    <div style={{
+      width: "100%",
+      height: "100%",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+    }}>
+      <div style={{
+        maxWidth: 280,
+        padding: "22px 24px",
+        borderRadius: 18,
+        border: "1px solid var(--ci-toolbar-border)",
+        background: "var(--ci-surface)",
+        color: "var(--ci-text-dim)",
+        fontSize: 12,
+        textAlign: "center",
+        lineHeight: 1.7,
+      }}>
+        {message}
+      </div>
+    </div>
+  );
+}
+
+export function ExploreSidebar({
+  session,
+  onRefreshDiff,
+}: {
+  session: ClaudeSession | null;
+  onRefreshDiff: (sessionId?: string | null, options?: { reloadExplorer?: boolean }) => void;
+}) {
+  const { t } = useAppI18n();
+  return (
+    <ExploreErrorBoundary>
+      <div style={{
+        width: "100%",
+        height: "100%",
+        minHeight: 0,
+        background: "transparent",
+        borderInlineEnd: "1px solid var(--ci-toolbar-border)",
+      }}>
+        {session ? <ExplorerPane session={session} onRefreshDiff={onRefreshDiff} /> : <EmptyEditorState message={t("explorer.enterExplorer")} />}
+      </div>
+    </ExploreErrorBoundary>
+  );
+}
+
+export function ExploreEditor({
+  session,
+  onRefreshDiff,
+}: {
+  session: ClaudeSession | null;
+  onRefreshDiff: (sessionId?: string | null, options?: { reloadExplorer?: boolean }) => void;
+}) {
+  return (
+    <ExploreErrorBoundary>
+      <div style={{
+        width: "100%",
+        height: "100%",
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        background: "transparent",
+      }}>
+        <Suspense fallback={null}><EditorSplitHost session={session} onRefreshDiff={onRefreshDiff} /></Suspense>
+      </div>
+    </ExploreErrorBoundary>
+  );
+}

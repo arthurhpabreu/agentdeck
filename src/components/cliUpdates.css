@@ -1,0 +1,16 @@
+.ad-cli-updates { color: var(--ci-text); font-size: 12px; }
+.ad-cli-updates header,.ad-cli-name,.ad-cli-versions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ad-cli-updates header { justify-content: space-between; }
+.ad-cli-updates h3 { font-size: 15px; margin: 0; }
+.ad-cli-updates p { color: var(--ci-text-muted); line-height: 1.6; }
+.ad-cli-updates article { border-top: 1px solid var(--ci-border); padding: 18px 0; }
+.ad-cli-name { margin-bottom: 12px; }.ad-cli-name span { color: var(--ci-text-dim); margin-inline-start: auto; }
+.ad-cli-versions code { margin-inline-start: 8px; font-size: 13px; }
+.ad-cli-versions button { margin-inline-start: auto; }
+.ad-cli-path { display: block; overflow-wrap: anywhere; color: var(--ci-text-dim); font-size: 10px; margin: 10px 0; }
+.ad-cli-updates small { color: var(--ci-text-dim); line-height: 1.6; }
+.ad-cli-updates [role=alert] { color: var(--ci-red); }
+.ad-cli-update-indicator { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid color-mix(in srgb, var(--ci-yellow) 35%, var(--ci-border)); border-radius: 6px; background: color-mix(in srgb, var(--ci-yellow) 7%, var(--ci-bg)); color: var(--ci-yellow); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ad-cli-update-indicator:hover { border-color: var(--ci-yellow); }
+.ad-cli-update-indicator i { width: 5px; height: 5px; background: currentColor; border-radius: 50%; }
+@media (max-width: 850px) { .ad-cli-update-indicator > span { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; } }

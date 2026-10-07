@@ -1,0 +1,59 @@
+name: Windows draft release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: npm install --global corepack --force
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm check:repo
+      - run: corepack pnpm check:i18n
+      - name: Verify tag matches application version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag and package version differ" }
+      - run: powershell -NoProfile -File scripts/build-windows.ps1
+      - name: Prepare installers and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          Get-ChildItem src-tauri/target/release/bundle -Recurse -File |
+            Where-Object { $_.Extension -in '.msi', '.exe' } |
+            Copy-Item -Destination release-assets
+          $installers = Get-ChildItem release-assets -File
+          if ($installers.Count -lt 2) { throw "Expected MSI and NSIS installers" }
+          $installers | ForEach-Object {
+            $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
+            "$($hash.Hash.ToLower())  $($_.Name)"
+          } | Set-Content release-assets/SHA256SUMS.txt
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release create $env:GITHUB_REF_NAME --draft --generate-notes --title "Agent Deck $env:GITHUB_REF_NAME"
+          $assets = Get-ChildItem release-assets -File | Select-Object -ExpandProperty FullName
+          gh release upload $env:GITHUB_REF_NAME @assets

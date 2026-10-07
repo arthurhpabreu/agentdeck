@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible Agent Deck issue with sanitized evidence.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Agent Deck version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and affected CLI version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected result and actual result
+      description: Remove personal paths, credentials and private conversation content.
+    validations:
+      required: true

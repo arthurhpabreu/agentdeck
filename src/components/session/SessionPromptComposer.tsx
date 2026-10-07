@@ -1,0 +1,44 @@
+import { ArrowUp, TerminalSquare } from "lucide-react";
+import { useAppI18n } from "../../i18n";
+import { RUNNER_LABELS, type RunnerConfig, type RunnerType } from "../../store/settingsStore";
+import { AgentModelPicker } from "./AgentModelPicker";
+
+export function SessionPromptComposer({ workdir, pendingQuery, setPendingQuery, queryInputRef, runner, cliAvailable, cliCommand, installCmd, waitingForPtyLaunch, onSubmit, onLaunch, onRunnerChange, onRunnerPatch, onInstall, onRecheck }: {
+  pendingQuery: string; setPendingQuery: (value: string) => void; queryInputRef: React.RefObject<HTMLTextAreaElement | null>;
+  workdir: string; runner: RunnerConfig; cliAvailable: boolean | null; cliCommand: string; installCmd?: string; waitingForPtyLaunch: boolean;
+  onSubmit: (q: string) => void; onLaunch: () => void; onRunnerChange: (type: RunnerType) => void; onRunnerPatch: (patch: Partial<RunnerConfig>) => void; onInstall: () => void; onRecheck: () => void;
+}) {
+  const { t } = useAppI18n();
+  const disabled = waitingForPtyLaunch || cliAvailable !== true;
+  return <div className="ad-welcome" style={{ position: "absolute", inset: 0 }}>
+    <div className="ad-welcome-inner">
+      <header className="ad-welcome-head">
+        <img src="/agentdeck-logo.jpg" alt="" width="44" height="44" />
+        <div><h2>{t("session.promptTitle")}</h2><p>{t("chat.welcome")}</p></div>
+      </header>
+      <div className="ad-agent-pills" role="group" aria-label={t("agents.title")}>
+        {(Object.entries(RUNNER_LABELS) as [RunnerType,string][]).map(([type,label]) => <button className="ad-button" key={type} disabled={waitingForPtyLaunch} aria-pressed={runner.type === type} onClick={() => onRunnerChange(type)}>{label}</button>)}
+      </div>
+      {waitingForPtyLaunch && <div className="ad-notice" role="status">{t("session.firstInstructionQueued")}</div>}
+      {cliAvailable === false && <div className="ad-notice">
+        <strong>{t("session.cliMissing", { command: cliCommand })}</strong><p><code>{installCmd}</code></p>
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}><button className="ad-button" onClick={onInstall}>{t("common.installOneClick")}</button><button className="ad-button" onClick={onRecheck}>{t("common.refresh")}</button></div>
+      </div>}
+      <div className="ad-composer">
+        <textarea ref={queryInputRef} value={pendingQuery} onChange={e => setPendingQuery(e.target.value)} rows={3} placeholder={t("session.promptPlaceholder")} aria-label={t("session.promptTitle")} disabled={waitingForPtyLaunch} onKeyDown={e => {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (!disabled && pendingQuery.trim()) onSubmit(pendingQuery); }
+        }} />
+        <div className="ad-composer-footer">
+          <AgentModelPicker workdir={workdir} runner={runner} onChange={onRunnerPatch} disabled={waitingForPtyLaunch} />
+          <span style={{ flex: 1 }} />
+          <button className="ad-button ad-button-primary" disabled={disabled || !pendingQuery.trim()} onClick={() => onSubmit(pendingQuery)}><ArrowUp size={16} />{t("chat.send")}</button>
+        </div>
+      </div>
+      <div className="ad-welcome-foot">
+        <span className="ad-hint" style={{ margin: 0, flex: 1 }}>{t("chat.keyboardHint")}</span>
+        <button className="ad-button ad-button-ghost" disabled={disabled} onClick={onLaunch}><TerminalSquare size={15} />{t("chat.openAgent")}</button>
+      </div>
+      <p className="ad-hint">{t(`agents.auth.${runner.type}`)}</p>
+    </div>
+  </div>;
+}
