@@ -1,5 +1,7 @@
 # Agent Deck
 
+![Agent Deck chat workspace in English with a synthetic example conversation](docs/images/chat-workspace-en.png)
+
 A desktop workspace for running coding agents, understanding their tasks and exploring project knowledge in one place.
 
 Agent Deck brings official Codex, Claude Code and Gemini CLIs into a Windows-first Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
