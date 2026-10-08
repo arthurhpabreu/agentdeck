@@ -6,13 +6,19 @@ A desktop workspace for running coding agents, understanding their tasks and exp
 
 Agent Deck brings official Codex, Claude Code and Gemini CLIs into a Windows-first Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
 
-## New in 0.6.2
+## New in 0.6.3
 
-- **Automatic context compaction:** Claude Code and Codex chats compact before the next request after 20 prompts or approximately 64,000 context tokens. Adjust either limit or turn compaction off in **Conversation context**, beside the model picker.
+- **Composer layout fix:** model, effort, mode and access settings have their own row. Attachments, context settings and response actions stay aligned below, including while context compaction is running.
+
+Install 0.6.3 over your current version using the same installer type. See the [changelog](CHANGELOG.md) for release details.
+
+## Introduced in 0.6.2
+
+- **Automatic context compaction:** Claude Code and Codex chats compact before the next request after 20 prompts or approximately 64,000 context tokens. Adjust either limit or turn compaction off in **Conversation context**, in the composer's action row.
 - **Long conversation performance:** the chat displays 80 messages at a time and saves changed messages asynchronously. Earlier messages remain available through history navigation, search and complete Markdown export.
 - **Safer continuation:** compaction keeps the provider conversation and waits for its completion. Failed compaction preserves your pending request; repeated reasoning events no longer fill the activity panel.
 
-Install 0.6.2 over your current version using the same installer type. Existing local chats migrate automatically to the new local history archive. See [context and history behavior](docs/context-compaction.md) and the [changelog](CHANGELOG.md).
+Existing local chats migrate automatically to the new local history archive. See [context and history behavior](docs/context-compaction.md) and the [changelog](CHANGELOG.md).
 
 ## Introduced in 0.6.1
 

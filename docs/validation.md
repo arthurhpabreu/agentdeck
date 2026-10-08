@@ -1,5 +1,28 @@
 # Validation evidence
 
+## 0.6.3
+
+Validated locally on Windows on October 8, 2026.
+
+| Check | Result |
+| --- | --- |
+| TypeScript and production build | Passed; optimized Windows executable generated. Existing Vite chunk-size and mixed-import warnings remain. |
+| Translations and Rust formatting | Passed: 405 EN/PT/ES keys and `cargo fmt --check`. |
+| Playwright browser suite | 105 passed. Composer geometry checks cover idle/compacting states at 1000, 1280 and 1600 px window widths. |
+| Rust library suite | 136 passed, 6 optional tests ignored, no failures. |
+| Packaged memory MCP smoke test | 11 scenarios passed with 33 RPC requests against the 0.6.3 executable and isolated temporary storage; no model requests. |
+| Windows installers | x64 NSIS/MSI generated; version 0.6.3, publisher, containers, bundled license and unchanged MSI upgrade code verified. |
+| Release integrity | SHA-256 manifest includes both installers and LICENSE. Generated artifacts remain outside source control. |
+
+The composer regression verifies stable selector coordinates during compaction,
+aligned attachment/context/response actions, no action overlap or horizontal
+overflow, and an on-screen context settings panel. Composer screenshots at each
+width were inspected locally. Existing compaction, archive, session naming and
+application update coverage also passes. Browser tests mock native boundaries;
+these checks do not establish an interactive clean-machine upgrade or live paid
+provider execution. Installers remain unsigned. GitHub CI validates the release
+branch independently before publication.
+
 ## 0.6.2
 
 Validated locally on Windows on October 8, 2026.

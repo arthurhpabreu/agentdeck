@@ -75,6 +75,44 @@ export function effortCases(setup: (page: Page) => Promise<void>, openSession: (
     await page.screenshot({ path: "test-results/composer-compact.png", animations: "disabled" });
   });
 
+  test("composer keeps selectors above aligned actions while compacting at different window widths", async ({ page }) => {
+    await setup(page); await openSession(page);
+    const composer = page.locator(".ad-chat-composer:visible");
+    const geometry = () => composer.evaluate(el => {
+      const rect = (selector: string) => { const r = el.querySelector(selector)!.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, center: r.y + r.height / 2 }; };
+      return { controls: rect(".ad-agent-controls"), model: rect(".ad-model-field"), mode: rect('[aria-label="Modo"]'), add: rect(".ad-add-button"), context: rect(".ad-chat-context summary"), send: rect(".ad-chat-send:last-child"), overflow: el.scrollWidth > el.clientWidth };
+    });
+    for (const width of [1000, 1280, 1600]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; const { useChatStore, chatHistoryReady } = await import(/* @vite-ignore */ path); await chatHistoryReady; useChatStore.getState().patch("session", { busy: false, compacting: false }); });
+      const idle = await geometry();
+      expect(idle.overflow).toBe(false);
+      expect(idle.controls.bottom).toBeLessThanOrEqual(idle.add.y);
+      expect(Math.abs(idle.add.center - idle.send.center)).toBeLessThan(1);
+      await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; const { useChatStore } = await import(/* @vite-ignore */ path); useChatStore.getState().patch("session", { busy: true, compacting: true }); });
+      await expect(page.getByRole("button", { name: "Parar resposta" })).toBeVisible();
+      await expect(page.locator(".ad-chat-progress")).toContainText("Compactando contexto");
+      const busy = await geometry();
+      expect(busy.overflow).toBe(false);
+      expect(busy.model).toEqual(idle.model);
+      expect(busy.mode).toEqual(idle.mode);
+      expect(busy.controls.bottom).toBeLessThanOrEqual(busy.add.y);
+      expect(Math.abs(busy.add.center - busy.send.center)).toBeLessThan(1);
+      expect(Math.abs(busy.context.center - busy.send.center)).toBeLessThan(1);
+      const stop = await page.getByRole("button", { name: "Parar resposta" }).boundingBox();
+      expect(stop).not.toBeNull();
+      expect(busy.context.right).toBeLessThanOrEqual(stop!.x);
+      expect(stop!.x + stop!.width).toBeLessThanOrEqual(busy.send.x);
+      await page.locator(".ad-chat-context summary").click();
+      const settings = await page.getByRole("group", { name: "Contexto da conversa" }).boundingBox();
+      expect(settings).not.toBeNull();
+      expect(settings!.x).toBeGreaterThanOrEqual(0);
+      expect(settings!.x + settings!.width).toBeLessThanOrEqual(width);
+      await page.locator(".ad-chat-context summary").click();
+      await composer.screenshot({ path: `test-results/composer-compacting-${width}.png`, animations: "disabled" });
+    }
+  });
+
   test("CLI installer failures show actionable causes and keep retry available", async ({ page }) => {
     await setup(page); await openSession(page);
     await page.getByRole("button", { name: "Opções do agente" }).click();

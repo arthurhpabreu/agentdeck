@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.3 — 2026-10-08
+
+### Fixed
+
+- Chat composer controls no longer shift or get squeezed during context compaction.
+  Model, effort, execution mode and access settings occupy their own row; attachments,
+  context settings, stop and send actions stay aligned below it.
+- The context control keeps a stable label while the existing progress indicator
+  displays compaction status. Its settings panel stays within compact windows.
+- Browser regression coverage checks selector stability, action alignment, overlap
+  and settings visibility at three window widths during compaction.
+
 ## 0.6.2 — 2026-10-08
 
 ### Added
