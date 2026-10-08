@@ -1,5 +1,34 @@
 # Validation evidence
 
+## 0.6.5
+
+Validated locally on Windows on October 8, 2026.
+
+| Check | Result |
+| --- | --- |
+| TypeScript and production build | Passed; optimized 0.6.5 executable and both Windows installers generated. Existing Vite chunk-size and mixed-import warnings remain. |
+| Translations and Rust formatting | Passed: 405 EN/PT/ES keys and `cargo fmt --check`. |
+| Playwright browser suite | 136 passed with a fresh isolated development server. |
+| Rust library suite | 159 passed, 6 optional tests ignored, no failures. |
+| Packaged memory MCP smoke test | 12 scenarios passed against the optimized 0.6.5 executable: 36 RPC requests, 3 processes, no stderr or unexpected responses, and no model requests. |
+| Windows installers | x64 payload, NSIS/MSI containers, version 0.6.5, publisher, bundled license resource and unchanged MSI upgrade identity verified. |
+| Release integrity | SHA-256 manifest covers both installers and LICENSE. Generated artifacts remain outside source control. |
+
+Regression coverage includes terminal output, long active-turn history, late tool
+updates, missed completion recovery, composer alignment, unsaved editor buffers,
+memory drafts, export destinations and prepared/delivered context sources. Vault
+fixtures exercise unavailable folders, partial indexes, encoded Markdown links,
+fences and reads outside the selected source. Git fixtures verify that worktree
+cleanup preserves ignored files, active processes and detached commits, rechecks
+the inspected commit, and finds folders created from repository subdirectories.
+
+The packaged memory test confirms that an unavailable vault produces a warning
+while saved memories remain searchable, and that restoring the source clears the
+warning without restarting. Browser tests mock native commands; no live paid
+provider execution or interactive clean-machine upgrade is claimed. Installers
+remain unsigned. GitHub Actions provides independent validation of the release
+commit.
+
 ## 0.6.4
 
 Validated locally on Windows on October 8, 2026.
