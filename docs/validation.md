@@ -1,5 +1,40 @@
 # Validation evidence
 
+## 0.6.2
+
+Validated locally on Windows on October 8, 2026.
+
+| Check | Result |
+| --- | --- |
+| Frozen pnpm installation and repository hygiene | Passed with committed lockfiles; 312 project files checked before this evidence update. |
+| TypeScript and production build | Passed; optimized Windows executable generated. Existing Vite chunk-size and mixed-import warnings remain. |
+| Translations and Rust formatting | Passed: 405 EN/PT/ES keys and `cargo fmt --check`. |
+| Playwright browser suite | 104 passed, including 11 context/history scenarios. |
+| Rust library suite | 136 passed, 6 optional tests ignored, no failures. |
+| Packaged memory MCP smoke test | 11 scenarios passed with 33 RPC requests against the 0.6.2 release executable and isolated temporary storage; no model requests. |
+| Windows installers | x64 NSIS/MSI generated; package version 0.6.2, publisher, containers, bundled license and unchanged MSI upgrade code verified. |
+| Release integrity | SHA-256 manifest includes both installers and LICENSE. Generated artifacts remain outside source control. |
+
+Compaction coverage exercises both providers, prompt and context-token thresholds,
+explicit opt-out, independence from lifetime usage, settings persistence, failed
+or unconfirmed compaction, fresh threads, queued supplementary input, cancellation,
+late events, session identity and native sequencing before the actual request.
+Native protocol fixtures require confirmed completion rather than treating an RPC
+acknowledgment or an unconfirmed Claude success result as successful compaction.
+
+History coverage archives 1,500 messages, verifies an 80-message rendered page,
+searches the first archived message, exports every message and reloads the archive.
+It also exercises 400 unsaved messages during a transaction failure, a 500-message
+legacy migration after storage cannot open at startup, 1,000 reasoning notifications
+and a 400-delta stream burst. Eviction follows a successful write; failed migration
+retains all pending records for retry.
+
+Browser tests mock native boundaries; Rust tests use protocol fixtures. These
+checks do not establish successful live paid provider compaction, reproduce every
+possible provider or WebView crash, or prove an interactive clean-machine upgrade.
+The active turn stays resident for stream correctness. Installers remain unsigned.
+GitHub CI validates the release branch independently before publication.
+
 ## 0.6.1
 
 Validated locally on Windows on October 8, 2026.

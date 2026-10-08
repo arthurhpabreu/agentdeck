@@ -3,11 +3,13 @@ import { effortCases } from "./effort-cases";
 import { commandCases } from "./command-cases";
 import { sessionNameCases } from "./session-name-cases";
 import { appUpdateCases } from "./app-update-cases";
+import { compactionCases } from "./compaction-cases";
 
 effortCases(setup, openSession);
 commandCases(setup);
 sessionNameCases(setup, openSession);
 appUpdateCases(setup);
+compactionCases(setup, openSession);
 
 test("titlebar CLI indicator opens update management and follows confirmed results", async ({ page }) => {
   await setup(page);
@@ -88,19 +90,30 @@ async function setup(page: Page, locale = "pt-BR") {
           w.__chatTurns[req.sessionId] = req.turnId;
           const emit = (event: any) => w.__emit("chat-event", { sessionId: req.sessionId, turnId: req.turnId, ...event });
           emit({ kind: "status", status: "started", pid: 8765, model: req.runnerType === "claude-code" ? "claude-opus-5-5" : undefined });
-          emit({ kind: "session", providerSessionId: "native-chat-session" });
-          setTimeout(() => {
+          emit({ kind: "session", providerSessionId: req.providerSessionId || "native-chat-session" });
+          const output = () => {
             emit({ kind: "tool", itemId: "read", title: "Read project", text: "README.md", status: "completed" });
             emit({ kind: "text", itemId: "answer", text: "## Architecture review\n\n", delta: true });
             emit({ kind: "text", itemId: "answer", text: "Readable **agent response** with a verified tool event.", delta: true });
             emit({ kind: "status", status: "finishing", usage: req.runnerType === "codex" ? { input_tokens: 45, cached_input_tokens: 10, output_tokens: 20 } : { input_tokens: 30, cache_read_input_tokens: 10, cache_creation_input_tokens: 5, output_tokens: 20 } });
             if (w.__autoComplete) emit({ kind: "done", status: "completed" });
-          }, 30);
+          };
+          if (req.compactBeforeTurn) {
+            w.__compactionPending = { sessionId: req.sessionId, turnId: req.turnId, input: [] };
+            emit({ kind: "status", status: "compacting" });
+            setTimeout(() => {
+              if (w.__failCompact) { emit({ kind: "error", text: "Context compaction was not confirmed. Your next request was not sent." }); emit({ kind: "done", status: "error" }); w.__compactionPending = undefined; return; }
+              emit({ kind: "compaction", itemId: req.turnId + ":before-turn", status: "before-turn" });
+              for (const id of w.__compactionPending?.input ?? []) emit({ kind: "input", itemId: id, status: "accepted" });
+              w.__compactionPending = undefined; output();
+            }, w.__compactionDelay ?? 50);
+          } else setTimeout(output, 30);
           return;
         }
         if (command === "steer_chat_turn") {
           if (w.__failSteer) throw new Error("Additional input failed");
-          w.__emit("chat-event", { sessionId: args.request.sessionId, turnId: args.request.turnId, kind: "input", itemId: args.messageId, status: "accepted" });
+          if (w.__compactionPending?.turnId === args.request.turnId) w.__compactionPending.input.push(args.messageId);
+          else w.__emit("chat-event", { sessionId: args.request.sessionId, turnId: args.request.turnId, kind: "input", itemId: args.messageId, status: "accepted" });
           return "queued";
         }
         if (command === "stop_chat_turn") { w.__emit("chat-event", { sessionId: args.sessionId, turnId: w.__chatTurns[args.sessionId], kind: "done", status: "stopped" }); return; }

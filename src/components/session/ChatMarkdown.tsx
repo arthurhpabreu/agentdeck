@@ -1,4 +1,4 @@
-import { isValidElement, useState, type ReactNode } from "react";
+import { isValidElement, memo, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -11,7 +11,9 @@ export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false); const [failed, setFailed] = useState(false);
   return <button className="ad-icon-button" aria-label={copied ? c.copied : c.copy} title={failed ? c.retry : copied ? c.copied : c.copy} onClick={() => void navigator.clipboard.writeText(text).then(() => { setCopied(true); setFailed(false); setTimeout(() => setCopied(false), 1800); }).catch(() => setFailed(true))}>{copied ? <Check size={14} /> : <Copy size={14} />}</button>;
 }
-export function ChatMarkdown({ text }: { text: string }) {
+export const ChatMarkdown = memo(function ChatMarkdown({ text }: { text: string }) {
+  // Large generated outputs remain selectable/copyable without reparsing a giant AST per delta.
+  if (text.length > 32_000) return <pre className="ad-large-message">{text}</pre>;
   return <div className="ad-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
     pre: ({ children }) => {
       const code = isValidElement<{ children?: ReactNode; className?: string }>(children) ? children.props : undefined;
@@ -21,4 +23,4 @@ export function ChatMarkdown({ text }: { text: string }) {
     a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if (href && /^https?:\/\//i.test(href)) void openUrl(href).catch(() => {}); }}>{children}</a>,
     img: ({ alt }) => <span className="ad-hint">[{alt || "image"}]</span>,
   }}>{text}</Markdown></div>;
-}
+});

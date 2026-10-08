@@ -6,13 +6,20 @@ A desktop workspace for running coding agents, understanding their tasks and exp
 
 Agent Deck brings official Codex, Claude Code and Gemini CLIs into a Windows-first Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
 
-## New in 0.6.1
+## New in 0.6.2
+
+- **Automatic context compaction:** Claude Code and Codex chats compact before the next request after 20 prompts or approximately 64,000 context tokens. Adjust either limit or turn compaction off in **Conversation context**, beside the model picker.
+- **Long conversation performance:** the chat displays 80 messages at a time and saves changed messages asynchronously. Earlier messages remain available through history navigation, search and complete Markdown export.
+- **Safer continuation:** compaction keeps the provider conversation and waits for its completion. Failed compaction preserves your pending request; repeated reasoning events no longer fill the activity panel.
+
+Install 0.6.2 over your current version using the same installer type. Existing local chats migrate automatically to the new local history archive. See [context and history behavior](docs/context-compaction.md) and the [changelog](CHANGELOG.md).
+
+## Introduced in 0.6.1
 
 - **Application update checks:** Agent Deck checks stable official releases when it opens. Click the version badge to download the installer, then choose **Install update** in **Settings → System**. Downloads are verified against the release checksum, and the updater keeps the installed package type (`.exe` or `.msi`).
 - **Session names you control:** click the pencil in the session list or conversation header. Save with Enter or cancel with Escape. Your chosen name stays when sending messages, reopening the app or recovering sessions.
 - **Memory retrieval for large requests:** long prompts now use a bounded search sample instead of failing with `Query exceeds limit`. The agent still receives your full request; memory and global vault excerpts stay within your context budget.
 
-Install 0.6.1 over 0.6.0 using the same installer type. The application identity and local storage remain the same; no data migration is required. See the [changelog](CHANGELOG.md) for details.
 
 ## Introduced in 0.6.0
 

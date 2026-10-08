@@ -92,7 +92,8 @@ test("conversation usage accumulates provider reports once and persists without 
   await setupEconomy(page);
   const measured = await page.evaluate(async () => {
     const modulePath = "/src/store/chatStore.ts";
-    const { useChatStore } = await import(/* @vite-ignore */ modulePath);
+    const { useChatStore, chatHistoryReady, persistChatHistory } = await import(/* @vite-ignore */ modulePath);
+    await chatHistoryReady;
     const store = useChatStore.getState();
     const report = (turnId: string, usage: unknown, extra = {}) => store.event({ sessionId: "economy", turnId, kind: "status", usage, ...extra });
     store.patch("economy", { turnId: "first", busy: true });
@@ -107,7 +108,7 @@ test("conversation usage accumulates provider reports once and persists without 
     report("second", { input_tokens: null, output_tokens: 9 });
     store.event({ sessionId: "economy", turnId: "second", kind: "done" });
     const current = useChatStore.getState().threads.economy;
-    window.dispatchEvent(new Event("pagehide"));
+    await persistChatHistory();
     const persisted = JSON.parse(localStorage.getItem("agentdeck-chat-v1")!).economy;
     return { total: current.totalUsage, last: current.lastUsage, turns: current.meteredTurns, persisted: persisted.totalUsage };
   });

@@ -1,4 +1,12 @@
 .ad-chat { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; background: var(--ci-bg); color: var(--ci-text); }
+.ad-chat-context { position: relative; color: var(--ci-text-dim); font-size: 11px; }
+.ad-large-message { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.ad-chat-context > summary { display: flex; align-items: center; gap: 5px; cursor: pointer; list-style: none; }
+.ad-chat-context > div { position: absolute; bottom: 30px; right: 0; z-index: 25; width: 300px; padding: 16px; background: var(--ci-toolbar-bg); border: 1px solid var(--ci-border); border-radius: 10px; box-shadow: 0 8px 24px #0004; }
+.ad-chat-context label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.ad-chat-context input[type="number"] { width: 90px; padding: 5px; color: var(--ci-text); background: var(--ci-surface); border: 1px solid var(--ci-border); border-radius: 5px; }
+.ad-chat-context p { line-height: 1.5; margin: 8px 0; }
+.ad-chat-history { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-bottom: 16px; color: var(--ci-text-dim); }
 .ad-session-tabs { display: flex; align-items: center; flex-shrink: 0; height: 40px; padding: 0 14px; gap: 6px; border-bottom: 1px solid var(--ci-border); background: var(--ci-toolbar-bg); }
 .ad-session-tabs > button { display: flex; align-items: center; gap: 7px; height: 100%; border: 0; border-bottom: 2px solid transparent; padding: 0 12px; font-size: 12px; color: var(--ci-text-dim); background: transparent; cursor: pointer; }
 .ad-session-tabs > button[aria-selected="true"] { color: var(--ci-accent); border-bottom-color: var(--ci-accent); }

@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.2 — 2026-10-08
+
+### Added
+
+- Automatic provider context compaction in Claude Code and Codex chats before
+  the next request, after 20 prompts or approximately 64,000 context tokens.
+  Per-conversation controls configure either threshold or disable automation.
+- Confirmed native compaction keeps the existing provider session. Additional
+  input queues during compaction. Failures retain the pending request and history;
+  a 180-second compaction timeout prevents waiting indefinitely.
+- A local IndexedDB history archive with incremental asynchronous saves, automatic
+  migration from existing chats, and eviction only after a successful archive write.
+- History navigation and search render up to 80 messages at a time; Markdown
+  export includes the complete saved transcript and attachments' names.
+
+### Fixed
+
+- Streaming no longer serializes every conversation into localStorage repeatedly.
+  The startup cache is bounded and the archive retains the full history.
+- Stream bursts are coalesced, unchanged Markdown is memoized, and unusually
+  large replies display as selectable text to avoid expensive Markdown parsing.
+- Repeated reasoning notifications no longer accumulate `Thinking…` diagnostics.
+- Context thresholds use the latest reported model context or a labeled byte-based
+  estimate, independently of cumulative billable usage. Compaction preserves usage
+  totals and re-arms local memory/RTK guidance delivery.
+
+The archive and interface performance changes apply to structured chat. Native
+terminal providers retain their own context handling. Browser tests mock native
+execution; native protocol tests cover compaction sequencing without paid inference.
+
 ## 0.6.1 — 2026-10-08
 
 ### Added

@@ -25,6 +25,8 @@ pub struct ChatEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -40,6 +42,7 @@ pub struct ChatParser {
     sequence: u64,
     pub failed: bool,
     saw_text: bool,
+    context_input: u64,
 }
 
 fn string(value: &Value, key: &str) -> Option<String> {
@@ -94,6 +97,7 @@ impl ChatParser {
             sequence: 0,
             failed: false,
             saw_text: false,
+            context_input: 0,
         }
     }
 
@@ -153,6 +157,23 @@ impl ChatParser {
     fn codex(&mut self, record: &Value) -> Vec<ChatEvent> {
         let mut events = Vec::new();
         match record["type"].as_str().unwrap_or("") {
+            "context_compacted" => {
+                let mut event = self.event("compaction");
+                event.item_id = Some(format!(
+                    "{}:{}",
+                    self.turn_id,
+                    record["id"].as_str().unwrap_or("automatic")
+                ));
+                event.status = Some(
+                    if record["before_turn"] == true {
+                        "before-turn"
+                    } else {
+                        "automatic"
+                    }
+                    .into(),
+                );
+                events.push(event);
+            }
             "agentdeck.model" => {
                 let mut event = self.event("status");
                 event.model = string(record, "model");
@@ -190,6 +211,7 @@ impl ChatParser {
                     event.text = string(item, "text");
                     self.saw_text |= event.text.as_ref().is_some_and(|text| !text.is_empty());
                 } else if item_type == "reasoning" {
+                    event.status = Some("reasoning".into());
                     event.text = Some("Thinking…".into());
                 } else {
                     event.title = Some(match item_type {
@@ -234,6 +256,7 @@ impl ChatParser {
             "turn.completed" => {
                 let mut event = self.event("status");
                 event.usage = record.get("usage").cloned();
+                event.context_tokens = record["context_tokens"].as_u64();
                 event.status = Some("finishing".into());
                 events.push(event);
             }
@@ -251,9 +274,48 @@ impl ChatParser {
     }
 
     fn claude(&mut self, record: &Value) -> Vec<ChatEvent> {
+        if record["type"] == "context_compacted" {
+            return self.codex(record);
+        }
         let mut events = Vec::new();
         self.bind(string(record, "session_id"), &mut events);
         let parent = string(record, "parent_tool_use_id");
+        if parent.is_none() {
+            if record["type"] == "system" && record["subtype"] == "compact_boundary" {
+                let mut event = self.event("compaction");
+                event.item_id = Some(format!(
+                    "{}:{}",
+                    self.turn_id,
+                    record["uuid"].as_str().unwrap_or("automatic")
+                ));
+                event.status = Some("automatic".into());
+                events.push(event);
+            }
+            let usage = match record["type"].as_str() {
+                Some("assistant") => Some(&record["message"]["usage"]),
+                Some("stream_event") if record["event"]["type"] == "message_start" => {
+                    Some(&record["event"]["message"]["usage"])
+                }
+                Some("stream_event") if record["event"]["type"] == "message_delta" => {
+                    Some(&record["event"]["usage"])
+                }
+                _ => None,
+            };
+            if let Some(usage) =
+                usage.filter(|u| u["input_tokens"].is_u64() || u["output_tokens"].is_u64())
+            {
+                if let Some(input) = usage["input_tokens"].as_u64() {
+                    self.context_input = input
+                        + usage["cache_read_input_tokens"].as_u64().unwrap_or(0)
+                        + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                }
+                let mut event = self.event("status");
+                event.status = Some("running".into());
+                event.context_tokens =
+                    Some(self.context_input + usage["output_tokens"].as_u64().unwrap_or(0));
+                events.push(event);
+            }
+        }
         if parent.is_none() {
             let model = match record["type"].as_str() {
                 Some("system") if record["subtype"] == "init" => string(record, "model"),
@@ -445,6 +507,27 @@ impl ChatParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reasoning_is_not_an_accumulating_diagnostic() {
+        let mut parser = parser();
+        let events = parser.parse(
+            "codex",
+            r#"{"type":"item.updated","item":{"id":"r","type":"reasoning"}}"#,
+        );
+        assert_eq!(events[0].status.as_deref(), Some("reasoning"));
+    }
+    #[test]
+    fn context_tokens_are_latest_model_context_not_accumulated_billing() {
+        let mut parser = parser();
+        let events=parser.parse("codex",r#"{"type":"turn.completed","usage":{"input_tokens":900000,"output_tokens":200000},"context_tokens":12000}"#);
+        assert_eq!(events[0].context_tokens, Some(12000));
+        let events=parser.parse("claude-code",r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":1000,"cache_creation_input_tokens":20}}}}"#);
+        assert_eq!(events[0].context_tokens, Some(1120));
+        let events=parser.parse("claude-code",r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":200}}}"#);
+        assert_eq!(events[0].context_tokens, Some(1320));
+        let events=parser.parse("claude-code",r#"{"type":"assistant","parent_tool_use_id":"child","message":{"usage":{"input_tokens":99999,"output_tokens":99999},"content":[]}}"#);
+        assert!(events.iter().all(|e| e.context_tokens.is_none()));
+    }
     #[test]
     fn main_model_identity_is_reported_without_subagent_override() {
         let mut parser = ChatParser::new("s".into(), "t".into());

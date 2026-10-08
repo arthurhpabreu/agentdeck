@@ -55,6 +55,8 @@ pub struct ChatTurnRequest {
     pub project_path: Option<String>,
     pub prompt: String,
     #[serde(default)]
+    pub compact_before_turn: bool,
+    #[serde(default)]
     pub cli_path: String,
     pub provider_session_id: Option<String>,
     pub model: Option<String>,
@@ -631,7 +633,7 @@ pub async fn start_chat_turn(
     let delivered_guidance =
         !economy.guidance.is_empty() && !request.prompt.trim_start().starts_with('/');
     crate::token_economy::append_guidance(&mut request.prompt, &economy.guidance);
-    let input = build_input(&request)?;
+    let input = live::initial_input(&request)?;
     let executable = find_cli_path(&request.runner_type, &request.cli_path);
     let (executable, arguments) = resolve_windows_pty_command(&executable, &arguments);
     #[cfg(windows)]
@@ -712,7 +714,11 @@ pub async fn start_chat_turn(
         turn_id: request.turn_id.clone(),
         provider: request.runner_type.clone(),
         project_path: project_path.clone(),
-        input: Mutex::new(live::LiveInput::new(stdin, request.runner_type == "codex")),
+        input: Mutex::new(live::LiveInput::new(
+            stdin,
+            request.runner_type == "codex",
+            request.compact_before_turn && request.provider_session_id.is_some(),
+        )),
         child: Mutex::new(child),
         cancelled: AtomicBool::new(false),
     });
@@ -723,6 +729,11 @@ pub async fn start_chat_turn(
     started.status = Some("started".into());
     started.pid = Some(pid);
     emit_event(&app, &request.runner_type, started);
+    if request.compact_before_turn && request.provider_session_id.is_some() {
+        let mut compacting = parser.event("status");
+        compacting.status = Some("compacting".into());
+        emit_event(&app, &request.runner_type, compacting);
+    }
     crate::memory_runtime::capture_events(
         &app,
         &project_path,
@@ -738,6 +749,8 @@ pub async fn start_chat_turn(
     let sender_err = sender.clone();
     std::thread::spawn(move || read_output(stderr, false, sender_err));
     let guidance_provider = request.runner_type.clone();
+    let compacting_before_input =
+        request.compact_before_turn && request.provider_session_id.is_some();
     let input_process = process.clone();
     std::thread::spawn(move || {
         let sent = input_process
@@ -755,7 +768,7 @@ pub async fn start_chat_turn(
             let _ = sender.send(ProcessOutput::Warning(format!(
                 "Could not send the message to the provider: {error}"
             )));
-        } else if guidance_provider != "codex" {
+        } else if guidance_provider != "codex" && !compacting_before_input {
             let _ = sender.send(ProcessOutput::Stdout(
                 serde_json::json!({"type":"agentdeck.initial-delivered"}).to_string(),
             ));
@@ -771,6 +784,7 @@ pub async fn start_chat_turn(
         let mut visible_messages: Vec<(String, String)> = Vec::new();
         let mut capture_stream = crate::memory_capture::StreamCapture::default();
         let mut live = live::LiveProtocol::new(&request);
+        let launched_at = Instant::now();
         loop {
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(ProcessOutput::Stdout(line)) => {
@@ -812,10 +826,16 @@ pub async fn start_chat_turn(
                                 &request.runner_type,
                                 capture_stream.ingest(&record),
                             );
-                            if record["subtype"] == "compact_boundary"
-                                || record["type"] == "context_compacted"
-                                || record["payload"]["type"] == "context_compacted"
+                            if record["parent_tool_use_id"].is_null()
+                                && (record["subtype"] == "compact_boundary"
+                                    || record["type"] == "context_compacted"
+                                    || record["payload"]["type"] == "context_compacted")
                             {
+                                crate::token_economy::reset_after_compaction(
+                                    &request.runner_type,
+                                    &request.session_id,
+                                    "/compact",
+                                );
                                 crate::memory_runtime::reset(
                                     &app,
                                     &project_path,
@@ -881,6 +901,12 @@ pub async fn start_chat_turn(
                 }
                 Ok(ProcessOutput::Closed) => closed += 1,
                 Err(_) => {}
+            }
+            if live.compacting() && launched_at.elapsed() > Duration::from_secs(180) {
+                parser.failed = true;
+                emit_event(&app, &request.runner_type, parser.message("error", "Context compaction timed out. Your next request was not sent; the existing conversation is preserved. Retry or adjust automatic compaction in the chat context settings."));
+                terminate_process(&process);
+                break;
             }
             if exit.is_none() {
                 match process
@@ -1090,6 +1116,7 @@ mod tests {
             workdir: ".".into(),
             project_path: None,
             prompt: "Help with $(untrusted) & a file".into(),
+            compact_before_turn: false,
             cli_path: String::new(),
             provider_session_id: None,
             model: None,

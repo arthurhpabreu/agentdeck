@@ -22,10 +22,13 @@ pub(super) struct LiveInput {
     pending: HashMap<u64, Message>,
     claude_pending: usize,
     started: bool,
+    compacting: bool,
 }
 impl LiveInput {
-    pub fn new(stdin: ChildStdin, codex: bool) -> Self {
-        Self::with_writer(Box::new(stdin), codex)
+    pub fn new(stdin: ChildStdin, codex: bool, compacting: bool) -> Self {
+        let mut input = Self::with_writer(Box::new(stdin), codex);
+        input.compacting = compacting;
+        input
     }
     fn with_writer(writer: Box<dyn Write + Send>, codex: bool) -> Self {
         Self {
@@ -38,6 +41,7 @@ impl LiveInput {
             pending: HashMap::new(),
             claude_pending: 1,
             started: false,
+            compacting: false,
         }
     }
     pub fn write_text(&mut self, text: &str) -> Result<(), String> {
@@ -67,6 +71,13 @@ impl LiveInput {
             let mut input: Value =
                 serde_json::from_str(&build_input(request)?).map_err(|e| e.to_string())?;
             input["uuid"] = json!(id);
+            if self.compacting {
+                self.queued.push_back(Message {
+                    id: id.into(),
+                    input,
+                });
+                return Ok("queued");
+            }
             self.write(input)?;
             self.claude_pending += 1;
             return Ok("queued");
@@ -87,7 +98,7 @@ impl LiveInput {
         }
     }
     fn start_queued(&mut self) -> Result<(), String> {
-        if self.turn.is_some() || !self.pending.is_empty() {
+        if self.compacting || self.turn.is_some() || !self.pending.is_empty() {
             return Ok(());
         }
         if let Some(message) = self.queued.pop_front() {
@@ -100,6 +111,18 @@ impl LiveInput {
         }
         Ok(())
     }
+}
+pub(super) fn initial_input(request: &ChatTurnRequest) -> Result<String, String> {
+    if request.runner_type == "claude-code"
+        && request.compact_before_turn
+        && request.provider_session_id.is_some()
+    {
+        let mut compact = request.clone();
+        compact.prompt = "/compact Preserve the user's objective, constraints, decisions, changed files, verification results, and unfinished work so the conversation can continue.".into();
+        compact.attachments.clear();
+        return build_input(&compact);
+    }
+    build_input(request)
 }
 pub(super) fn codex_input(request: &ChatTurnRequest) -> Result<Value, String> {
     let mut input = vec![json!({"type":"text","text":build_input(request)?})];
@@ -122,6 +145,11 @@ pub(super) struct LiveProtocol {
     totals: Value,
     claude_totals: Value,
     claude_results: std::collections::HashSet<String>,
+    compacting: bool,
+    compact_confirmed: bool,
+    compact_turn: Option<String>,
+    last_compaction_item: Option<String>,
+    compact_result_id: Option<String>,
 }
 impl LiveProtocol {
     pub fn new(request: &ChatTurnRequest) -> Self {
@@ -132,13 +160,22 @@ impl LiveProtocol {
             totals: json!({}),
             claude_totals: json!({}),
             claude_results: Default::default(),
+            compacting: request.compact_before_turn && request.provider_session_id.is_some(),
+            compact_confirmed: false,
+            compact_turn: None,
+            last_compaction_item: None,
+            compact_result_id: None,
         }
+    }
+    pub fn compacting(&self) -> bool {
+        self.compacting
     }
     pub fn ingest(&mut self, line: &str, input: &mut LiveInput) -> Vec<String> {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             return vec![line.into()];
         };
         let mut out = vec![];
+        input.compacting = self.compacting;
         let result = if input.codex {
             self.codex(&record, input, &mut out)
         } else {
@@ -156,6 +193,48 @@ impl LiveProtocol {
         input: &mut LiveInput,
         out: &mut Vec<Value>,
     ) -> Result<(), String> {
+        if record["type"] == "result"
+            && self.compact_result_id.as_deref() == record["uuid"].as_str()
+            && self.compact_result_id.is_some()
+        {
+            return Ok(());
+        }
+        if self.compacting && record["parent_tool_use_id"].is_null() {
+            if record["type"] == "system" && record["subtype"] == "compact_boundary" {
+                self.compact_confirmed = true;
+                return Ok(());
+            }
+            if record["type"] == "result" {
+                if record["is_error"] == true || !self.compact_confirmed {
+                    return Err(format!("Context compaction was not confirmed. Your next request was not sent; the existing conversation is preserved. {}", record["result"].as_str().unwrap_or("Retry or adjust automatic compaction in the chat context settings.")));
+                }
+                self.compacting = false;
+                input.compacting = false;
+                self.compact_result_id = record["uuid"].as_str().map(str::to_owned);
+                for key in [
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ] {
+                    self.claude_totals[key] = json!(record["usage"][key].as_u64().unwrap_or(0));
+                }
+                out.push(json!({"type":"context_compacted","id":"before-turn","before_turn":true}));
+                input.write_text(&build_input(&self.request)?)?;
+                input.claude_pending = 1;
+                while let Some(message) = input.queued.pop_front() {
+                    input.write(message.input)?;
+                    input.claude_pending += 1;
+                }
+                out.push(json!({"type":"agentdeck.initial-delivered"}));
+                return Ok(());
+            }
+            // Initialization binds the existing session, but compact output is not a user reply.
+            if record["type"] == "system" {
+                out.push(record);
+            }
+            return Ok(());
+        }
         if record["type"] == "result" && record["parent_tool_use_id"].is_null() {
             let id = record["uuid"]
                 .as_str()
@@ -233,7 +312,16 @@ impl LiveProtocol {
                     status["model"] = json!(self.request.model);
                 }
                 out.push(status);
-                input.write(json!({"id":3,"method":"turn/start","params":{"threadId":input.thread,"input":codex_input(&self.request)?}}))?;
+                if self.compacting {
+                    input.write(json!({"id":4,"method":"thread/compact/start","params":{"threadId":input.thread}}))?;
+                } else {
+                    self.start_initial(input)?;
+                }
+            } else if id == 4 {
+                if !record["error"].is_null() {
+                    return Err(format!("Context compaction could not start. Your next request was not sent; the existing conversation is preserved. {}", error_message(record)));
+                }
+                // This RPC acknowledges scheduling, not completion. Wait for turn/completed.
             } else if id == 3 {
                 if !record["error"].is_null() {
                     return Err(error_message(record));
@@ -294,6 +382,40 @@ impl LiveProtocol {
                 return Ok(());
             }
         }
+        if self.compacting {
+            match record["method"].as_str().unwrap_or("") {
+                "thread/tokenUsage/updated" => {
+                    let usage = &params["tokenUsage"]["last"];
+                    self.usage = json!({"input_tokens":usage["inputTokens"],"output_tokens":usage["outputTokens"],"cached_input_tokens":usage["cachedInputTokens"]});
+                }
+                "turn/started" => {
+                    self.compact_turn = params["turn"]["id"].as_str().map(str::to_owned)
+                }
+                "item/completed" if params["item"]["type"] == "contextCompaction" => {
+                    self.compact_confirmed = true
+                }
+                "thread/compacted" => self.compact_confirmed = true,
+                "turn/completed"
+                    if self.compact_turn.as_deref() == params["turn"]["id"].as_str() =>
+                {
+                    if params["turn"]["status"] != "completed" || !self.compact_confirmed {
+                        return Err("Context compaction did not complete. Your next request was not sent; the existing conversation is preserved. Retry or adjust automatic compaction in the chat context settings.".into());
+                    }
+                    self.compacting = false;
+                    input.compacting = false;
+                    self.last_compaction_item = Some("before-turn".into());
+                    self.totals = sum_usage(&self.totals, &self.usage);
+                    self.usage = json!({});
+                    out.push(
+                        json!({"type":"context_compacted","id":"before-turn","before_turn":true}),
+                    );
+                    self.start_initial(input)?;
+                }
+                "error" => return Err(error_message(&json!({"error":params["error"]}))),
+                _ => {}
+            }
+            return Ok(());
+        }
         match record["method"].as_str().unwrap_or("") {
             "turn/started"=>{input.turn=params["turn"]["id"].as_str().map(str::to_owned);input.started=true;out.push(json!({"type":"turn.started"}));}
             "item/agentMessage/delta"=>{
@@ -304,12 +426,17 @@ impl LiveProtocol {
             }
             "item/started"|"item/completed"=>{
                 if params["item"]["type"]=="userMessage" {return Ok(());}
+                if params["item"]["type"]=="contextCompaction" {
+                    self.last_compaction_item=params["item"]["id"].as_str().map(str::to_owned);
+                    if record["method"]=="item/completed" {out.push(json!({"type":"context_compacted","id":self.last_compaction_item}));}
+                    return Ok(());
+                }
                 out.push(json!({"type":if record["method"]=="item/started"{"item.started"}else{"item.completed"},"item":normalize_item(&params["item"])}));
             }
             "thread/tokenUsage/updated"=>{
                 let usage=&params["tokenUsage"]["last"];
                 self.usage=json!({"input_tokens":usage["inputTokens"],"output_tokens":usage["outputTokens"],"cached_input_tokens":usage["cachedInputTokens"]});
-                out.push(json!({"type":"turn.completed","usage":sum_usage(&self.totals,&self.usage)}));
+                out.push(json!({"type":"turn.completed","usage":sum_usage(&self.totals,&self.usage),"context_tokens":usage["inputTokens"].as_u64().unwrap_or(0)+usage["outputTokens"].as_u64().unwrap_or(0)}));
             }
             "turn/completed"=>{
                 if params["turn"]["status"]=="failed" {out.push(json!({"type":"error","message":params["turn"]["error"]["message"].as_str().unwrap_or("Codex turn failed")}));}
@@ -319,10 +446,13 @@ impl LiveProtocol {
                 input.start_queued()?;
             }
             "error"=>out.push(json!({"type":"error","message":params["error"]["message"].as_str().unwrap_or("Codex protocol error")})),
-            "thread/compacted"=>out.push(json!({"type":"context_compacted"})),
+            "thread/compacted"=>out.push(json!({"type":"context_compacted","id":self.last_compaction_item.as_deref().unwrap_or("automatic")})),
             _=>{}
         }
         Ok(())
+    }
+    fn start_initial(&self, input: &mut LiveInput) -> Result<(), String> {
+        input.write(json!({"id":3,"method":"turn/start","params":{"threadId":input.thread,"input":codex_input(&self.request)?}}))
     }
     fn drain_steers(&mut self, input: &mut LiveInput) -> Result<(), String> {
         while let Some(message) = input.queued.pop_front() {
@@ -409,6 +539,132 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+    fn written(bytes: &Arc<Mutex<Vec<u8>>>) -> String {
+        String::from_utf8(bytes.lock().unwrap().clone()).unwrap()
+    }
+    #[test]
+    fn codex_compaction_waits_for_confirmed_idle_turn_before_sending_original_input() {
+        let mut req = super::super::tests::request("codex");
+        req.provider_session_id = Some("existing".into());
+        req.compact_before_turn = true;
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        let mut protocol = LiveProtocol::new(&req);
+        protocol.ingest(r#"{"id":1,"result":{}}"#, &mut input);
+        protocol.ingest(
+            r#"{"id":2,"result":{"thread":{"id":"existing"}}}"#,
+            &mut input,
+        );
+        assert!(written(&bytes).contains("thread/compact/start"));
+        assert!(!written(&bytes).contains("turn/start"));
+        protocol.ingest(r#"{"id":4,"result":{}}"#, &mut input);
+        assert!(!written(&bytes).contains("turn/start"));
+        let addition = super::super::tests::request("codex");
+        assert_eq!(input.submit(&addition, "extra").unwrap(), "queued");
+        protocol.ingest(
+            r#"{"method":"turn/started","params":{"threadId":"existing","turn":{"id":"compact"}}}"#,
+            &mut input,
+        );
+        protocol.ingest(r#"{"method":"item/completed","params":{"threadId":"existing","item":{"id":"c","type":"contextCompaction"}}}"#, &mut input);
+        assert!(!written(&bytes).contains("turn/start"));
+        let records=protocol.ingest(r#"{"method":"turn/completed","params":{"threadId":"existing","turn":{"id":"compact","status":"completed"}}}"#, &mut input);
+        assert!(records
+            .iter()
+            .any(|r| r.contains("context_compacted") && r.contains("before_turn")));
+        assert_eq!(
+            written(&bytes).matches("\"method\":\"turn/start\"").count(),
+            1
+        );
+        assert!(written(&bytes).contains("untrusted"));
+        assert!(!protocol.compacting());
+        protocol.ingest(r#"{"id":3,"result":{"turn":{"id":"actual"}}}"#, &mut input);
+        assert!(written(&bytes).contains("turn/steer"));
+    }
+    #[test]
+    fn codex_compaction_failures_do_not_deliver_or_reset_the_pending_request() {
+        for failure in [
+            r#"{"id":4,"error":{"message":"Method not found"}}"#,
+            r#"{"method":"turn/completed","params":{"turn":{"id":"compact","status":"completed"}}}"#,
+            r#"{"method":"turn/completed","params":{"turn":{"id":"compact","status":"failed"}}}"#,
+        ] {
+            let mut req = super::super::tests::request("codex");
+            req.provider_session_id = Some("existing".into());
+            req.compact_before_turn = true;
+            let bytes = Arc::new(Mutex::new(vec![]));
+            let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+            let mut protocol = LiveProtocol::new(&req);
+            protocol.ingest(
+                r#"{"id":2,"result":{"thread":{"id":"existing"}}}"#,
+                &mut input,
+            );
+            protocol.ingest(
+                r#"{"method":"turn/started","params":{"turn":{"id":"compact"}}}"#,
+                &mut input,
+            );
+            let records = protocol.ingest(failure, &mut input);
+            assert!(records.iter().any(|r| r.contains("error")));
+            assert!(!written(&bytes).contains("turn/start"));
+            assert!(input.writer.is_none());
+        }
+    }
+    #[test]
+    fn fresh_threads_do_not_attempt_to_compact_empty_context() {
+        for provider in ["codex", "claude-code"] {
+            let mut req = super::super::tests::request(provider);
+            req.compact_before_turn = true;
+            assert!(!LiveProtocol::new(&req).compacting());
+            assert_eq!(initial_input(&req).unwrap(), build_input(&req).unwrap());
+        }
+    }
+    #[test]
+    fn claude_compacts_without_attachments_and_delivers_actual_and_queued_inputs_after_boundary() {
+        let mut req = super::super::tests::request("claude-code");
+        req.provider_session_id = Some("existing".into());
+        req.compact_before_turn = true;
+        assert!(initial_input(&req).unwrap().contains("/compact"));
+        assert!(!initial_input(&req).unwrap().contains("untrusted"));
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), false);
+        input.compacting = true;
+        let mut protocol = LiveProtocol::new(&req);
+        let mut extra = req.clone();
+        extra.prompt = "Queued instruction".into();
+        input.submit(&extra, "extra").unwrap();
+        assert!(written(&bytes).is_empty());
+        protocol.ingest(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Summary"}]}}"#,
+            &mut input,
+        );
+        protocol.ingest(
+            r#"{"type":"system","subtype":"compact_boundary"}"#,
+            &mut input,
+        );
+        assert!(written(&bytes).is_empty());
+        let events=protocol.ingest(r#"{"type":"result","uuid":"compact-result","is_error":false,"usage":{"input_tokens":100,"output_tokens":20}}"#,&mut input);
+        assert!(events.iter().any(|r| r.contains("context_compacted")));
+        assert!(written(&bytes).contains("untrusted"));
+        assert!(written(&bytes).contains("Queued instruction"));
+        assert_eq!(input.claude_pending, 2);
+        let events=protocol.ingest(r#"{"type":"result","uuid":"actual-result","usage":{"input_tokens":30,"output_tokens":10}}"#,&mut input);
+        assert!(events.iter().any(|r| r.contains("\"input_tokens\":130")));
+        assert!(input.writer.is_some());
+    }
+    #[test]
+    fn claude_success_without_compaction_boundary_is_not_confirmation() {
+        let mut req = super::super::tests::request("claude-code");
+        req.provider_session_id = Some("existing".into());
+        req.compact_before_turn = true;
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), false);
+        let mut protocol = LiveProtocol::new(&req);
+        let events = protocol.ingest(
+            r#"{"type":"result","is_error":false,"result":"Not enough messages to compact."}"#,
+            &mut input,
+        );
+        assert!(events.iter().any(|r| r.contains("not confirmed")));
+        assert!(written(&bytes).is_empty());
+        assert!(input.writer.is_none());
     }
     #[test]
     fn new_and_resumed_threads_apply_full_access_and_plan_overrides() {

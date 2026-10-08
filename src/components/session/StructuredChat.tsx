@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Download, FileText, FolderOpen, ImagePlus, LoaderCi
 import { useAppI18n } from "../../i18n";
 import { useSessionStore, type ClaudeSession } from "../../store/sessionStore";
 import { RUNNER_LABELS, useSettingsStore, type RunnerType } from "../../store/settingsStore";
-import { emptyThread, sendChatTurn, stopChatTurn, useChatStore, type ChatAttachment } from "../../store/chatStore";
+import { emptyThread, persistChatHistory, sendChatTurn, stopChatTurn, useChatStore, type ChatAttachment, type ChatMessage } from "../../store/chatStore";
 import { ProviderIcon } from "../ProviderIcon";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { ChatMarkdown, CopyButton } from "./ChatMarkdown";
@@ -19,6 +19,10 @@ import { CommandTextarea } from "./CommandTextarea";
 import { fallbackCommands, type AgentCatalogue } from "../../services/agentCommands";
 import { runChatCommand } from "../../services/chatCommands";
 import { commandCopy } from "./commandCopy";
+import { ChatContextControl } from "./ChatContextControl";
+import { contextCopy } from "./contextCopy";
+import { HISTORY_PAGE_SIZE } from "../../services/chatCompaction";
+import { matchesChatMessage, readChatHistory, searchChatHistory } from "../../services/chatHistory";
 
 interface PendingAttachment extends ChatAttachment { preview?: string }
 const CHAT_BRAND = "AGENTDECK / WORKSPACE";
@@ -27,12 +31,17 @@ function readBase64(file: File): Promise<string> { return new Promise((resolve, 
 export function StructuredChat({ session, visible, onNative, nativeLive = false }: { session: ClaudeSession; visible: boolean; onNative: (query?: string) => void; nativeLive?: boolean }) {
   const { t, locale } = useAppI18n(); const c = chatCopy(locale);
   const w = workflowCopy(locale);
+  const context = contextCopy(locale);
   const [catalogue, setCatalogue] = useState<AgentCatalogue>({ entries: fallbackCommands(session.runner), warnings: [] });
   const [browse, setBrowse] = useState<{ revision: number; filter: "all" | "skill" }>();
   const [commandNotice, setCommandNotice] = useState("");
   const thread = useChatStore(s => s.threads[session.id] ?? emptyThread);
   const worktreeReady = useSessionStore(s => s.worktreeReadyIds.has(session.id));
   const storageError = useChatStore(s => s.storageError);
+  const historyReady = useChatStore(s => s.historyReady);
+  const [historyPage, setHistoryPage] = useState<ChatMessage[]>();
+  const [searchResults, setSearchResults] = useState<ChatMessage[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [uploading, setUploading] = useState(false); const uploadingRef = useRef(false);
   const [error, setError] = useState(""); const [menu, setMenu] = useState(false);
@@ -46,6 +55,12 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   useEffect(() => { if (visible && !thread.messages.length) inputRef.current?.focus(); }, [visible]);
   useEffect(() => { if (follow && visible) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }, [thread.messages, thread.busy, follow, visible]);
   useEffect(() => { if (!thread.busy || !visible) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [thread.busy, visible]);
+  useEffect(() => {
+    if (!search) { setSearchResults([]); return; }
+    let cancelled = false;
+    const timer = setTimeout(() => { void persistChatHistory().then(() => searchChatHistory(session.id, search)).then(messages => { if (!cancelled) setSearchResults(messages); }).catch(() => { if (!cancelled) setError(context.historyError); }); }, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [search, session.id, context.historyError]);
   const addFiles = async (files: File[]) => {
     if (!files.length || uploadingRef.current) return;
     if (files.length + attachmentsRef.current.length > 12 || files.some(f => f.size > 20 * 1024 ** 2) || files.reduce((n, f) => n + f.size, 0) + attachmentsRef.current.reduce((n, f) => n + f.size, 0) > 40 * 1024 ** 2) { setError(c.maxFiles); return; }
@@ -62,7 +77,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   };
   const submit = async () => {
     if (nativeLive || uploading || !worktreeReady || (!thread.draft.trim() && !attachments.length)) return;
-    setError(""); setFollow(true); setSearch(null); setMenu(false);
+    setError(""); setFollow(true); setSearch(null); setHistoryPage(undefined); setMenu(false);
     try {
       if (thread.draft.trimStart().startsWith('/')) {
         if (attachments.length) throw new Error(commandCopy(locale).attachments);
@@ -73,12 +88,23 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
     const ok = await sendChatTurn(session.id, thread.draft.trim() || c.attachmentOnly, attachments.map(({ preview: _, ...file }) => file));
     if (ok) { attachments.forEach(a => a.preview && URL.revokeObjectURL(a.preview)); setAttachments([]); }
   };
-  const exportChat = () => {
-    const text = `# ${session.name}\n\n${thread.messages.map(m => `## ${m.role === "user" ? c.you : m.role === "tool" ? m.title || c.tools : RUNNER_LABELS[session.runner.type]}\n\n${m.text}${m.attachments?.length ? "\n\n" + m.attachments.map(a => `- ${a.name}`).join("\n") : ""}`).join("\n\n")}`;
+  const exportChat = async () => {
+    try {
+    await persistChatHistory();
+    const archived = await readChatHistory(session.id, undefined, Number.MAX_SAFE_INTEGER).catch(() => { if (thread.archivedCount) throw new Error(context.historyError); return []; });
+    const messages = [...new Map([...archived, ...useChatStore.getState().threads[session.id].messages].map(m => [m.id, m])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const text = `# ${session.name}\n\n${messages.map(m => `## ${m.role === "user" ? c.you : m.role === "tool" ? m.title || c.tools : RUNNER_LABELS[session.runner.type]}\n\n${m.text}${m.attachments?.length ? "\n\n" + m.attachments.map(a => `- ${a.name}`).join("\n") : ""}`).join("\n\n")}`;
     const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" })); const a = document.createElement("a"); a.href = url; a.download = `${session.name.replace(/[^\p{L}\p{N} _-]/gu, "").slice(0, 60) || "conversation"}.md`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch { setError(context.historyError); }
   };
-  const switchProvider = (type: RunnerType) => { if (type === session.runner.type || nativeLive || thread.busy) return; useSessionStore.getState().updateSession(session.id, { runner: useSettingsStore.getState().getRunnerConfigForType(type), providerSessionId: undefined }); patch({ providerSessionId: undefined, lastSentGoal: undefined, lastUsage: undefined, resolvedModel: undefined }); if (type === "gemini") onNative(); };
-  const filtered = search ? thread.messages.filter(m => `${m.title ?? ""} ${m.text} ${m.attachments?.map(a => a.name).join(" ") ?? ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())) : thread.messages;
+  const switchProvider = (type: RunnerType) => { if (type === session.runner.type || nativeLive || thread.busy) return; useSessionStore.getState().updateSession(session.id, { runner: useSettingsStore.getState().getRunnerConfigForType(type), providerSessionId: undefined }); patch({ providerSessionId: undefined, lastSentGoal: undefined, lastUsage: undefined, resolvedModel: undefined, contextPrompts: 0, contextTokens: 0, contextTokensEstimated: true, compacting: false }); if (type === "gemini") onNative(); };
+  const filtered = search ? [...new Map([...searchResults.filter(m => matchesChatMessage(m, search)), ...thread.messages.filter(m => matchesChatMessage(m, search))].map(m => [m.id, m])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).slice(-HISTORY_PAGE_SIZE) : historyPage ?? thread.messages.slice(-HISTORY_PAGE_SIZE);
+  const earlier = !search && (filtered[0]?.order ?? 0) > 0;
+  const loadEarlier = async () => {
+    if (loadingHistory) return; setLoadingHistory(true);
+    try { await persistChatHistory(); const messages = await readChatHistory(session.id, filtered[0]?.order); if (messages.length) { setHistoryPage(messages); setFollow(false); scrollRef.current?.scrollTo({ top: 0 }); } }
+    catch { setError(context.historyError); } finally { setLoadingHistory(false); }
+  };
   const activeMessage = thread.messages.find(m => m.turnId === thread.turnId);
   const elapsed = activeMessage ? Math.max(0, Math.floor((now - activeMessage.at) / 1000)) : 0;
   return <section className="ad-chat" aria-label={c.chat} onDragEnter={e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); dragDepth.current++; setDragging(true); } }} onDragOver={e => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }} onDragLeave={e => { e.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }} onDrop={e => { e.preventDefault(); dragDepth.current = 0; setDragging(false); void addFiles(Array.from(e.dataTransfer.files)); }}>
@@ -90,13 +116,14 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
         <div className="ad-agent-pills" role="group" aria-label={t("agents.title")}>{(Object.entries(RUNNER_LABELS) as [RunnerType, string][]).map(([type, label]) => <button key={type} className="ad-button" disabled={nativeLive || thread.busy} aria-pressed={type === session.runner.type} onClick={() => switchProvider(type)}><ProviderIcon provider={type} size={17} />{label}</button>)}</div>
         {session.providerSessionId && <p className="ad-hint">{c.restore}</p>}
       </div> : <div className="ad-chat-messages" role="log" aria-label={c.chat}>
+        {(earlier || historyPage || search) && <div className="ad-chat-history"><small>{search ? context.searchLimit : context.page}</small>{earlier && <button className="ad-button ad-button-ghost" disabled={loadingHistory} onClick={() => void loadEarlier()}>{context.older}</button>}{historyPage && <button className="ad-button ad-button-ghost" onClick={() => { setHistoryPage(undefined); setFollow(true); }}>{context.latest}</button>}</div>}
         {filtered.map(message => message.role === "tool" ? <details className="ad-chat-tool" key={message.id}><summary><TerminalSquare size={14} /><strong>{message.title || c.tools}</strong><span>{message.status === "completed" ? c.done : message.status}</span></summary><pre>{message.text}</pre></details> : <article key={message.id} className={`ad-message ad-message-${message.role}`}>
           <div className="ad-message-meta">{message.role === "assistant" ? <ProviderIcon provider={session.runner.type} size={19} /> : <span className="ad-user-avatar">{c.you.slice(0, 1)}</span>}<strong>{message.role === "user" ? c.you : RUNNER_LABELS[session.runner.type]}</strong>{message.parentId && <small className="ad-subagent-label" title={message.parentId}>{locale.startsWith("en") ? "Subagent" : "Subagente"} · {message.parentId.slice(-6)}</small>}<time>{new Date(message.at).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}</time><CopyButton text={message.text} />{message.role === "assistant" && <SaveResponseToMemory session={session} text={message.text} disabled={thread.busy} onError={setError} />}</div>
           <div className="ad-message-body">{message.role === "assistant" ? <ChatMarkdown text={message.text} /> : <p className="ad-user-text">{message.text}</p>}{message.role === "user" && message.status && <small className="ad-supplement-status" role="status" title={message.title}>{message.status === "accepted" ? w.accepted : message.status === "failed" ? w.failed : message.status === "queued" ? w.queued : w.sending}</small>}{!!message.attachments?.length && <div className="ad-message-files">{message.attachments.map((file, index) => <span key={index}><Paperclip size={13} />{file.name}</span>)}</div>}</div>
         </article>)}
         {search && !filtered.length && <p className="ad-hint">{c.noMatch}</p>}
       </div>}
-      {thread.busy && <div className="ad-chat-progress" role="status"><LoaderCircle size={16} className="ad-spin" /><span>{thread.messages.some(m => m.turnId === thread.turnId && m.role !== "user") ? c.working : c.starting}</span><time>{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</time></div>}
+      {thread.busy && <div className="ad-chat-progress" role="status"><LoaderCircle size={16} className="ad-spin" /><span>{thread.compacting ? context.compacting : thread.messages.some(m => m.turnId === thread.turnId && m.role !== "user") ? c.working : c.starting}</span><time>{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</time></div>}
       {thread.status === "stopped" && !thread.busy && <p className="ad-chat-progress">{c.stopped}</p>}
       {thread.diagnostic && <details className="ad-chat-diagnostics"><summary>{c.tools}</summary><pre>{thread.diagnostic}</pre></details>}
     </div>
@@ -113,8 +140,9 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
         <div className="ad-composer-footer"><div className="ad-add-context"><button className="ad-icon-button ad-add-button" aria-label={c.add} title={c.add} disabled={uploading} aria-expanded={menu} onClick={() => setMenu(!menu)}><Plus size={19} /></button>{menu && <><button className="ad-menu-dismiss" tabIndex={-1} aria-label={c.cancel} onClick={() => setMenu(false)} /><div className="ad-context-menu"><small>{c.add}</small><button onClick={() => { filesRef.current?.click(); setMenu(false); }}><ImagePlus size={16} />{c.files}<kbd>+</kbd></button><button onClick={() => { setShowGoal(!showGoal); setMenu(false); }}><Target size={16} />{c.goal}</button><button onClick={() => { setSketch(true); setMenu(false); }}><Pencil size={16} />{c.sketch}</button><button onClick={() => { setMenu(false); void invoke<string | null>("pick_folder").then(path => { if (path) patch({ draft: `${thread.draft}\n\n@${JSON.stringify(path)}`.trim() }); }).catch(e => setError(String(e))); }}><FolderOpen size={16} />{c.folder}</button></div></>}</div>
           <input hidden ref={filesRef} type="file" multiple onChange={e => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} aria-label={c.attach} />
           <AgentModelPicker runner={session.runner} workdir={session.worktreePath || session.workdir} disabled={thread.busy || nativeLive} onChange={value => useSessionStore.getState().updateSession(session.id, { runner: { ...session.runner, ...value } })} />
+          <ChatContextControl sessionId={session.id} disabled={nativeLive || session.runner.type === "gemini"} />
           {thread.busy && <button className="ad-button ad-chat-send" aria-label={c.stop} title={c.stop} onClick={() => void stopChatTurn(session.id)}><Square size={16} fill="currentColor" /></button>}
-          <button className="ad-button ad-button-primary ad-chat-send" aria-label={thread.busy ? w.supplement : t("chat.send")} title={thread.busy ? w.supplement : t("chat.send")} disabled={nativeLive || uploading || !worktreeReady || (!thread.draft.trim() && !attachments.length)} onClick={() => void submit()}>{uploading ? <LoaderCircle size={18} className="ad-spin" /> : <ArrowUp size={19} />}</button>
+          <button className="ad-button ad-button-primary ad-chat-send" aria-label={thread.busy ? w.supplement : t("chat.send")} title={thread.busy ? w.supplement : t("chat.send")} disabled={!historyReady || nativeLive || uploading || !worktreeReady || (!thread.draft.trim() && !attachments.length)} onClick={() => void submit()}>{uploading ? <LoaderCircle size={18} className="ad-spin" /> : <ArrowUp size={19} />}</button>
         </div>
       </div>
       <div className="ad-chat-footnote"><span>{uploading ? c.upload : thread.busy ? w.liveHint : c.footer}</span><span title={session.runner.fullAccess !== false ? w.fullHint : c.nativeHint}><ShieldCheck size={12} />{session.runner.mode === "plan" ? c.readOnly : session.runner.fullAccess !== false ? w.fullAccess : c.code}</span></div>
