@@ -1,7 +1,7 @@
 # Conversation context and history
 
 Automatic compaction is enabled for Claude Code and Codex structured chats.
-Open **Conversation context** beside the model picker to change the prompt or
+Open **Conversation context** in the composer's action row to change the prompt or
 context token limit, inspect the counters, or disable automatic compaction.
 Preferences are saved per conversation. Gemini uses the native terminal and its
 own context controls.
@@ -9,10 +9,22 @@ own context controls.
 ## When compaction runs
 
 Before a new request, Agent Deck checks whether the previous context contains at
-least 20 prompts or whether the estimated next context reaches 64,000 tokens.
+least 50 prompts or whether the estimated next context reaches 200,000 tokens.
 Either condition triggers compaction. The prompt limit accepts 5–100; the token
 limit accepts 8,000–500,000. These are application thresholds, not a guarantee
 that every selected model supports that context size.
+
+After a confirmed compaction, the token threshold waits until five new prompts
+have been accepted before it can trigger another application-requested compaction.
+This prevents compacting every request when a provider's summary or subsequent
+tool output remains above the configured limit. The prompt threshold still applies;
+provider-native automatic compaction remains independent of this interval.
+
+The enabled old default pair (20 prompts / 64,000 tokens) migrates once to the new
+defaults. Other custom limits and explicit opt-out remain unchanged. Policies saved
+by 0.6.4 include a revision marker, so explicitly choosing the old pair afterwards
+is preserved across restarts. Old policies do not record whether the default pair
+was explicitly selected; an enabled unversioned matching pair is treated as default.
 
 The check runs between responses. Messages submitted while an agent is working
 continue to use live input. While a pre-request compaction is running, additional
@@ -26,6 +38,9 @@ labels a conservative UTF-8 byte estimate. Tool activity, hidden provider contex
 and model-specific tokenization mean an estimate cannot be exact. Attachments and
 native history can require the provider's own context management before Agent Deck
 receives a measured context update.
+Subagent output is displayed and archived separately without being added to the
+main-agent estimate; any returned results included in the main context are covered
+by the provider's measured reading or main-agent output.
 
 ## Continuation and failures
 

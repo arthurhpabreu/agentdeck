@@ -1,5 +1,31 @@
 # Validation evidence
 
+## 0.6.4
+
+Validated locally on Windows on October 8, 2026.
+
+| Check | Result |
+| --- | --- |
+| TypeScript and production build | Passed; optimized Windows executable generated. Existing Vite chunk-size and mixed-import warnings remain. |
+| Translations and Rust formatting | Passed: 405 EN/PT/ES keys and `cargo fmt --check`. |
+| Playwright browser suite | 109 passed, including four new compaction frequency, migration and subagent regressions. |
+| Rust library suite | 136 passed, 6 optional tests ignored, no failures. |
+| Packaged memory MCP smoke test | 11 scenarios passed with 33 RPC requests against the 0.6.4 executable and isolated temporary storage; no model requests. |
+| Windows installers | x64 NSIS/MSI generated; version 0.6.4, publisher, containers, bundled license and unchanged MSI upgrade code verified. |
+| Release integrity | SHA-256 manifest includes both installers and LICENSE. Generated artifacts remain outside source control. |
+
+The new scenarios keep a context of 250,000 tokens after compaction and confirm
+both providers wait for five accepted prompts before the next token-triggered
+compaction, including after restart. Migration exercises unversioned old defaults
+from the localStorage cache and IndexedDB metadata, custom limits, explicit opt-out
+and a versioned explicit selection of the old pair. A 240,000-character subagent
+reply remains in the transcript without changing the main measured token count.
+Existing compaction sequencing, cancellation, history and composer layout coverage
+also passes. Browser tests mock provider boundaries; these checks do not establish
+live paid provider behavior or an interactive clean-machine upgrade. Providers
+retain native compaction and model context limits. Installers remain unsigned.
+GitHub CI validates the release branch independently before publication.
+
 ## 0.6.3
 
 Validated locally on Windows on October 8, 2026.

@@ -4,7 +4,7 @@ export function compactionCases(setup: (page: Page, locale?: string) => Promise<
   async function seed(page: Page, patch: object = {}) {
     await page.evaluate(async value => {
       const path = "/src/store/chatStore.ts"; const { useChatStore, chatHistoryReady } = await import(/* @vite-ignore */ path); await chatHistoryReady;
-      useChatStore.getState().patch("session", { providerSessionId: "existing-session", contextPrompts: 20, contextTokens: 1000, ...value });
+      useChatStore.getState().patch("session", { providerSessionId: "existing-session", contextPrompts: 20, contextTokens: 1000, compactionPolicy: { enabled: true, maxPrompts: 20, maxTokens: 64000, version: 2 }, ...value });
       (window as any).__autoComplete = true;
     }, patch);
   }
@@ -34,6 +34,61 @@ export function compactionCases(setup: (page: Page, locale?: string) => Promise<
     await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; await (await import(/* @vite-ignore */ path)).persistChatHistory(); });
     await page.reload(); await expect.poll(async () => (await state(page)).compactionPolicy.enabled).toBe(false);
     expect((await state(page)).compactionPolicy.maxPrompts).toBe(25);
+  });
+  for (const provider of ["Claude Code", "OpenAI Codex"]) test(`${provider} waits five prompts after compaction even when context remains above the token limit`, async ({ page }) => {
+    await setup(page); await openSession(page); await page.getByRole("button", { name: provider, exact: true }).click();
+    await seed(page, { contextPrompts: 2, contextTokens: 250000, contextTokensEstimated: provider === "Claude Code", compactionCount: 1, lastCompactedAt: Date.now(), compactionPolicy: { enabled: true, maxPrompts: 50, maxTokens: 200000, version: 2 } });
+    await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; await (await import(/* @vite-ignore */ path)).persistChatHistory(); });
+    await page.reload(); await openSession(page);
+    await page.evaluate(() => { (window as any).__autoComplete = true; });
+    for (let i = 0; i < 3; i++) { await send(page, `Continuar sem repetir compactação ${i}`); await expect.poll(async () => (await state(page)).busy).toBe(false); }
+    expect((await state(page)).contextPrompts).toBe(5);
+    expect((await state(page)).compactionCount).toBe(1);
+    await send(page, "Agora reavaliar o limite de tokens"); await expect.poll(async () => (await state(page)).busy).toBe(false);
+    expect((await state(page)).compactionCount).toBe(2);
+    const requests = await page.evaluate(() => (window as any).__calls.filter((c: any) => c.command === "start_chat_turn").map((c: any) => c.args.request));
+    expect(requests.map((r: any) => r.compactBeforeTurn)).toEqual([false, false, false, true]);
+    expect(requests.every((r: any) => r.providerSessionId === "existing-session")).toBe(true);
+  });
+  test("old enabled defaults migrate once while custom limits and opt-out survive cache and archive reloads", async ({ page }) => {
+    await page.addInitScript(() => {
+      if (localStorage.getItem("compaction-fixture-archive-only")) localStorage.removeItem("agentdeck-chat-v1");
+      if (localStorage.getItem("compaction-fixture-seeded")) return;
+      localStorage.setItem("compaction-fixture-seeded", "true");
+      const thread = (compactionPolicy: object) => ({ messages: [], draft: "", busy: false, compactionPolicy });
+      localStorage.setItem("agentdeck-chat-v1", JSON.stringify({ session: thread({ enabled: true, maxPrompts: 20, maxTokens: 64000 }), custom: thread({ enabled: true, maxPrompts: 35, maxTokens: 90000 }), off: thread({ enabled: false, maxPrompts: 20, maxTokens: 64000 }), explicit: thread({ enabled: true, maxPrompts: 20, maxTokens: 64000, version: 2 }) }));
+    });
+    await setup(page); await openSession(page);
+    const policies = () => page.evaluate(async () => { const path = "/src/store/chatStore.ts"; const store = await import(/* @vite-ignore */ path); await store.chatHistoryReady; return Object.fromEntries(Object.entries(store.useChatStore.getState().threads).map(([id, thread]: any) => [id, thread.compactionPolicy])); });
+    const expected = { session: { enabled: true, maxPrompts: 50, maxTokens: 200000, version: 2 }, custom: { enabled: true, maxPrompts: 35, maxTokens: 90000, version: 2 }, off: { enabled: false, maxPrompts: 20, maxTokens: 64000, version: 2 }, explicit: { enabled: true, maxPrompts: 20, maxTokens: 64000, version: 2 } };
+    expect(await policies()).toMatchObject(expected);
+    await page.locator(".ad-chat-context summary").click();
+    await expect(page.getByRole("spinbutton", { name: "Limite de prompts", exact: true })).toHaveValue("50");
+    await expect(page.getByRole("spinbutton", { name: "Limite de tokens de contexto", exact: true })).toHaveValue("200000");
+    await page.evaluate(async () => {
+      const path = "/src/store/chatStore.ts"; const store = await import(/* @vite-ignore */ path); await store.persistChatHistory();
+      const historyPath = "/src/services/chatHistory.ts"; const history = await import(/* @vite-ignore */ historyPath);
+      await history.saveChatHistory("session", { ...store.useChatStore.getState().threads.session, compactionPolicy: { enabled: true, maxPrompts: 20, maxTokens: 64000 } }, []);
+      localStorage.setItem("compaction-fixture-archive-only", "true"); localStorage.removeItem("agentdeck-chat-v1");
+    });
+    await page.reload(); expect(await policies()).toMatchObject(expected);
+  });
+  test("subagent output cannot inflate the main measured context or trigger compaction", async ({ page }) => {
+    await setup(page); await openSession(page); await seed(page, { contextPrompts: 1 });
+    await page.evaluate(() => { (window as any).__autoComplete = false; }); await send(page);
+    await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
+    await page.evaluate(() => {
+      const w = window as any; const turnId = w.__chatTurns.session;
+      w.__emit("chat-event", { sessionId: "session", turnId, kind: "status", status: "running", contextTokens: 1000 });
+      w.__emit("chat-event", { sessionId: "session", turnId, kind: "text", itemId: "child-output", parentId: "child", text: "a".repeat(240000) });
+      w.__emit("chat-event", { sessionId: "session", turnId, kind: "status", parentId: "child", contextTokens: 900000, usage: { input_tokens: 900000, output_tokens: 200000 } });
+      w.__emit("chat-event", { sessionId: "session", turnId, kind: "done", status: "completed" });
+    });
+    expect((await state(page)).contextTokens).toBe(1000); expect((await state(page)).contextTokensEstimated).toBe(false);
+    expect((await state(page)).messages.find((m: any) => m.id.endsWith(":child-output")).text.length).toBe(240000);
+    await send(page, "Continuar usando apenas o contexto principal");
+    const flags = await page.evaluate(() => (window as any).__calls.filter((c: any) => c.command === "start_chat_turn").map((c: any) => c.args.request.compactBeforeTurn));
+    expect(flags).toEqual([false, false]);
   });
   test("failed compaction preserves the unsent draft and binding without resetting counters", async ({ page }) => {
     await setup(page); await openSession(page); await seed(page);

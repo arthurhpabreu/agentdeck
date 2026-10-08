@@ -7,7 +7,7 @@ import { useSessionStore } from "./sessionStore";
 import { useWorkspaceStore } from "./workspaceStore";
 import { useAgentActivityStore } from "./agentActivityStore";
 import { useAgentObservabilityStore } from "./agentObservabilityStore";
-import { type CompactionPolicy, compactionPolicy, estimateTokens, residentMessages, shouldCompact } from "../services/chatCompaction";
+import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, residentMessages, shouldCompact } from "../services/chatCompaction";
 import { deleteChatHistory, restoreChatHistory, saveChatHistory } from "../services/chatHistory";
 
 export interface ChatAttachment { name: string; path: string; mimeType: string; size: number }
@@ -33,7 +33,7 @@ function restore(): Record<string, ChatThread> {
     return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value && Array.isArray((value as ChatThread).messages)).map(([id, value]) => {
       const thread = value as ChatThread;
       const messages = thread.messages.map((m, i) => ({ ...m, order: m.order ?? i }));
-      return [id, { ...thread, messages, compactionPolicy: compactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + estimateTokens(m.text), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined }];
+      return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + estimateTokens(m.text), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined }];
     }));
   } catch { return {}; }
 }
@@ -100,7 +100,7 @@ export const useChatStore = create<{
       const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? Date.now(), order: previous?.order ?? old.nextMessageOrder ?? 0, title: e.title ?? previous?.title, status: e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, text: text.length > 524_288 ? text.slice(0, 524_288) + "\n[output truncated]" : text };
       if (!previous) next.nextMessageOrder = (old.nextMessageOrder ?? 0) + 1;
       const added = text.slice(previous?.text.length ?? 0);
-      if (added) { next.contextTokens = (next.contextTokens ?? 0) + estimateTokens(added); next.contextTokensEstimated = true; }
+      if (added && !message.parentId) { next.contextTokens = (next.contextTokens ?? 0) + estimateTokens(added); next.contextTokensEstimated = true; }
       next.messages = index < 0 ? [...old.messages, message] : old.messages.map((m, i) => i === index ? message : m);
     }
     return { threads: { ...s.threads, [e.sessionId]: next } };

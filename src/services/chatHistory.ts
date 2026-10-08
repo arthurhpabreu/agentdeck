@@ -1,5 +1,5 @@
 import type { ChatMessage, ChatThread } from "../store/chatStore";
-import { HISTORY_PAGE_SIZE } from "./chatCompaction";
+import { HISTORY_PAGE_SIZE, restoreCompactionPolicy } from "./chatCompaction";
 
 const DATABASE = "agentdeck-chat-history-v1";
 let database: Promise<IDBDatabase> | undefined;
@@ -44,7 +44,7 @@ export async function restoreChatHistory(): Promise<Record<string, ChatThread>> 
   const threads: Record<string, ChatThread> = {};
   for (const record of metadata) {
     const messages = await readChatHistory(record.id);
-    threads[record.id] = { ...record.thread, messages: messages.map(m => m.status === "queued" || m.status === "sending" ? { ...m, status: "failed" } : m), archivedCount: Math.max(0, record.total - messages.length), busy: false, compacting: false, turnId: undefined, status: undefined };
+    threads[record.id] = { ...record.thread, compactionPolicy: restoreCompactionPolicy(record.thread.compactionPolicy), messages: messages.map(m => m.status === "queued" || m.status === "sending" ? { ...m, status: "failed" } : m), archivedCount: Math.max(0, record.total - messages.length), busy: false, compacting: false, turnId: undefined, status: undefined };
   }
   return threads;
 }

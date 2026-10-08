@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.4 — 2026-10-08
+
+### Changed
+
+- Automatic compaction defaults increase from 20 prompts / 64,000 context tokens
+  to 50 prompts / 200,000 tokens. Existing enabled policies using exactly the old
+  default pair migrate once; other custom limits and explicit opt-out are retained.
+- After confirmed compaction, the application waits for five accepted prompts
+  before requesting another compaction by token count. Prompt thresholds still
+  apply, and providers retain their own native context protection.
+
+### Fixed
+
+- Subagent output no longer inflates the main agent's estimated context or changes
+  a measured main-context reading into an estimate. Subagent messages still appear
+  in the conversation and are saved in the local archive.
+- Browser regressions cover high post-compaction context, both providers, restart
+  persistence, cache/archive policy migration, custom limits and subagent isolation.
+
 ## 0.6.3 — 2026-10-08
 
 ### Fixed
