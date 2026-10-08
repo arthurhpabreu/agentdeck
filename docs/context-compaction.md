@@ -69,8 +69,10 @@ and [Claude Agent SDK commands](https://code.claude.com/docs/en/agent-sdk/slash-
 ## Terminal activity and recovery
 
 Tool cards show the command, working directory, available output and exit status
-reported by the provider. Running tools expand automatically; long output starts
-with its latest lines and can be expanded or copied. Codex streams output deltas;
+reported by the provider. Tool details start collapsed, including running, failed
+and approval-blocked tools. Click the summary to open or close a card; incoming
+output and status changes preserve your choice. Long output starts with its latest
+lines and can be expanded or copied. Codex streams output deltas;
 Claude shows the progress and results exposed by its CLI protocol.
 
 The activity indicator separates the last meaningful event from process heartbeats.

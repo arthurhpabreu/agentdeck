@@ -403,5 +403,22 @@
   "terminalPanel.collapse": "Collapse terminal",
   "terminalPanel.tabs": "Project terminals",
   "terminalPanel.noProject": "Open a project to use the terminal.",
-  "terminalPanel.preparing": "Preparing terminal…"
+  "terminalPanel.preparing": "Preparing terminal…",
+  "workspace.colorPresets": "Suggested colors",
+  "workspace.customColor": "Custom color",
+  "workspace.colorHex": "Color HEX code",
+  "workspace.colorPreview": "Preview",
+  "workspace.colorInvalid": "Use # and six hexadecimal digits, such as #1a9b8c.",
+  "workspace.editColor": "Color for {{name}}",
+  "colors.teal": "Teal",
+  "colors.cyan": "Cyan",
+  "colors.sky": "Sky blue",
+  "colors.indigo": "Indigo",
+  "colors.violet": "Violet",
+  "colors.pink": "Pink",
+  "colors.rose": "Rose",
+  "colors.lime": "Lime",
+  "colors.amber": "Amber",
+  "colors.brown": "Brown",
+  "colors.slate": "Slate"
 }

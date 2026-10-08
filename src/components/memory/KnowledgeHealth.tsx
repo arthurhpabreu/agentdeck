@@ -3,6 +3,7 @@ import { useAppI18n } from "../../i18n";
 import { knowledgeCommands, type KnowledgeHealth as Health } from "../../services/knowledgeCommands";
 import { contextCopy } from "./contextCopy";
 import "./contextSources.css";
+import { KnowledgeLimitDetails } from "./KnowledgeLimitDetails";
 
 export function KnowledgeHealth({ projectPath }: { projectPath?: string }) {
   const { locale } = useAppI18n(); const c = contextCopy(locale);
@@ -22,9 +23,9 @@ export function KnowledgeHealth({ projectPath }: { projectPath?: string }) {
     <div><strong>{c.health}</strong><button type="button" className="ad-button" disabled={busy} onClick={() => void check()}>{busy ? c.checking : c.check}</button></div>
     {error && <p role="alert">{error}</p>}
     {health && <><p role={health.status === "unavailable" || health.status === "limited" ? "alert" : "status"}>{c[health.status]}{health.status === "ready" || health.status === "limited" ? ` · ${health.noteCount} ${c.notes}` : ""}</p>
-      {health.status === "limited" && <p>{c.index_limited}</p>}
+      {health.status === "limited" && <KnowledgeLimitDetails diagnostics={health.diagnostics} />}
       <small>{c.checked}: {new Date(health.checkedAt).toLocaleString(locale)}</small>
-      <small>{c.limits}: {health.maxNotes} {c.notes} · {health.maxIndexBytes / 1024 / 1024} {c.mib} · {health.maxNoteBytes / 1024} {c.kib} {c.perNote}</small>
+      <small>{c.limits}: {health.maxNotes.toLocaleString(locale)} {c.notes} · {health.maxIndexBytes / 1024 / 1024} {c.mib} · {health.maxNoteBytes / 1024 / 1024} {c.mib} {c.perNote}</small>
     </>}
   </section>;
 }

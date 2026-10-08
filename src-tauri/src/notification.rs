@@ -1,3 +1,6 @@
+#[path = "completion_notifications.rs"]
+pub(crate) mod completion;
+
 // Native notifications with click callbacks on macOS.
 //
 // tauri-plugin-notification uses notify-rust. Although notify-rust depends on
@@ -115,6 +118,12 @@ pub fn send_notification_with_callback(
 
     if !crate::integration_control::notifications_and_hooks_enabled(&app) {
         eprintln!("[notification] skipped because notifications and hooks are disabled");
+        return Ok(());
+    }
+    if session_id
+        .as_deref()
+        .is_some_and(|session| crate::chat::is_session_running(&app, session))
+    {
         return Ok(());
     }
 

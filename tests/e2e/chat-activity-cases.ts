@@ -7,7 +7,7 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
   }
-  test("terminal command and output stay visible while running and survive completion and reload", async ({ page }) => {
+  test("tool details stay collapsed until opened and retain output after completion and reload", async ({ page }) => {
     await start(page);
     await page.evaluate(() => {
       const w = window as any;
@@ -17,9 +17,21 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
       w.__emit("chat-event", { ...base, elapsedSeconds: 65, status: "running" });
     });
     const tool = page.locator(".ad-tool-card").filter({ hasText: "pnpm build" });
-    await expect(tool).toHaveAttribute("open", "");
+    await expect(tool).not.toHaveAttribute("open");
+    await expect(tool.locator(".ad-tool-body")).toHaveCount(0);
     await expect(tool.locator("summary")).toContainText("Executando");
     await expect(tool.locator(".ad-tool-duration")).toHaveText("1:05");
+    for (const [status, label] of [["failed", "Falhou"], ["blocked", "Aguardando aprovação"]]) {
+      await page.evaluate(status => {
+        const w = window as any;
+        w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool", itemId: "terminal-visible", status });
+      }, status);
+      await expect(tool.locator("summary")).toContainText(label);
+      await expect(tool).not.toHaveAttribute("open");
+      await expect(tool.locator(".ad-tool-body")).toHaveCount(0);
+    }
+    await tool.locator("summary").click();
+    await expect(tool).toHaveAttribute("open", "");
     await expect(tool.locator(".ad-tool-command pre")).toHaveText("pnpm build");
     await expect(tool.locator(".ad-tool-result pre")).toContainText("Compiling application");
     await expect(page.locator(".ad-turn-activity-detail")).toContainText("pnpm build");
@@ -40,6 +52,7 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     if (await open.count()) await open.first().click();
     const restored = page.locator(".ad-tool-card").filter({ hasText: "pnpm build" });
     await expect(restored.locator("summary")).toContainText("pnpm build");
+    await expect(restored).not.toHaveAttribute("open");
     await restored.locator("summary").click();
     await expect(restored.locator(".ad-tool-command pre")).toHaveText("pnpm build");
     await expect(restored.locator(".ad-tool-result pre")).toContainText("Build complete");
@@ -56,6 +69,9 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
       w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool", itemId: "large-output", title: "Terminal", command: "pnpm test", output: "FIRST_LINE\n" + "test output\n".repeat(2000) + "LATEST_LINE", status: "running" });
     });
     const tool = page.locator(".ad-tool-card").filter({ hasText: "pnpm test" });
+    await expect(tool).not.toHaveAttribute("open");
+    await tool.locator("summary").focus();
+    await page.keyboard.press("Enter");
     await expect(tool.locator(".ad-tool-result pre")).toContainText("LATEST_LINE");
     await expect(tool.locator(".ad-tool-result pre")).not.toContainText("FIRST_LINE");
     expect((await tool.locator(".ad-tool-result pre").textContent())!.length).toBeLessThanOrEqual(8000);
@@ -63,14 +79,27 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await expect(tool.locator(".ad-tool-result pre")).toContainText("FIRST_LINE");
     await tool.getByRole("button", { name: "Ver últimas linhas", exact: true }).click();
     await expect(tool.locator(".ad-tool-result pre")).not.toContainText("FIRST_LINE");
+    await tool.locator("summary").click();
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool", itemId: "large-output", output: "\nMORE_OUTPUT", delta: true, status: "running" });
+    });
+    await expect(tool).not.toHaveAttribute("open");
+    await tool.locator("summary").click();
+    await expect(tool.locator(".ad-tool-result pre")).toContainText("MORE_OUTPUT");
   });
   test("silent activity exposes recovery controls without claiming the agent has stopped", async ({ page }) => {
+    await page.clock.install();
     await start(page);
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await page.evaluate(async () => {
       const path = "/src/store/chatStore.ts"; const store = await import(/* @vite-ignore */ path);
-      store.useChatStore.getState().patch("session", { status: "reasoning", turnStartedAt: Date.now() - 90_000, lastEventAt: Date.now() - 70_000, lastHeartbeatAt: Date.now() });
+      store.useChatStore.getState().patch("session", { status: "reasoning", turnStartedAt: Date.now() - 150_000, lastEventAt: Date.now() - 119_000, lastHeartbeatAt: Date.now() });
     });
     await expect(page.locator(".ad-chat-progress")).toContainText("Agente pensando");
+    await expect(page.locator(".ad-chat-stall")).toHaveCount(0);
+    await expect(page.getByText("Atividade do agente", { exact: true })).toHaveCount(0);
+    await page.clock.runFor(2000);
     await expect(page.locator(".ad-chat-stall")).toContainText("Sem nova atividade há");
     await expect(page.getByRole("button", { name: "Verificar processo", exact: true })).toBeVisible();
     await expect(page.locator(".ad-chat-stall").getByRole("button", { name: "Parar resposta", exact: true })).toBeVisible();

@@ -10,6 +10,8 @@
 .ad-source-health small { display: block; margin-top: 6px; }
 .ad-source-warning { border-inline-start: 3px solid var(--ci-yellow-dark, #b88742); padding: 10px 12px; margin: 12px 0; background: var(--ci-hover); font-size: 12px; overflow-wrap: anywhere; }
 .ad-source-warning p { line-height: 1.6; }
+.ad-source-limit-details { padding-inline-start: 18px; margin: 8px 0; line-height: 1.7; }
+.ad-source-limit-details li + li { margin-top: 6px; }
 .ad-worktree-dialog select { display: block; width: 100%; margin: 8px 0; padding: 8px; color: var(--ci-text); background: var(--ci-surface); border: 1px solid var(--ci-border); }
 .ad-worktree-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .ad-worktree-notice { color: var(--ci-text-muted); font-size: 11px; line-height: 1.5; flex-basis: 100%; }

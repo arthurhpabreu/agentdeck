@@ -139,7 +139,6 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
       </div>}
       {thread.busy && <ChatTurnActivity thread={thread} sessionId={session.id} visible={visible} />}
       {(thread.status === "stopped" || thread.status === "interrupted") && !thread.busy && <p className="ad-chat-progress">{c.stopped}</p>}
-      {thread.diagnostic && <details className="ad-chat-diagnostics"><summary>{c.tools}</summary><pre>{thread.diagnostic}</pre></details>}
     </div>
     {!follow && thread.messages.length > 0 && <button className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => { setFollow(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><ArrowDown size={16} /></button>}
     <div className="ad-chat-bottom">

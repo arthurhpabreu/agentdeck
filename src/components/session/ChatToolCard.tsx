@@ -21,14 +21,13 @@ function legacyCommand(message: ChatMessage): string | undefined {
 export const ChatToolCard = memo(function ChatToolCard({ message, active }: { message: ChatMessage; active: boolean }) {
   const { locale } = useAppI18n(); const c = chatActivityCopy(locale);
   const running = active && [undefined, "running", "in_progress", "inProgress", "started", "pending", "queued"].includes(message.status);
-  const [open, setOpen] = useState(running || message.status === "failed" || message.status === "blocked");
+  const [open, setOpen] = useState(false);
   const [fullOutput, setFullOutput] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null); const followOutput = useRef(true);
   const legacyInput = legacyCommand(message);
   const command = message.command || legacyInput;
   const output = message.output ?? (command === message.text || legacyInput ? "" : message.text);
   const shownOutput = fullOutput ? output : output.slice(-OUTPUT_PREVIEW_LIMIT);
-  useEffect(() => { if (message.status === "failed" || message.status === "blocked") setOpen(true); }, [message.status]);
   useEffect(() => { if (open && followOutput.current && running) outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight }); }, [shownOutput, open, running]);
   const status = !active && ["running", "in_progress", "inProgress", "started", "pending", "queued"].includes(message.status ?? "") ? "interrupted" : message.status ?? (active ? "running" : "completed");
   return <details className={`ad-chat-tool ad-tool-card ${running ? "is-running" : ""}`} open={open} onToggle={e => setOpen(e.currentTarget.open)}>

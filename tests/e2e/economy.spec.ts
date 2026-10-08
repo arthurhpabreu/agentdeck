@@ -51,6 +51,14 @@ async function setupEconomy(page: Page, available = true) {
 test("token economy separates measured RTK estimates from CLI usage and persists the shared toggle", async ({ page }) => {
   await setupEconomy(page);
   const panel = page.getByRole("dialog", { name: "Economia de tokens" });
+  const integrations = panel.getByLabel("Integrações RTK");
+  await expect(integrations.getByText("Claude Code", { exact: true })).toBeVisible();
+  await expect(integrations.getByText("Codex", { exact: true })).toBeVisible();
+  await expect(integrations).toContainText("/hooks");
+  await expect(integrations).not.toContainText("Adaptador Codex disponível");
+  await page.evaluate(() => { (window as any).__economyStatus.codexHookAvailable = true; });
+  await panel.getByRole("button", { name: "Atualizar economia de tokens", exact: true }).click();
+  await expect(integrations).toContainText("Adaptador Codex disponível");
   await expect(panel.getByRole("heading", { name: "Histórico do RTK no Agentdeck" })).toBeVisible();
   await expect(panel.getByText("≈ 75%", { exact: true })).toBeVisible();
   await expect(panel.getByText("≈ 7.500", { exact: true })).toBeVisible();

@@ -11,7 +11,7 @@ import { workflowCopy } from "../session/workflowCopy";
 const INSTALL_COMMAND = /Win/i.test(navigator.platform) ? "winget install rtk-ai.rtk" : "cargo install --git https://github.com/rtk-ai/rtk";
 
 export function TokenEconomyControl({ disabled = false, visible = true, provider, workdir, sessionId }: { disabled?: boolean; visible?: boolean; provider?: RunnerType; workdir?: string; sessionId?: string }) {
-  const { locale } = useAppI18n();
+  const { locale, t } = useAppI18n();
   const m = tokenEconomyMessages(locale);
   const w = workflowCopy(locale);
   const [scope, setScope] = useState<TokenEconomyScope>("agentdeck");
@@ -68,8 +68,11 @@ export function TokenEconomyControl({ disabled = false, visible = true, provider
       <header><div><h3>{m.title}</h3><p>{status?.available ? m.ready : status ? m.missing : m.checking}</p></div><button type="button" className="ad-economy-icon" aria-label={m.close} title={m.close} onClick={close}><X size={16} /></button></header>
       <div className="ad-economy-setting"><div><strong>{m.toggle}</strong><p>{changing ? m.saving : disabled ? m.busy : m.future}</p></div><button type="button" className="ad-economy-switch" role="switch" aria-label={m.toggle} aria-checked={status?.enabled === true} disabled={disabled || changing || !status || !desktop} onClick={() => void setEnabled(!status?.enabled, workdir, scope)}><span>{changing && <LoaderCircle size={10} />}</span></button></div>
       <p className="ad-economy-description">{m.description}</p>
-      {(provider === "claude-code" || provider === "codex") && <p className="ad-economy-description">{provider === "codex" ? m.codexDetail : m.claudeDetail}</p>}
-      {status && <div className="ad-economy-capabilities"><span>{m.prompt}</span>{status.available && <span>{status.version || m.ready}</span>}{provider === "claude-code" && status.claudeHookAvailable && <span>{m.hook}</span>}</div>}
+      <div className="ad-economy-integrations" aria-label={m.integrations}>
+        <div data-current={provider === "claude-code"}><strong>{t("notifications.claudeCode")}</strong><p>{m.claudeDetail}</p>{status?.claudeHookAvailable && <small>{m.hook}</small>}</div>
+        <div data-current={provider === "codex"}><strong>{t("notifications.codex")}</strong><p>{m.codexDetail}</p>{status?.codexHookAvailable && <small>{m.codexHook}</small>}</div>
+      </div>
+      {status && <div className="ad-economy-capabilities"><span>{m.prompt}</span>{status.available && <span>{status.version || m.ready}</span>}</div>}
       {!desktop && <p className="ad-economy-notice">{m.desktop}</p>}
       {desktop && !status && !error && <p className="ad-economy-notice" role="status">{m.pending}</p>}
       {error && <p className="ad-economy-notice is-error" role="alert">{m.error}</p>}

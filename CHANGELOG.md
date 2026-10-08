@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.6 — 2026-10-08
+
+### Changed
+
+- Chat tool cards start collapsed, including running tools, failures and approval
+  requests. Click the summary to inspect command details and output.
+- Incoming output and status changes preserve the user's open/closed choice;
+  reloading the app starts with compact cards.
+- Removed the redundant agent activity disclosure. The inactivity notice now
+  appears after two minutes without substantive activity.
+- Desktop notifications occur once after a successful top-level response finishes
+  and no queued input remains. Tools, progress, compaction, errors, interruption
+  and generic terminal waiting events no longer trigger completion notifications.
+- Documents and Shared Memory share scope controls, project selection and search
+  styling. Settings switches support keyboard activation and themed controls use
+  consistent spacing and colors.
+- Projects offer 18 color presets, a native color picker and validated hex input.
+  Existing project colors can be edited without cycling through every preset.
+- Markdown indexing supports up to 1 MiB per note, with specific diagnostics for
+  truncated notes, unreadable files/folders and index limits. The total limits
+  remain 3,000 notes and 16 MiB of text.
+- The RTK panel describes Claude and Codex separately, including Codex's native
+  hook authorization requirement. Direct RTK commands remain available through
+  agent guidance independently of automatic hook rewriting.
+
+### Fixed
+
+- Codex RTK setup no longer duplicates inherited user hooks in session arguments;
+  repeated setup preserves explicit hooks without adding the adapter twice.
+  Re-enabling economy also refreshes guidance in existing conversations.
+- Vaults with exactly 3,000 Markdown notes no longer report a note-count limit
+  merely because ignored files remain. Larger notes within the new per-note limit
+  are indexed in full, including searchable content at their end.
+
 ## 0.6.5 — 2026-10-08
 
 ### Changed

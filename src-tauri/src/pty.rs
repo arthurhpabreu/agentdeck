@@ -121,6 +121,7 @@ pub async fn start_pty_session(
     use base64::Engine;
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     let _launch_guard = crate::cli_updates::launch_guard()?;
+    let notification_prompt = initial_prompt.clone();
 
     let expanded = expand_path(&workdir);
     let project_path = env
@@ -406,6 +407,7 @@ pub async fn start_pty_session(
         );
     }
 
+    crate::notification::completion::reset_terminal(&session_id, notification_prompt.as_deref());
     // Reader thread: forward PTY output and detect state transitions.
     let _ = app.emit("pty-started", serde_json::json!({ "session_id": session_id, "pid": pid, "command": resolved_command, "workdir": expanded }));
     let app_r = app.clone();
@@ -478,6 +480,7 @@ pub async fn start_pty_session(
             return;
         }
         killers.remove(&session_id);
+        crate::notification::completion::forget_terminal(&session_id);
         let writer = pty_writer_map(&app_wait)
             .lock()
             .unwrap()
@@ -532,6 +535,7 @@ pub async fn send_pty_query(
     session_id: String,
     query: String,
 ) -> Result<(), String> {
+    let notification_prompt = query.clone();
     let metadata = pty_session_meta_map(&app)
         .lock()
         .ok()
@@ -579,6 +583,7 @@ pub async fn send_pty_query(
         writer
             .flush()
             .map_err(|e| crate::i18n::interface_text(&app, "native.ptyWrite", &e.to_string()))?;
+        crate::notification::completion::begin_terminal(&session_id, Some(&notification_prompt));
         if delivered_guidance {
             crate::token_economy::mark_guidance_delivered(&provider, &session_id);
         }
@@ -620,6 +625,7 @@ pub fn resize_pty(
 /// Stop a PTY session.
 #[tauri::command]
 pub fn stop_pty_session(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    crate::notification::completion::stop_terminal(&session_id);
     let mut had_session = false;
     {
         let km = pty_killer_map(&app);
@@ -656,6 +662,7 @@ pub fn stop_pty_session(app: tauri::AppHandle, session_id: String) -> Result<(),
             serde_json::json!({ "session_id": session_id, "stopped": true }),
         );
     }
+    crate::notification::completion::forget_terminal(&session_id);
     Ok(())
 }
 

@@ -1123,47 +1123,62 @@ pub fn trust_workspace(path: String) -> Result<(), String> {
     Ok(())
 }
 
-fn codex_notify_message(
-    locale: crate::i18n::AppLocale,
-    json: &Value,
-) -> Option<(String, String, String)> {
-    let notification_type = json
-        .get("type")
-        .or_else(|| json.get("event"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?
-        .to_string();
+fn hook_prompt(json: &Value) -> Option<&str> {
+    json["prompt"]
+        .as_str()
+        .or_else(|| json["input-messages"].as_array()?.last()?.as_str())
+}
 
-    let title = json
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .unwrap_or_else(|| "Codex".to_string());
+fn completed_hook_turn(json: &Value) -> Option<String> {
+    let turn = json["turn-id"]
+        .as_str()
+        .or_else(|| json["turn_id"].as_str())?
+        .trim();
+    if turn.is_empty() || turn.len() > 256 {
+        return None;
+    }
+    let thread = json["thread-id"]
+        .as_str()
+        .or_else(|| json["thread_id"].as_str())
+        .unwrap_or("");
+    if thread.len() > 256 {
+        return None;
+    }
+    Some(format!("{thread}:{turn}"))
+}
 
-    let message = [
-        json.get("message"),
-        json.get("last-assistant-message"),
-        json.get("last_assistant_message"),
-        json.get("summary"),
-        json.get("detail"),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(|value| value.as_str())
-    .map(str::trim)
-    .find(|s| !s.is_empty())
-    .map(ToString::to_string)
-    .unwrap_or_else(|| match notification_type.as_str() {
-        "agent-turn-complete" => {
-            crate::i18n::translate(locale, "notifications.codex_turn_complete", &[])
+fn is_completion_hook(source: HookSource, event: &str, json: &Value) -> bool {
+    if crate::notification::completion::is_child_event(json)
+        || json["is_error"] == true
+        || json["stop_hook_active"] == true
+        || hook_prompt(json)
+            .and_then(|prompt| prompt.split_whitespace().next())
+            .is_some_and(|word| word.eq_ignore_ascii_case("/compact"))
+        || ["status", "turn_status", "turn-status"].iter().any(|key| {
+            json[*key].as_str().is_some_and(|status| {
+                matches!(
+                    status,
+                    "error" | "failed" | "interrupted" | "cancelled" | "stopped"
+                )
+            })
+        })
+    {
+        return false;
+    }
+    // Codex uses one bridge per platform. Ignore a leftover legacy bridge so a
+    // Stop hook and notify callback cannot both announce the same completion.
+    match source {
+        HookSource::ClaudeCode => event == "Stop",
+        HookSource::Codex if cfg!(unix) => event == "Stop",
+        HookSource::Codex => {
+            event.is_empty()
+                && json
+                    .get("type")
+                    .or_else(|| json.get("event"))
+                    .and_then(Value::as_str)
+                    == Some("agent-turn-complete")
         }
-        other => crate::i18n::translate(locale, "notifications.codex_generic", &[("type", other)]),
-    });
-
-    Some((title, message, notification_type))
+    }
 }
 
 fn hook_session_id(json: &Value) -> Option<String> {
@@ -1181,6 +1196,9 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
             "[hooks:{}] ignored because notifications and hooks are disabled",
             source.label()
         );
+        return;
+    }
+    if crate::notification::completion::is_child_event(json) {
         return;
     }
 
@@ -1209,10 +1227,23 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
         HookSource::ClaudeCode => match event_name {
             "UserPromptSubmit" => {
                 emit_provider_session_bound(app, &routing, json);
-                emit_session_lifecycle(app, routing, SessionLifecycleSignal::Running);
+                emit_session_lifecycle(
+                    app,
+                    routing,
+                    SessionLifecycleSignal::Running {
+                        prompt: hook_prompt(json).map(str::to_owned),
+                    },
+                );
             }
-            "Stop" => {
-                emit_session_lifecycle(app, routing, SessionLifecycleSignal::Waiting);
+            "Stop" if is_completion_hook(source, event_name, json) => {
+                emit_session_lifecycle(
+                    app,
+                    routing,
+                    SessionLifecycleSignal::Completed {
+                        turn_id: completed_hook_turn(json),
+                        prompt: hook_prompt(json).map(str::to_owned),
+                    },
+                );
             }
             "StopFailure" => {
                 let translated_unknown_error =
@@ -1229,50 +1260,28 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
                     },
                 );
             }
-            "Notification" => {
-                let title = json
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Claude Code");
-                let message = json.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                let notification_type = json
-                    .get("notification_type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                emit_session_lifecycle(
-                    app,
-                    routing,
-                    SessionLifecycleSignal::Attention {
-                        title: title.to_string(),
-                        message: message.to_string(),
-                        notification_type: notification_type.to_string(),
-                    },
-                );
-            }
             _ => {}
         },
         HookSource::Codex => match event_name {
-            "" => {
-                if let Some((title, message, notification_type)) =
-                    codex_notify_message(locale, json)
-                {
-                    emit_session_lifecycle(
-                        app,
-                        routing,
-                        SessionLifecycleSignal::Attention {
-                            title,
-                            message,
-                            notification_type,
-                        },
-                    );
-                }
+            "" | "Stop" if is_completion_hook(source, event_name, json) => {
+                emit_session_lifecycle(
+                    app,
+                    routing,
+                    SessionLifecycleSignal::Completed {
+                        turn_id: completed_hook_turn(json),
+                        prompt: hook_prompt(json).map(str::to_owned),
+                    },
+                );
             }
             "UserPromptSubmit" => {
                 emit_provider_session_bound(app, &routing, json);
-                emit_session_lifecycle(app, routing, SessionLifecycleSignal::Running);
-            }
-            "Stop" => {
-                emit_session_lifecycle(app, routing, SessionLifecycleSignal::Waiting);
+                emit_session_lifecycle(
+                    app,
+                    routing,
+                    SessionLifecycleSignal::Running {
+                        prompt: hook_prompt(json).map(str::to_owned),
+                    },
+                );
             }
             _ => {}
         },
@@ -1416,6 +1425,72 @@ pub fn send_notification(
 #[cfg(test)]
 mod namespace_tests {
     use super::*;
+
+    #[test]
+    fn completion_hooks_exclude_intermediate_child_failed_and_compaction_events() {
+        assert!(is_completion_hook(
+            HookSource::ClaudeCode,
+            "Stop",
+            &serde_json::json!({})
+        ));
+        for event in [
+            "Notification",
+            "PreToolUse",
+            "PostToolUse",
+            "SubagentStop",
+            "StopFailure",
+            "PreCompact",
+            "UserPromptSubmit",
+        ] {
+            assert!(!is_completion_hook(
+                HookSource::ClaudeCode,
+                event,
+                &serde_json::json!({})
+            ));
+        }
+        for payload in [
+            serde_json::json!({"agent_id":"child"}),
+            serde_json::json!({"parent_tool_use_id":"tool"}),
+            serde_json::json!({"is_error":true}),
+            serde_json::json!({"status":"interrupted"}),
+            serde_json::json!({"stop_hook_active":true}),
+            serde_json::json!({"prompt":"/compact keep decisions"}),
+            serde_json::json!({"input-messages":["/compact"]}),
+        ] {
+            assert!(
+                !is_completion_hook(HookSource::ClaudeCode, "Stop", &payload),
+                "{payload}"
+            );
+        }
+        for kind in [
+            "item-complete",
+            "tool-complete",
+            "progress",
+            "permission_prompt",
+            "idle_prompt",
+            "agent-turn-failed",
+        ] {
+            assert!(!is_completion_hook(
+                HookSource::Codex,
+                "",
+                &serde_json::json!({"type":kind})
+            ));
+        }
+        let completion =
+            serde_json::json!({"type":"agent-turn-complete","thread-id":"thread","turn-id":"turn"});
+        assert_eq!(
+            is_completion_hook(HookSource::Codex, "", &completion),
+            cfg!(not(unix))
+        );
+        assert_eq!(
+            is_completion_hook(HookSource::Codex, "Stop", &completion),
+            cfg!(unix)
+        );
+        assert_eq!(
+            completed_hook_turn(&completion).as_deref(),
+            Some("thread:turn")
+        );
+    }
 
     #[test]
     fn hook_session_id_rejects_empty_and_provider_ids() {

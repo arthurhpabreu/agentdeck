@@ -9,9 +9,10 @@ use std::{
 };
 use tauri::Manager;
 
-const MAX_NOTE_BYTES: u64 = 256 * 1024;
+const MAX_NOTE_BYTES: u64 = 1024 * 1024;
 const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_NOTES: usize = 3000;
+const MAX_DEPTH: usize = 32;
 const INDEX_TTL: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Serialize)]
@@ -80,6 +81,7 @@ struct VaultIndex {
     notes: Vec<Arc<Note>>,
     edges: Vec<(usize, usize)>,
     limited: bool,
+    diagnostics: KnowledgeDiagnostics,
 }
 static INDEX: OnceLock<Mutex<HashMap<PathBuf, Arc<VaultIndex>>>> = OnceLock::new();
 static CONFIG_WRITE: Mutex<()> = Mutex::new(());
@@ -111,6 +113,55 @@ pub struct KnowledgeWarning {
     pub source_path: String,
     pub code: String,
     pub message: String,
+    pub diagnostics: Option<KnowledgeDiagnostics>,
+}
+
+/// Counts describe the bounded scan, not an estimate of unvisited vault content.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeDiagnostics {
+    pub indexed_note_count: usize,
+    pub indexed_bytes: usize,
+    pub note_limit_reached: bool,
+    pub index_byte_limit_reached: bool,
+    pub truncated_note_count: usize,
+    pub unreadable_file_count: usize,
+    pub unreadable_directory_count: usize,
+    pub depth_limit_reached: bool,
+    pub max_notes: usize,
+    pub max_index_bytes: usize,
+    pub max_note_bytes: u64,
+    pub max_depth: usize,
+}
+
+impl Default for KnowledgeDiagnostics {
+    fn default() -> Self {
+        Self {
+            indexed_note_count: 0,
+            indexed_bytes: 0,
+            note_limit_reached: false,
+            index_byte_limit_reached: false,
+            truncated_note_count: 0,
+            unreadable_file_count: 0,
+            unreadable_directory_count: 0,
+            depth_limit_reached: false,
+            max_notes: MAX_NOTES,
+            max_index_bytes: MAX_INDEX_BYTES,
+            max_note_bytes: MAX_NOTE_BYTES,
+            max_depth: MAX_DEPTH,
+        }
+    }
+}
+
+impl KnowledgeDiagnostics {
+    fn limited(&self) -> bool {
+        self.note_limit_reached
+            || self.index_byte_limit_reached
+            || self.truncated_note_count > 0
+            || self.unreadable_file_count > 0
+            || self.unreadable_directory_count > 0
+            || self.depth_limit_reached
+    }
 }
 
 #[derive(Default, serde::Serialize)]
@@ -148,6 +199,7 @@ pub fn search_documents_report(
                     source_path: config_path.to_string_lossy().into_owned(),
                     code: "configuration".into(),
                     message,
+                    diagnostics: None,
                 }],
             })
         }
@@ -177,13 +229,19 @@ pub fn search_documents_report(
                     source_path: source,
                     code: "unavailable".into(),
                     message,
+                    diagnostics: None,
                 });
                 continue;
             }
         };
         if index.limited {
-            warnings.push(KnowledgeWarning { scope: scope.into(), source_path: source,
-                code: "index_limited".into(), message: "Partial index: a size, depth or note limit was reached, or some files could not be read.".into() });
+            warnings.push(KnowledgeWarning {
+                scope: scope.into(),
+                source_path: source,
+                code: "index_limited".into(),
+                message: "Partial index: a size, depth or note limit was reached, or some files could not be read.".into(),
+                diagnostics: Some(index.diagnostics.clone()),
+            });
         }
         let direct = search_index(&index, query);
         let mut paths = HashSet::new();
@@ -247,6 +305,7 @@ pub struct KnowledgeHealth {
     max_index_bytes: usize,
     max_note_bytes: u64,
     message: Option<String>,
+    diagnostics: Option<KnowledgeDiagnostics>,
 }
 
 fn source_health(source: &str, refresh: bool) -> KnowledgeHealth {
@@ -262,12 +321,14 @@ fn source_health(source: &str, refresh: bool) -> KnowledgeHealth {
         max_index_bytes: MAX_INDEX_BYTES,
         max_note_bytes: MAX_NOTE_BYTES,
         message: None,
+        diagnostics: None,
     };
     if !source.is_empty() {
         match index_source(source, refresh) {
             Ok(index) => {
                 health.status = if index.limited { "limited" } else { "ready" }.into();
                 health.note_count = index.notes.len();
+                health.diagnostics = Some(index.diagnostics.clone());
             }
             Err(error) => {
                 health.status = "unavailable".into();
@@ -447,37 +508,45 @@ fn collect_markdown(
     dir: &Path,
     out: &mut Vec<PathBuf>,
     visited: &mut HashSet<PathBuf>,
-    limited: &mut bool,
+    diagnostics: &mut KnowledgeDiagnostics,
     depth: usize,
 ) {
-    if depth > 32 || out.len() >= MAX_NOTES {
-        *limited = true;
+    // Keep one extra Markdown candidate as evidence that the note cap omits
+    // content. An exactly full index plus ignored files is not a partial index.
+    if out.len() > MAX_NOTES {
+        return;
+    }
+    if depth > MAX_DEPTH {
+        diagnostics.depth_limit_reached = true;
         return;
     }
     let Ok(canonical) = fs::canonicalize(dir) else {
-        *limited = true;
+        diagnostics.unreadable_directory_count += 1;
         return;
     };
     if !canonical.starts_with(root) || !visited.insert(canonical) {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else {
-        *limited = true;
+        diagnostics.unreadable_directory_count += 1;
         return;
     };
+    let mut enumeration_failed = false;
     let mut entries = entries
         .filter_map(|entry| match entry {
             Ok(entry) => Some(entry),
             Err(_) => {
-                *limited = true;
+                enumeration_failed = true;
                 None
             }
         })
         .collect::<Vec<_>>();
+    if enumeration_failed {
+        diagnostics.unreadable_directory_count += 1;
+    }
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        if out.len() >= MAX_NOTES {
-            *limited = true;
+        if out.len() > MAX_NOTES {
             break;
         }
         let name = entry.file_name().to_string_lossy().to_string();
@@ -490,7 +559,7 @@ fn collect_markdown(
             continue;
         }
         let Ok(kind) = entry.file_type() else {
-            *limited = true;
+            diagnostics.unreadable_file_count += 1;
             continue;
         };
         if kind.is_symlink() {
@@ -498,12 +567,14 @@ fn collect_markdown(
         }
         let path = entry.path();
         if kind.is_dir() {
-            collect_markdown(root, &path, out, visited, limited, depth + 1);
+            collect_markdown(root, &path, out, visited, diagnostics, depth + 1);
         } else if path.extension().is_some_and(|ext| {
             ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown")
         }) {
-            if fs::canonicalize(&path).is_ok_and(|path| path.starts_with(root)) {
-                out.push(path);
+            match fs::canonicalize(&path) {
+                Ok(canonical) if canonical.starts_with(root) => out.push(path),
+                Err(_) => diagnostics.unreadable_file_count += 1,
+                _ => {}
             }
         }
     }
@@ -772,8 +843,17 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
     }
     fs::read_dir(root).map_err(|e| format!("Knowledge folder cannot be read: {e}"))?;
     let mut paths = Vec::new();
-    let mut limited = false;
-    collect_markdown(root, root, &mut paths, &mut HashSet::new(), &mut limited, 0);
+    let mut diagnostics = KnowledgeDiagnostics::default();
+    collect_markdown(
+        root,
+        root,
+        &mut paths,
+        &mut HashSet::new(),
+        &mut diagnostics,
+        0,
+    );
+    diagnostics.note_limit_reached = paths.len() > MAX_NOTES;
+    paths.truncate(MAX_NOTES);
     let previous = previous
         .map(|index| {
             index
@@ -787,7 +867,7 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
     let mut bytes = 0;
     for full in paths {
         let Ok(metadata) = fs::metadata(&full) else {
-            limited = true;
+            diagnostics.unreadable_file_count += 1;
             continue;
         };
         let path = full
@@ -808,7 +888,7 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
             Arc::clone(note)
         } else {
             let Ok(text) = read_note(&full) else {
-                limited = true;
+                diagnostics.unreadable_file_count += 1;
                 continue;
             };
             let title = title(
@@ -835,21 +915,25 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
             })
         };
         if bytes + note.text.len() > MAX_INDEX_BYTES {
-            limited = true;
+            diagnostics.index_byte_limit_reached = true;
             break;
         }
         bytes += note.text.len();
         if note.size > MAX_NOTE_BYTES {
-            limited = true;
+            diagnostics.truncated_note_count += 1;
         }
         notes.push(note);
     }
     let edges = build_edges(&notes);
+    diagnostics.indexed_note_count = notes.len();
+    diagnostics.indexed_bytes = bytes;
+    let limited = diagnostics.limited();
     Ok(VaultIndex {
         scanned: Instant::now(),
         notes,
         edges,
         limited,
+        diagnostics,
     })
 }
 fn index_source(source: &str, refresh: bool) -> Result<Arc<VaultIndex>, String> {
@@ -1137,12 +1221,154 @@ mod tests {
         let health = source_health(root.to_str().unwrap(), true);
         assert_eq!(health.status, "limited");
         assert_eq!(health.note_count, MAX_NOTES);
+        assert!(health.diagnostics.as_ref().unwrap().note_limit_reached);
+        assert!(
+            !health
+                .diagnostics
+                .as_ref()
+                .unwrap()
+                .index_byte_limit_reached
+        );
         assert_eq!(result.nodes.len(), MAX_NOTES);
         assert_eq!(result.edges.len(), MAX_NOTES);
         assert!(!index.notes.iter().any(|note| note.path.starts_with('.')));
         assert!(search_index(&index, "Note 2999")
             .iter()
             .any(|hit| hit.path.ends_with("note-2999.md")));
+        fs::remove_file(root.join(format!("Notas de ação/note-{MAX_NOTES:04}.md"))).unwrap();
+        fixture(&root, "zzz/attachment.txt", "Not a Markdown note");
+        let complete = build_index(&fs::canonicalize(&root).unwrap(), Some(&index)).unwrap();
+        assert_eq!(complete.notes.len(), MAX_NOTES);
+        assert!(
+            !complete.limited,
+            "Exactly 3000 notes must not report an omitted note"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn half_mebibyte_notes_are_indexed_in_full_without_limit_warning() {
+        let root = test_dir();
+        let text = format!(
+            "# Large note\n{}\ncompletevaultmarker",
+            ".".repeat(500 * 1024)
+        );
+        fixture(&root, "large.md", &text);
+        let index = build_index(&fs::canonicalize(&root).unwrap(), None).unwrap();
+        assert_eq!(index.notes[0].text, text);
+        assert!(!index.limited);
+        assert_eq!(index.diagnostics.indexed_bytes, text.len());
+        assert_eq!(index.diagnostics.truncated_note_count, 0);
+        assert!(search_index(&index, "completevaultmarker")[0]
+            .excerpt
+            .contains("completevaultmarker"));
+        let health = source_health(root.to_str().unwrap(), true);
+        assert_eq!(health.status, "ready");
+        assert_eq!(health.max_note_bytes, 1024 * 1024);
+        assert_eq!(health.diagnostics.unwrap().indexed_note_count, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_notes_report_the_same_truncation_in_health_and_search_warnings() {
+        let root = test_dir();
+        let vault = root.join("vault");
+        fixture(
+            &vault,
+            "oversized.md",
+            &format!(
+                "# Searchable\n{}\nexcludedtailmarker",
+                ".".repeat(MAX_NOTE_BYTES as usize)
+            ),
+        );
+        let health = source_health(vault.to_str().unwrap(), true);
+        assert_eq!(health.status, "limited");
+        let diagnostics = health.diagnostics.unwrap();
+        assert_eq!(diagnostics.truncated_note_count, 1);
+        assert_eq!(diagnostics.indexed_note_count, 1);
+        assert_eq!(diagnostics.indexed_bytes, MAX_NOTE_BYTES as usize);
+        assert!(!diagnostics.note_limit_reached);
+        assert!(!diagnostics.index_byte_limit_reached);
+        let index = index_source(vault.to_str().unwrap(), false).unwrap();
+        assert!(!index.notes[0].text.contains("excludedtailmarker"));
+        let config = root.join("knowledge.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&StoredConfig {
+                source_path: vault.to_string_lossy().into_owned(),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let report = search_documents_report(&config, None, "Searchable", true).unwrap();
+        assert_eq!(report.hits.len(), 1);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.warnings[0].code, "index_limited");
+        let serialized = serde_json::to_value(&report.warnings[0]).unwrap();
+        assert_eq!(serialized["diagnostics"]["truncatedNoteCount"], 1);
+        assert_eq!(serialized["diagnostics"]["indexedBytes"], MAX_NOTE_BYTES);
+        assert_eq!(serialized["diagnostics"]["maxNoteBytes"], 1024 * 1024);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn total_byte_limit_reports_capacity_without_claiming_notes_were_truncated() {
+        let root = test_dir();
+        let text = ".".repeat(MAX_NOTE_BYTES as usize);
+        for id in 0..(MAX_INDEX_BYTES / MAX_NOTE_BYTES as usize) + 1 {
+            fixture(&root, &format!("note-{id:02}.md"), &text);
+        }
+        let index = build_index(&fs::canonicalize(&root).unwrap(), None).unwrap();
+        assert!(index.limited);
+        assert_eq!(index.diagnostics.indexed_bytes, MAX_INDEX_BYTES);
+        assert_eq!(index.notes.len(), MAX_INDEX_BYTES / MAX_NOTE_BYTES as usize);
+        assert!(index.diagnostics.index_byte_limit_reached);
+        assert_eq!(index.diagnostics.truncated_note_count, 0);
+        assert!(!index.diagnostics.note_limit_reached);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deep_folders_report_the_depth_limit_and_keep_reachable_notes() {
+        let root = test_dir();
+        fixture(&root, "visible.md", "# Visible");
+        let nested = std::iter::repeat("d")
+            .take(MAX_DEPTH + 1)
+            .collect::<Vec<_>>()
+            .join("/");
+        fixture(&root, &format!("{nested}/deep.md"), "# Too deep");
+        let index = build_index(&fs::canonicalize(&root).unwrap(), None).unwrap();
+        assert_eq!(index.notes.len(), 1);
+        assert!(index.limited);
+        assert!(index.diagnostics.depth_limit_reached);
+        assert_eq!(index.diagnostics.unreadable_directory_count, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_file_is_reported_without_hiding_healthy_notes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = test_dir();
+        fixture(&root, "healthy.md", "# Healthy");
+        fixture(&root, "locked.md", "# Locked");
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(root.join("locked.md"))
+            .unwrap();
+        let index = build_index(&fs::canonicalize(&root).unwrap(), None).unwrap();
+        assert!(index.limited);
+        assert_eq!(index.notes.len(), 1);
+        assert_eq!(index.notes[0].path, "healthy.md");
+        assert_eq!(index.diagnostics.unreadable_file_count, 1);
+        assert_eq!(index.diagnostics.unreadable_directory_count, 0);
+        assert_eq!(index.diagnostics.truncated_note_count, 0);
+        drop(locked);
+        let recovered = build_index(&fs::canonicalize(&root).unwrap(), Some(&index)).unwrap();
+        assert_eq!(recovered.notes.len(), 2);
+        assert!(!recovered.limited);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

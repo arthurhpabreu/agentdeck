@@ -247,25 +247,12 @@ pub(crate) fn callback_command(executable: &str, flag: &str, context: &str) -> S
     }
 }
 pub fn codex_rtk_override(definition: Value, args: &mut Vec<String>) -> Result<(), String> {
-    let mut stored = json!({});
-    if let Some(home) = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE")
-                .or_else(|| std::env::var_os("HOME"))
-                .map(|home| PathBuf::from(home).join(".codex"))
-        })
-    {
-        read_codex_inline(&home.join("config.toml"), &mut stored)?;
-    }
-    merge_codex_rtk_override(&stored, definition, args)
+    // Codex combines hooks from active config layers itself. Copying user hooks
+    // into session flags runs them twice and changes their native trust identity.
+    merge_codex_rtk_override(definition, args)
 }
-fn merge_codex_rtk_override(
-    stored: &Value,
-    definition: Value,
-    args: &mut Vec<String>,
-) -> Result<(), String> {
-    let mut groups = stored["PreToolUse"].as_array().cloned().unwrap_or_default();
+fn merge_codex_rtk_override(definition: Value, args: &mut Vec<String>) -> Result<(), String> {
+    let mut groups = Vec::new();
     // Retain an explicit per-process override instead of silently replacing it.
     for pair in args
         .windows(2)
@@ -281,7 +268,14 @@ fn merge_codex_rtk_override(
                 .ok_or("Invalid RTK hook override")?;
         }
     }
-    groups.push(json!({"matcher":"^Bash$","hooks":[definition]}));
+    if !groups.iter().any(|group| {
+        group["matcher"] == "^Bash$"
+            && group["hooks"]
+                .as_array()
+                .is_some_and(|hooks| hooks.contains(&definition))
+    }) {
+        groups.push(json!({"matcher":"^Bash$","hooks":[definition]}));
+    }
     let mut index = 0;
     while index + 1 < args.len() {
         if (args[index] == "-c" || args[index] == "--config")
@@ -560,12 +554,8 @@ mod tests {
             format!("hooks.PreToolUse={}", toml_inline(&existing).unwrap()),
             "app-server".into(),
         ];
-        merge_codex_rtk_override(
-            &json!({}),
-            json!({"type":"command","command":"rtk-adapter"}),
-            &mut args,
-        )
-        .unwrap();
+        merge_codex_rtk_override(json!({"type":"command","command":"rtk-adapter"}), &mut args)
+            .unwrap();
         assert_eq!(args.len(), 3);
         assert_eq!(args[2], "app-server");
         let config: toml::Value = toml::from_str(&args[1]).unwrap();
@@ -574,6 +564,13 @@ mod tests {
         assert_eq!(
             groups["hooks"]["PreToolUse"][1]["hooks"][0]["command"],
             "rtk-adapter"
+        );
+        let once = args.clone();
+        merge_codex_rtk_override(json!({"type":"command","command":"rtk-adapter"}), &mut args)
+            .unwrap();
+        assert_eq!(
+            args, once,
+            "Preparing a launch twice must not duplicate hooks"
         );
     }
     #[test]

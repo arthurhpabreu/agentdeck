@@ -866,6 +866,8 @@ pub async fn start_chat_turn(
         let launched_at = Instant::now();
         let mut last_heartbeat = launched_at;
         let mut compaction_progress = CompactionProgress::default();
+        let mut notification_evidence =
+            crate::notification::completion::CompletionEvidence::default();
         loop {
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(ProcessOutput::Stdout(line)) => {
@@ -881,6 +883,7 @@ pub async fn start_chat_turn(
                     };
                     for line in lines {
                         if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) {
+                            notification_evidence.observe(&record);
                             if record["type"] == "agentdeck.initial-delivered" {
                                 if delivered_guidance {
                                     crate::token_economy::mark_guidance_delivered(
@@ -1129,6 +1132,23 @@ pub async fn start_chat_turn(
         }
         done.status = Some(final_status.into());
         emit_event(&app, &request.runner_type, done);
+        let drained = process
+            .input
+            .lock()
+            .map(|input| input.completion_drained())
+            .unwrap_or(false);
+        let confirmed = notification_evidence.confirmed(
+            !cancelled && !parser.failed && exit.is_some_and(|status| status.success()),
+            drained,
+            live.compacting(),
+        );
+        crate::notification::completion::chat_completed(
+            &app,
+            &request.session_id,
+            &request.turn_id,
+            &request.prompt,
+            confirmed,
+        );
     });
     Ok(())
 }
@@ -1217,6 +1237,16 @@ pub fn has_active_processes(app: &tauri::AppHandle) -> bool {
         .lock()
         .map(|map| !map.is_empty())
         .unwrap_or(true)
+}
+
+pub(crate) fn is_session_running(app: &tauri::AppHandle, session_id: &str) -> bool {
+    app.try_state::<ChatProcessState>().is_some_and(|state| {
+        state
+            .0
+            .lock()
+            .map(|processes| processes.contains_key(session_id))
+            .unwrap_or(true)
+    })
 }
 
 pub fn uses_workdir(app: &tauri::AppHandle, path: &Path) -> bool {

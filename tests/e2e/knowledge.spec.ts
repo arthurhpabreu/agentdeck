@@ -60,7 +60,7 @@ async function setupDocuments(page: Page) {
         if (command === "get_knowledge_health") {
           if (w.__healthFailure) throw new Error("QA health check unavailable");
           const sourcePath = w.__sources[sourceKey] ?? "";
-          return { sourcePath, status: sourcePath ? (w.__healthStatus ?? "ready") : "none", noteCount: sourcePath ? (w.__healthNoteCount ?? 2) : 0, checkedAt: Date.now(), maxNotes: 3000, maxIndexBytes: 16 * 1024 * 1024, maxNoteBytes: 256 * 1024, message: w.__healthMessage ?? "" };
+          return { sourcePath, status: sourcePath ? (w.__healthStatus ?? "ready") : "none", noteCount: sourcePath ? (w.__healthNoteCount ?? 2) : 0, checkedAt: Date.now(), maxNotes: 3000, maxIndexBytes: 16 * 1024 * 1024, maxNoteBytes: 1024 * 1024, diagnostics: w.__healthDiagnostics ?? null, message: w.__healthMessage ?? "" };
         }
         if (command === "pick_folder") return w.__cancelPick ? null : "C:\\Notes";
         if (command === "set_knowledge_source") { if (w.__sourceFailure) throw new Error("Source unavailable"); w.__sources[sourceKey] = args.sourcePath; return configuration(); }
@@ -153,7 +153,7 @@ test("documents keep sources scoped and graph navigation reads connected notes w
   await docs.getByRole("button", { name: "Escolher pasta Markdown ou vault", exact: true }).click();
   await expect(docs.getByRole("textbox")).toBeEnabled();
   await docs.getByRole("button", { name: "Remover fonte", exact: true }).click();
-  await scope.getByRole("button", { name: "Projeto", exact: true }).click();
+  await scope.getByRole("button", { name: "Este projeto", exact: true }).click();
   await expect(docs.getByRole("textbox")).toBeEnabled();
   await expect(graph).toBeVisible();
   await graph.getByRole("button", { name: "Atualizar índice", exact: true }).click();
@@ -192,7 +192,7 @@ test("vault health reports index limits and offers retry after a health command 
   const health = docs.getByRole("region", { name: "Saúde da fonte", exact: true });
   await expect(health).toContainText(/3[.,]?000/);
   await expect(health).toContainText("16 MiB");
-  await expect(health).toContainText("256 KiB");
+  await expect(health).toContainText("1 MiB por nota");
   await expect(health.getByRole("alert")).toContainText("Índice parcial");
   await page.evaluate(() => { (window as any).__healthFailure = true; });
   await health.getByRole("button", { name: "Verificar fonte", exact: true }).click();
@@ -204,4 +204,41 @@ test("vault health reports index limits and offers retry after a health command 
   await docs.getByRole("button", { name: "Remover fonte", exact: true }).click();
   await expect(docs.getByText("Nenhuma fonte local selecionada")).toBeVisible();
   await expect(docs.getByRole("alert")).toHaveCount(0);
+});
+
+test("vault diagnostics distinguish truncated notes from capacity and unreadable files", async ({ page }) => {
+  const docs = await setupDocuments(page);
+  await page.evaluate(() => { const w = window as any; w.__healthStatus = "limited"; w.__healthNoteCount = 1029;
+    w.__healthDiagnostics = { indexedNoteCount: 1029, indexedBytes: 10000000, noteLimitReached: false, indexByteLimitReached: false, truncatedNoteCount: 6, unreadableFileCount: 0, unreadableDirectoryCount: 0, depthLimitReached: false, maxNotes: 3000, maxIndexBytes: 16777216, maxNoteBytes: 1048576, maxDepth: 32 };
+  });
+  await docs.getByRole("button", { name: "Escolher pasta Markdown ou vault", exact: true }).click();
+  const health = docs.getByRole("region", { name: "Saúde da fonte", exact: true });
+  await expect(health).toContainText("Notas com texto truncado: 6 (limite de 1 MiB por nota).");
+  await expect(health).not.toContainText("há limites de tamanho ou notas");
+  await page.evaluate(() => { const d = (window as any).__healthDiagnostics; d.truncatedNoteCount = 0; d.unreadableFileCount = 2; });
+  await health.getByRole("button", { name: "Verificar fonte", exact: true }).click();
+  await expect(health).toContainText("Arquivos que não puderam ser lidos: 2.");
+  await expect(health).not.toContainText("Notas com texto truncado");
+  await page.evaluate(() => { const w = window as any; w.__healthStatus = "ready"; w.__healthDiagnostics.unreadableFileCount = 0; });
+  await health.getByRole("button", { name: "Verificar fonte", exact: true }).click();
+  await expect(health.getByRole("alert")).toHaveCount(0);
+  await expect(health).not.toContainText("Arquivos que não puderam ser lidos");
+});
+
+test("documents and shared memory use matching scope controls in both themes", async ({ page }) => {
+  await setupDocuments(page);
+  for (const theme of ["dark", "light"]) {
+    await page.evaluate(async theme => { const path = "/src/store/settingsStore.ts"; (await import(/* @vite-ignore */ path)).useSettingsStore.getState().patchSettings({ theme }); }, theme);
+    const styles = () => page.locator(".ad-memory-scopes").evaluate(element => {
+      const style = getComputedStyle(element); const button = getComputedStyle(element.querySelector('button[aria-pressed="true"]')!);
+      return { padding: style.padding, radius: style.borderRadius, border: style.border, font: button.fontSize, selected: button.backgroundColor };
+    });
+    await page.getByRole("tab", { name: "Documentos", exact: true }).click();
+    await expect(page.locator(".ad-memory-heading h2")).toHaveText("Documentos");
+    const documentsStyle = await styles();
+    await page.locator(".ad-documents-panel").screenshot({ path: `test-results/documents-${theme}.png` });
+    await page.getByRole("tab", { name: "Memória compartilhada", exact: true }).click();
+    expect(await styles()).toEqual(documentsStyle);
+    await expect(page.locator(".ad-memory-project select")).toHaveValue("alpha");
+  }
 });

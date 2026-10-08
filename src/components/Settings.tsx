@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useId, useState } from "react";
 import { type LocaleSetting, useAppI18n } from "../i18n";
 import { useSettingsStore, type ThemeMode, isGlassTheme } from "../store/settingsStore";
 import { CliUpdates } from "./CliUpdates";
@@ -33,57 +33,11 @@ function Toggle({
   showDivider?: boolean;
   labelStyle?: React.CSSProperties;
 }) {
-  return (
-    <div
-      onClick={() => {
-        if (disabled) return;
-        onChange(!value);
-      }}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "9px 0",
-        cursor: disabled ? "default" : "pointer",
-        borderBottom: showDivider ? `1px solid ${C.border}` : "none",
-        opacity: disabled ? 0.56 : 1,
-      }}
-    >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: C.text, ...labelStyle }}>{label}</div>
-        {desc && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>{desc}</div>}
-      </div>
-      <div
-        style={{
-          width: 36,
-          height: 20,
-          borderRadius: 99,
-          flexShrink: 0,
-          background: value ? C.accent : "rgba(120,120,128,0.2)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-start",
-          direction: "ltr",
-          padding: "0 2px",
-          transition: "background 0.22s",
-          boxShadow: "inset 0 0 0 0.5px rgba(0,0,0,0.06)",
-        }}
-      >
-        <div
-          style={{
-            width: 16,
-            height: 16,
-            borderRadius: "50%",
-            background: "#fff",
-            boxShadow: "0 1px 4px rgba(0,0,0,0.25), 0 0.5px 1px rgba(0,0,0,0.12)",
-            transform: value ? "translateX(16px)" : "translateX(0)",
-            transition: "transform 0.22s",
-          }}
-        />
-      </div>
-    </div>
-  );
+  const id = useId();
+  return <div className="ad-memory-setting" style={{ borderBottom: showDivider ? '1px solid var(--ci-border)' : 'none', opacity: disabled ? .56 : 1 }}>
+    <label htmlFor={id}><strong id={id + '-label'} style={labelStyle}>{label}</strong>{desc && <small id={id + '-desc'}>{desc}</small>}</label>
+    <button id={id} type="button" role="switch" className="ad-memory-switch" aria-checked={value} aria-labelledby={id + '-label'} aria-describedby={desc ? id + '-desc' : undefined} disabled={disabled} onClick={() => onChange(!value)}><span /></button>
+  </div>;
 }
 
 function AppearanceTab() {

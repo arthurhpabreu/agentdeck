@@ -105,7 +105,7 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
     await start(page);
     const lastEventAt = await page.evaluate(async () => {
       const path = "/src/store/chatStore.ts"; const store = await import(/* @vite-ignore */ path);
-      const w = window as any; const at = Date.now() - 70_000;
+      const w = window as any; const at = Date.now() - 130_000;
       store.useChatStore.getState().patch("session", { status: "reasoning", activity: "Reviewing the project", lastEventAt: at });
       w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "heartbeat", pid: 5432 });
       return at;

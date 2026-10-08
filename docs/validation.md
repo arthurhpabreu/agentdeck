@@ -1,5 +1,37 @@
 # Validation evidence
 
+## 0.6.6
+
+Validated locally on Windows on October 8, 2026.
+
+| Check | Result |
+| --- | --- |
+| TypeScript and production build | Passed; optimized 0.6.6 executable and both Windows installers generated. Existing Vite chunk-size and mixed-import warnings remain. |
+| Translations, formatting and repository hygiene | Passed: 422 EN/PT/ES keys, `cargo fmt --check` and 346 tracked project files. |
+| Playwright browser coverage | 140 scenarios covered across the full run and focused reruns. The full run passed 139; one heartbeat fixture still used the old silence threshold. After correction, both silence/heartbeat scenarios passed. The four economy scenarios also passed after the final RTK changes. |
+| Rust library suite | 174 passed, 6 optional tests ignored, no failures. |
+| Packaged memory MCP smoke test | 12 scenarios passed against the final executable: 36 RPC requests, 3 processes, no stderr or unexpected responses. |
+| Packaged Codex RTK smoke test | Five checks passed against the real adapter and RTK 0.39.0: canonical hook contract, preserved arguments, double-prefix protection, unrelated-event rejection and isolated command measurements. |
+| Optional installed RTK test | Passed separately with an isolated database and project-separated measurements. |
+| Read-only vault check | A previously partial local vault returned no partial-index or unavailable warning with the final executable. No note excerpts were returned, and Markdown file sizes and modification times were unchanged. |
+| Windows installers | x64 payload, NSIS/MSI containers, version 0.6.6, publisher, bundled license resource and unchanged MSI upgrade identity verified. SHA-256 manifest covers both installers and LICENSE. |
+
+Regression coverage includes closed tool cards, manual and keyboard expansion,
+preserved expansion during stream updates, the two-minute inactivity boundary,
+matching Documents/Shared Memory controls in both themes, editable custom project
+colors, invalid hex input, cancellation and persistence. Native tests cover
+successful versus interrupted turns, queued input, child events, compaction and
+duplicate completion notifications. Vault fixtures exercise half-mebibyte notes,
+truncation above 1 MiB, the total byte cap, exact and exceeded note limits, deep
+folders and unreadable Windows files with recovery.
+
+The Codex hook metadata probe used installed Codex 0.162.0 without model requests
+and confirmed native trust remains a separate requirement. The RTK smoke test
+does not claim that a live model invoked a trusted hook. Browser tests mock native
+commands; no paid model turns, real desktop notification delivery or interactive
+clean-machine upgrades were exercised. Installers remain unsigned. GitHub Actions
+validates the release commit independently.
+
 ## 0.6.5
 
 Validated locally on Windows on October 8, 2026.

@@ -49,15 +49,15 @@ pub struct SessionRoutingHint {
 
 #[derive(Debug, Clone)]
 pub enum SessionLifecycleSignal {
-    Running,
-    Waiting,
+    Running {
+        prompt: Option<String>,
+    },
+    Completed {
+        turn_id: Option<String>,
+        prompt: Option<String>,
+    },
     Error {
         message: String,
-    },
-    Attention {
-        title: String,
-        message: String,
-        notification_type: String,
     },
 }
 
@@ -177,48 +177,32 @@ pub fn emit_session_lifecycle(
     }
 
     match signal {
-        SessionLifecycleSignal::Running => {
+        SessionLifecycleSignal::Running { prompt } => {
             for sid in session_ids {
+                crate::notification::completion::begin_terminal(&sid, prompt.as_deref());
                 let _ = app.emit("pty-running", serde_json::json!({ "session_id": sid }));
             }
         }
-        SessionLifecycleSignal::Waiting => {
+        SessionLifecycleSignal::Completed { turn_id, prompt } => {
             for sid in session_ids {
+                if crate::chat::is_session_running(app, &sid) {
+                    continue;
+                }
                 let _ = app.emit("pty-waiting", serde_json::json!({ "session_id": sid }));
+                crate::notification::completion::terminal_completed(
+                    app,
+                    &sid,
+                    turn_id.as_deref(),
+                    prompt.as_deref(),
+                );
             }
         }
         SessionLifecycleSignal::Error { message } => {
             for sid in session_ids {
+                crate::notification::completion::stop_terminal(&sid);
                 let _ = app.emit(
                     "pty-error",
                     serde_json::json!({ "session_id": sid, "error": message.clone() }),
-                );
-            }
-        }
-        SessionLifecycleSignal::Attention {
-            title,
-            message,
-            notification_type,
-        } => {
-            let target_session_id = session_ids.first().cloned();
-            let _ = crate::notification::send_notification_with_callback(
-                app.clone(),
-                title.clone(),
-                message.clone(),
-                None,
-                Some(true),
-                target_session_id,
-            );
-
-            for sid in session_ids {
-                let _ = app.emit(
-                    "pty-notification",
-                    serde_json::json!({
-                        "session_id": sid,
-                        "title": title.clone(),
-                        "message": message.clone(),
-                        "notification_type": notification_type.clone(),
-                    }),
                 );
             }
         }

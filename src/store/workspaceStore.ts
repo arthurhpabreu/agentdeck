@@ -11,12 +11,29 @@ export const WORKSPACE_COLORS = [
   { id: "red",    hex: "#ef4444" },
   { id: "yellow", hex: "#eab308" },
   { id: "gray",   hex: "#6b7280" },
+  { id: "teal", hex: "#14b8a6" },
+  { id: "cyan", hex: "#06b6d4" },
+  { id: "sky", hex: "#38bdf8" },
+  { id: "indigo", hex: "#6366f1" },
+  { id: "violet", hex: "#8b5cf6" },
+  { id: "pink", hex: "#ec4899" },
+  { id: "rose", hex: "#fb7185" },
+  { id: "lime", hex: "#84cc16" },
+  { id: "amber", hex: "#f59e0b" },
+  { id: "brown", hex: "#a16207" },
+  { id: "slate", hex: "#94a3b8" },
 ] as const;
 
-export type WorkspaceColorId = typeof WORKSPACE_COLORS[number]["id"];
+export type WorkspaceColorId = typeof WORKSPACE_COLORS[number]["id"] | `#${string}`;
+
+export function normalizeWorkspaceColor(value: string): WorkspaceColorId {
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value.toLowerCase() as WorkspaceColorId;
+  return WORKSPACE_COLORS.find(color => color.id === value)?.id ?? "gray";
+}
 
 export function getWorkspaceColor(id: WorkspaceColorId): string {
-  return WORKSPACE_COLORS.find((c) => c.id === id)?.hex ?? "#6b7280";
+  const color = normalizeWorkspaceColor(id);
+  return color.startsWith("#") ? color : WORKSPACE_COLORS.find(c => c.id === color)!.hex;
 }
 
 export interface Workspace {
@@ -45,7 +62,7 @@ export function pathBasename(p: string): string {
   return p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 }
 
-const COLOR_CYCLE: WorkspaceColorId[] = ["blue", "green", "purple", "orange", "red", "yellow"];
+const COLOR_CYCLE: WorkspaceColorId[] = WORKSPACE_COLORS.filter(color => color.id !== "gray").map(color => color.id);
 let _colorIdx = 0;
 function nextColor(): WorkspaceColorId {
   return COLOR_CYCLE[_colorIdx++ % COLOR_CYCLE.length];
@@ -63,7 +80,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           id,
           name: name || pathBasename(path),
           path,
-          color: color ?? nextColor(),
+          color: color ? normalizeWorkspaceColor(color) : nextColor(),
           createdAt: Date.now(),
           order: 0,
         };
@@ -102,7 +119,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       updateWorkspace: (id, patch) =>
         set((state) => ({
           workspaces: state.workspaces.map((w) =>
-            w.id === id ? { ...w, ...patch } : w
+            w.id === id ? { ...w, ...patch, ...(patch.color !== undefined ? { color: normalizeWorkspaceColor(patch.color) } : {}) } : w
           ),
         })),
     }),

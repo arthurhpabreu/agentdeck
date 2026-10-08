@@ -32,6 +32,12 @@ The Rust suite covers protocol parsing, provider boundaries, graph completeness,
 
 Optional `scripts/check-*.cjs` and `check-cli-controls.mjs` include installed-provider diagnostics. Read each script before use; some validate live authenticated features. They are not fresh-checkout prerequisites and are not invoked in CI.
 
+`node scripts/check-rtk-codex.cjs <agentdeck.exe> <rtk.exe>` checks the packaged
+Codex RTK adapter against an installed RTK executable. It verifies the canonical
+hook payload, preserved command options, double-prefix protection and isolated
+command measurements without model requests. It does not authorize a native
+Codex hook or claim that a live model invoked one.
+
 ## CI and releases
 
 Windows CI installs pinned pnpm, Node.js 22 and Rust stable, and runs frontend, translation, repository, browser and Rust checks without provider credentials.

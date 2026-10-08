@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { BookOpen, BrainCircuit, FolderOpen, Search } from "lucide-react";
+import { ArrowRight, BookOpen, BrainCircuit, FolderOpen, Search } from "lucide-react";
 import { useAppI18n } from "../i18n";
 import { knowledgeCommands, type KnowledgeConfig, type KnowledgeResult } from "../services/knowledgeCommands";
 import { SharedMemoryPanel } from "./memory/SharedMemoryPanel";
@@ -11,6 +11,7 @@ import { NoteGraph } from "./graph/KnowledgeGraph";
 import { knowledgeCopy } from "./knowledgeCopy";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { KnowledgeHealth } from "./memory/KnowledgeHealth";
+import { KnowledgeScopeControls } from "./memory/KnowledgeScopeControls";
 
 export function KnowledgePanel() {
   const { locale } = useAppI18n();
@@ -29,22 +30,14 @@ export function KnowledgePanel() {
 
 function KnowledgeDocumentsPanel() {
   const { locale } = useAppI18n(); const copy = knowledgeCopy(locale);
+  const m = memoryCopy(locale);
   const workspaces = useWorkspaceStore(state => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
   const project = workspaces.find(workspace => workspace.id === activeWorkspaceId);
   const [scope, setScope] = useState<"global" | "project">(project ? "project" : "global");
-  return <div className="ad-documents-panel">
-    <div className="ad-documents-scope">
-      <div role="group" aria-label={copy.scope} className="ad-documents-scope-buttons">
-        <button type="button" className="ad-button" aria-pressed={scope === "global"} onClick={() => setScope("global")}>{copy.global}</button>
-        <button type="button" className="ad-button" aria-pressed={scope === "project"} onClick={() => setScope("project")}>{copy.project}</button>
-      </div>
-      {scope === "project" && <select aria-label={copy.projectLabel} value={activeWorkspaceId ?? ""} onChange={event => useWorkspaceStore.getState().setActiveWorkspace(event.target.value)}>
-        {!project && <option value="">{copy.noProject}</option>}
-        {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-      </select>}
-      <p>{scope === "global" ? copy.globalHint : copy.projectHint}</p>
-    </div>
+  return <div className="ad-memory-panel ad-documents-panel">
+    <header className="ad-memory-heading"><h2>{m.documents}</h2><p>{copy.intro}</p></header>
+    <KnowledgeScopeControls scope={scope} onChange={setScope} labels={{ ...copy, project: m.projectScope }} />
     {scope === "global" || project ? <ScopedDocuments key={`${scope}:${scope === "project" ? project?.path : ""}`} projectPath={scope === "project" ? project?.path : undefined} /> : <p className="ad-documents-description ad-documents-scope">{copy.noProject}</p>}
   </div>;
 }
@@ -95,14 +88,14 @@ function ScopedDocuments({ projectPath }: { projectPath?: string }) {
 
   return <section className="ad-documents" aria-label={t("knowledge.title")} aria-busy={!!busy}>
     <div className="ad-documents-source">
-      <button type="button" className="ad-button" disabled={!!busy} onClick={() => void changeSource()}><FolderOpen size={16} />{busy === "choosing" ? copy.choosing : t("knowledge.chooseFolder")}</button>
+      <button type="button" className="ad-memory-primary" disabled={!!busy} onClick={() => void changeSource()}><FolderOpen size={16} />{busy === "choosing" ? copy.choosing : t("knowledge.chooseFolder")}</button>
       {config && <div className="ad-documents-path">{config.sourcePath ? <><span>{t(config.mode === "obsidian" ? "knowledge.obsidian" : "knowledge.markdown")}</span><p title={config.sourcePath}>{config.sourcePath}</p><button type="button" className="ad-button ad-button-ghost" disabled={!!busy} onClick={() => void changeSource(true)}>{busy === "clearing" ? copy.clearing : t("knowledge.clear")}</button></> : <p>{t("knowledge.noSource")}</p>}</div>}
     </div>
     {config?.sourcePath && <><KnowledgeHealth key={`health:${config.sourcePath}`} projectPath={projectPath} /><NoteGraph key={config.sourcePath} projectPath={projectPath} /></>}
     <form className="ad-documents-search" onSubmit={event => { event.preventDefault(); void search(); }}>
       <label htmlFor={searchId}>{t("knowledge.search")}</label>
-      <div><input id={searchId} value={query} disabled={!config?.sourcePath} onChange={event => { request.current++; setQuery(event.target.value); setResults([]); setSearched(false); }} placeholder={t("knowledge.searchPlaceholder")} />
-      <button type="submit" className="ad-icon-button" aria-label={t("knowledge.search")} disabled={!config?.sourcePath || !query.trim() || !!busy}><Search size={16} /></button></div>
+      <div className="ad-memory-search"><Search size={16} /><input id={searchId} value={query} disabled={!config?.sourcePath} onChange={event => { request.current++; setQuery(event.target.value); setResults([]); setSearched(false); }} placeholder={t("knowledge.searchPlaceholder")} />
+      <button type="submit" className="ad-memory-icon" aria-label={t("knowledge.search")} disabled={!config?.sourcePath || !query.trim() || !!busy}><ArrowRight size={16} /></button></div>
       {!config?.sourcePath && <p>{copy.sourceHint}</p>}
     </form>
     {busy && <span role="status" className="ad-documents-status">{busy === "choosing" ? copy.choosing : busy === "clearing" ? copy.clearing : t("knowledge.indexing")}</span>}

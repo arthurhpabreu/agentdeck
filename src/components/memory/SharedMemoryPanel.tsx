@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, BookOpenText, Check, ChevronDown, CircleAlert, Copy, Database, Download, Folder, Globe, Info, LoaderCircle, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, BookOpenText, Check, ChevronDown, CircleAlert, Copy, Database, Download, Folder, Info, LoaderCircle, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Trash2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppI18n } from "../../i18n";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -15,6 +15,7 @@ import { memoryCopy } from "./memoryCopy";
 import { MemoryIntelligencePanel, MemoryNoteHistory } from "./MemoryIntelligencePanel";
 import { curationCopy } from "./MemoryCurationControl";
 import "./sharedMemory.css";
+import { KnowledgeScopeControls } from "./KnowledgeScopeControls";
 
 const emptyDraft = (): MemoryDraft => ({ title: "", content: "", kind: "fact", pinned: false });
 const knownProvider = (provider?: string | null): provider is RunnerType => provider === "codex" || provider === "claude-code" || provider === "gemini";
@@ -194,9 +195,7 @@ function ProjectMemoryPanel() {
 
   return <section className="ad-memory-panel" ref={panelRef} aria-label={m.title}>
     <header className="ad-memory-heading"><h2>{m.title}</h2><p>{m.intro}</p></header>
-    <div className="ad-memory-scopes" role="group" aria-label={m.scopeLabel}><button type="button" aria-pressed={global} disabled={memory.saving || exporting} onClick={() => useSharedMemoryStore.getState().setMemoryScope("global")}><Globe size={14} />{m.global}</button><button type="button" aria-pressed={!global} disabled={memory.saving || exporting} onClick={() => useSharedMemoryStore.getState().setMemoryScope("project")}><Folder size={14} />{m.projectScope}</button></div>
-    <p className="ad-memory-scope-hint">{global ? m.globalHint : m.projectHint}</p>
-    {!global && !!workspaces.length && <label className="ad-memory-project"><Folder size={14} /><select aria-label={m.project} value={activeWorkspaceId ?? ""} onChange={event => useWorkspaceStore.getState().setActiveWorkspace(event.target.value)}>{!activeWorkspaceId && <option value="">{m.noProject}</option>}{workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select><ChevronDown size={12} /></label>}
+    <KnowledgeScopeControls scope={scope} onChange={value => useSharedMemoryStore.getState().setMemoryScope(value)} disabled={memory.saving || exporting} labels={{ scope: m.scopeLabel, global: m.global, project: m.projectScope, globalHint: m.globalHint, projectHint: m.projectHint, projectLabel: m.project, noProject: m.noProject }} />
     {!project && !global ? <div className="ad-memory-empty"><Folder size={29} /><p>{m.noProject}</p></div> : !desktop ? <div className="ad-memory-empty"><Database size={29} /><p>{m.desktop}</p></div> : <>
       {!selected && !editing && <>
         <MemoryIntelligencePanel path={path} />

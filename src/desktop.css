@@ -65,10 +65,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .ad-window-error { position: absolute; right: 0; top: 44px; width: 280px; background: var(--ci-surface); padding: 12px; }
 .ad-icon-button { width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--ci-text-muted); display: inline-grid; place-items: center; cursor: pointer; }
 .ad-icon-button:hover { background: var(--ci-btn-ghost-hover); color: var(--ci-text); }
-.ad-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 12px; border: 1px solid var(--ci-border); border-radius: 6px; background: var(--ci-surface); color: var(--ci-text); font-size: 12px; cursor: pointer; }
-.ad-button:hover { background: var(--ci-btn-ghost-hover); }
+.ad-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--ci-border); border-radius: 5px; background: transparent; color: var(--ci-text); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; }
+.ad-button:hover:not(:disabled) { background: var(--ci-hover); }
 .ad-button-primary { background: var(--ad-action-bg); color: var(--ad-action-text); border-color: var(--ad-action-bg); font-weight: 600; }
-.ad-button-primary:hover { background: var(--ad-action-hover); border-color: var(--ad-action-hover); }
+.ad-button-primary:hover:not(:disabled) { background: var(--ad-action-hover); border-color: var(--ad-action-hover); }
 .ad-welcome { flex: 1; overflow: auto; display: flex; padding: 32px; background: var(--ci-bg); }
 .ad-welcome-inner { width: min(100%, 680px); margin: auto;  }
 .ad-welcome-head { display: flex; align-items: center; gap: 14px; }

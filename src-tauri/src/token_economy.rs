@@ -70,6 +70,7 @@ pub struct TokenEconomyStatus {
     available: bool,
     version: Option<String>,
     claude_hook_available: bool,
+    codex_hook_available: bool,
     total_input_tokens: Option<u64>,
     total_output_tokens: Option<u64>,
     saved_tokens: Option<u64>,
@@ -572,6 +573,8 @@ fn status(
         available: caps.path.is_some(),
         version: caps.version,
         claude_hook_available: caps.claude_hook,
+        // Adapter availability is not a claim of native hook trust or execution.
+        codex_hook_available: caps.claude_hook,
         total_input_tokens: None,
         total_output_tokens: None,
         saved_tokens: None,
@@ -673,6 +676,10 @@ pub async fn set_token_economy_enabled(
         serde_json::to_vec(&Config { enabled }).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    // Re-enabling economy must deliver RTK guidance to existing Codex chats too.
+    if let Ok(mut delivered) = delivered_guidance().lock() {
+        delivered.clear();
+    }
     let _ = app.emit("token-economy-changed", json!({"enabled":enabled}));
     get_token_economy_status(app, workdir, scope, None).await
 }

@@ -1,4 +1,5 @@
 const pt = {
+  intro: "Pastas Markdown e vaults do Obsidian para consultar notas e explorar suas conexões.",
   retry: "Tentar novamente", noMatches: "Nenhuma nota encontrada para esta busca.",
   sourceHint: "Escolha uma pasta para habilitar a busca.", choosing: "Escolhendo pasta…",
   clearing: "Removendo fonte…", results: "Resultados", preview: "Trecho da nota",
@@ -10,11 +11,12 @@ const pt = {
   graph: "Grafo de notas", refresh: "Atualizar índice", notes: "notas", links: "ligações", graphHint: "Conexões de [[wikilinks]] e links Markdown. Selecione uma nota para ver seu trecho e suas conexões.",
   noNotes: "Nenhum arquivo .md ou .markdown nesta pasta.", noLinks: "Adicione [[Nome da nota]] ou [nome](nota.md) para conectar suas notas.",
   graphLimit: "A fonte excede o limite do índice. Escolha uma pasta mais específica.",
-  indexLimit: "Índice limitado a 3.000 notas, 16 MB de texto e 256 KB por arquivo. Prefira uma pasta mais específica para incluir os documentos desejados.",
+  indexLimit: "Índice limitado a 3.000 notas, 16 MiB de texto e 1 MiB por arquivo. Prefira uma pasta mais específica para incluir os documentos desejados.",
   chooseNote: "Selecionar nota", connections: "Notas conectadas", noConnections: "Esta nota ainda não possui conexões.",
   cacheHint: "O índice reaproveita arquivos sem alterações. Atualizar verifica mudanças feitas na pasta.",
 };
 const en: typeof pt = {
+  intro: "Markdown folders and Obsidian vaults for searching notes and exploring their connections.",
   retry: "Try again", noMatches: "No notes match this search.",
   sourceHint: "Choose a folder to enable search.", choosing: "Choosing a folder…",
   clearing: "Removing source…", results: "Results", preview: "Note excerpt",
@@ -26,11 +28,12 @@ const en: typeof pt = {
   graph: "Note graph", refresh: "Refresh index", notes: "notes", links: "links", graphHint: "Connections from [[wikilinks]] and Markdown links. Select a note to see its excerpt and connections.",
   noNotes: "No .md or .markdown files in this folder.", noLinks: "Add [[Note name]] or [name](note.md) to connect your notes.",
   graphLimit: "The source exceeds the index limit. Narrow the source folder.",
-  indexLimit: "Index limited to 3,000 notes, 16 MB of text and 256 KB per file. Choose a more specific folder to include the documents you need.",
+  indexLimit: "Index limited to 3,000 notes, 16 MiB of text and 1 MiB per file. Choose a more specific folder to include the documents you need.",
   chooseNote: "Select a note", connections: "Connected notes", noConnections: "This note has no connections yet.",
   cacheHint: "The index reuses unchanged files. Refresh checks for changes in the folder.",
 };
 const es: typeof pt = {
+  intro: "Carpetas Markdown y vaults de Obsidian para consultar notas y explorar sus conexiones.",
   retry: "Reintentar", noMatches: "No se encontraron notas para esta búsqueda.",
   sourceHint: "Elige una carpeta para habilitar la búsqueda.", choosing: "Eligiendo carpeta…",
   clearing: "Quitando fuente…", results: "Resultados", preview: "Fragmento de la nota",
@@ -42,7 +45,7 @@ const es: typeof pt = {
   graph: "Grafo de notas", refresh: "Actualizar índice", notes: "notas", links: "enlaces", graphHint: "Conexiones de [[wikilinks]] y enlaces Markdown. Selecciona una nota para ver su fragmento y conexiones.",
   noNotes: "No hay archivos .md o .markdown en esta carpeta.", noLinks: "Añade [[Nombre de nota]] o [nombre](nota.md) para conectar tus notas.",
   graphLimit: "La fuente supera el límite del índice. Elige una carpeta más específica.",
-  indexLimit: "Índice limitado a 3.000 notas, 16 MB de texto y 256 KB por archivo. Elige una carpeta más específica para incluir los documentos necesarios.",
+  indexLimit: "Índice limitado a 3.000 notas, 16 MiB de texto y 1 MiB por archivo. Elige una carpeta más específica para incluir los documentos necesarios.",
   chooseNote: "Seleccionar nota", connections: "Notas conectadas", noConnections: "Esta nota aún no tiene conexiones.",
   cacheHint: "El índice reutiliza archivos sin cambios. Actualizar comprueba los cambios en la carpeta.",
 };

@@ -27,8 +27,6 @@
 .ad-chat-welcome .ad-agent-pills { margin: 22px 0 18px; }
 .ad-chat-messages { max-width: 850px; margin: 0 auto; }
 .ad-subagent-label { color: var(--ci-accent); background: var(--ci-accent-bg); border-radius: 5px; padding: 2px 6px; font-size: 10px; }
-.ad-chat-diagnostics { max-width: 850px; margin: 10px auto; color: var(--ci-text-dim); font-size: 11px; }
-.ad-chat-diagnostics summary { cursor: pointer; } .ad-chat-diagnostics pre { white-space: pre-wrap; max-height: 150px; overflow: auto; padding: 10px; user-select: text; }
 .ad-message { padding: 15px 0 22px; animation: ad-enter 150ms ease; }
 .ad-message-meta { display: flex; gap: 9px; align-items: center; margin-bottom: 8px; font-size: 12px; }
 .ad-message-meta strong { font-weight: 600; } .ad-message-meta time { color: var(--ci-text-dim); font-size: 10px; margin-left: auto; }

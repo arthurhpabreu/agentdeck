@@ -39,6 +39,21 @@ Provider requirements can differ from the app's requirements. Check the linked i
 
 Open a project, create a session and select a provider. Git projects can use independent session worktrees. Choose a Markdown folder or Obsidian vault under **Knowledge → Documents**; global and project sources are independent.
 
+## Optional RTK integration
+
+The token economy panel detects RTK and reports measurements separately from AI
+usage. When enabled, Agent Deck supplies RTK guidance to Claude and Codex and
+records commands executed through RTK in the app's measurement database. The
+panel includes both providers; an available adapter is a capability, not proof
+that a particular command used it.
+
+For Codex, automatic command rewriting additionally requires **Execute** mode
+with full access and native hook authorization through `/hooks`. Codex skips new
+or modified hooks until they are trusted; see its [hook review documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+Direct `rtk` commands do not depend on hook authorization. Agent Deck leaves user
+hook configuration in its original layer rather than copying it into session
+arguments, which would execute inherited hooks twice.
+
 ## Isolated development
 
 `corepack pnpm dev:worktree` selects free development/HMR ports and an isolated app identifier for the checkout. Optional shell overrides are `AGENTDECK_DEV_PORT`, `AGENTDECK_HMR_PORT`, `AGENTDECK_TAURI_PRODUCT_NAME` and `AGENTDECK_TAURI_IDENTIFIER`. Set these before launching; the wrapper does not load a `.env` file. Ordinary development uses port 1420. Windows hook receivers use loopback ports 46331 and 46332.
@@ -63,7 +78,8 @@ MSI generation also requires the Windows VBScript optional feature. See the [Tau
 | Development port occupied | Stop the other server or use `dev:worktree`. |
 | CLI not detected | Check that it runs in a terminal, then restart Agent Deck. |
 | Subagents unavailable | Use a provider-bound session with local native history; missing telemetry is explicitly labeled. |
-| Vault reaches index limit | Choose a smaller source. Limits are 3,000 notes, 16 MB of text and 256 KB per note. |
+| Vault reaches index limit | Choose a smaller source. Limits are 3,000 notes, 16 MiB of text and 1 MiB per note. |
+| Codex RTK adapter is available but automatic rewriting does not run | Review the hook in native `/hooks`; automatic rewriting also requires Execute mode with full access. Direct RTK commands still work. |
 
 The current app identifier stays `com.tuxao.agentdeck` to preserve existing Agent Deck data. Windows shared memory normally lives under `%APPDATA%\com.tuxao.agentdeck\shared-memory\memory.sqlite3`. Development state is isolated from production state. Personal settings and credentials do not travel with a checkout.
 

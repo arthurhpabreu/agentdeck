@@ -23,6 +23,12 @@
 .ad-economy-switch > span svg { animation: ad-economy-feedback 180ms ease-out; color: var(--ci-accent); }
 .ad-economy-description { margin: 16px 20px 0; font-size: 11px; color: var(--ci-text-dim); line-height: 1.65; }
 .ad-economy-description + .ad-economy-description { margin-top: 8px; }
+.ad-economy-integrations { margin: 14px 20px; display: grid; gap: 12px; }
+.ad-economy-integrations > div { padding-inline-start: 10px; border-inline-start: 2px solid var(--ci-border); }
+.ad-economy-integrations > div[data-current=true] { border-color: var(--ci-accent); }
+.ad-economy-integrations strong { font-size: 12px; font-weight: 600; }
+.ad-economy-integrations p { margin: 5px 0; color: var(--ci-text-muted); font-size: 11px; line-height: 1.65; }
+.ad-economy-integrations small { color: var(--ci-accent); font-size: 11px; }
 .ad-economy-capabilities { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 14px 20px 20px; font-size: 11px; line-height: 1.5; color: var(--ci-text-dim); }
 .ad-economy-capabilities span + span { padding-inline-start: 12px; border-inline-start: 1px solid var(--ci-border); }
 .ad-economy-notice { padding: 12px 20px; margin: 0; font-size: 11px; line-height: 1.6; color: var(--ci-text-dim); }

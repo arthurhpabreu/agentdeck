@@ -25,6 +25,12 @@ pub(super) struct LiveInput {
     compacting: bool,
 }
 impl LiveInput {
+    pub fn completion_drained(&self) -> bool {
+        self.writer.is_none()
+            && self.queued.is_empty()
+            && self.pending.is_empty()
+            && (self.codex || self.claude_pending == 0)
+    }
     pub fn new(stdin: ChildStdin, codex: bool, compacting: bool) -> Self {
         let mut input = Self::with_writer(Box::new(stdin), codex);
         input.compacting = compacting;
@@ -445,7 +451,7 @@ impl LiveProtocol {
             "turn/completed"=>{
                 if params["turn"]["status"]=="failed" {out.push(json!({"type":"error","message":params["turn"]["error"]["message"].as_str().unwrap_or("Codex turn failed")}));}
                 self.totals=sum_usage(&self.totals,&self.usage);self.usage=json!({});
-                out.push(json!({"type":"turn.completed","usage":self.totals}));
+                out.push(json!({"type":"turn.completed","status":params["turn"]["status"],"usage":self.totals}));
                 if input.turn.as_deref()==params["turn"]["id"].as_str(){input.turn=None;}
                 input.start_queued()?;
             }
@@ -474,6 +480,10 @@ fn error_message(record: &Value) -> String {
         .unwrap_or("Codex rejected the request")
         .into()
 }
+
+#[cfg(test)]
+#[path = "completion_live_tests.rs"]
+mod completion_tests;
 fn sum_usage(a: &Value, b: &Value) -> Value {
     let mut out = json!({});
     for key in ["input_tokens", "output_tokens", "cached_input_tokens"] {

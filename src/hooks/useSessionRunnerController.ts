@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAppI18n } from "../i18n";
 import { useSessionStore } from "../store/sessionStore";
 import { useSettingsStore, type RunnerType } from "../store/settingsStore";
 import {
@@ -24,7 +23,6 @@ export function useSessionRunnerController({
   sessionId: string;
   isOpen: boolean;
 }) {
-  const { t } = useAppI18n();
   const isWindows = navigator.userAgent.toLowerCase().includes("windows");
   const session = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId));
   const worktreeReady = useSessionStore((s) => s.worktreeReadyIds.has(sessionId));
@@ -130,12 +128,8 @@ export function useSessionRunnerController({
     flushPendingQuery(isWindows ? 120 : 0);
     if (s?.status === "waiting") return;
     updateSession(sid, { status: "waiting" });
-    const taskName = s?.currentTask?.slice(0, 40) || t("session.genericTask");
-    invoke("send_notification", {
-      title: t("notifications.agentdeckTitle"),
-      body: t("session.waitingNextStepNotification", { task: taskName }),
-      sessionId: sid,
-    }).catch(() => {});
+    // PTY screen heuristics also fire at startup and between tools. Only native
+    // provider completion events can trigger an operating-system notification.
   }, [flushPendingQuery, isWindows, updateSession]);
 
   const handlePtyRunning = useCallback(() => {

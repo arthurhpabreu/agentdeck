@@ -17,6 +17,7 @@ export interface TokenEconomyStatus {
   source: string;
   reason?: string | null;
   claudeHookAvailable: boolean;
+  codexHookAvailable?: boolean;
   estimationMethod?: string;
   executablePath?: string | null;
   databasePath?: string | null;

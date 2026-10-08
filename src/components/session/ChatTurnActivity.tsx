@@ -7,7 +7,7 @@ import { chatCopy } from "./chatCopy";
 import { contextCopy } from "./contextCopy";
 import "./chatActivity.css";
 
-const SILENCE_NOTICE_MS = 60_000;
+const SILENCE_NOTICE_MS = 120_000;
 const duration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 
 export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatThread; sessionId: string; visible: boolean }) {
