@@ -33,6 +33,7 @@ export interface DiffLine {
 export interface ClaudeSession {
   id: string;
   name: string;
+  nameIsCustom?: boolean; // Older sessions keep automatic naming until explicitly renamed.
   workspaceId: string;   // Owning workspace ID.
   workdir: string;       // Stored redundantly so it can be passed directly to the PTY.
   status: SessionStatus;
@@ -64,6 +65,8 @@ interface SessionStore {
   removeSession: (id: string) => void;
   setActiveSession: (id: string | null) => void;
   updateSession: (id: string, patch: Partial<ClaudeSession>) => void;
+  renameSession: (id: string, name: string) => boolean;
+  setAutomaticSessionName: (id: string, name: string) => void;
   appendOutput: (id: string, line: string) => void;
   clearOutput: (id: string) => void;
   setDiffFiles: (id: string, files: DiffFile[]) => void;
@@ -206,7 +209,7 @@ function makeSession(
 
 export const useSessionStore = create<SessionStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       sessions: [],
       activeSessionId: null,
       expandedSessionId: null,
@@ -283,6 +286,20 @@ export const useSessionStore = create<SessionStore>()(
             s.id === id ? { ...s, ...patch } : s
           ),
         })),
+
+      renameSession: (id, name) => {
+        const normalized = name.replace(/\s+/g, " ").trim();
+        if (!normalized || normalized.length > 120 || !get().sessions.some(s => s.id === id)) return false;
+        set(state => ({ sessions: state.sessions.map(s => s.id === id
+          ? { ...s, name: normalized, nameIsCustom: true } : s) }));
+        return true;
+      },
+
+      setAutomaticSessionName: (id, name) => {
+        if (!name.trim()) return;
+        set(state => ({ sessions: state.sessions.map(s => s.id === id && !s.nameIsCustom
+          ? { ...s, name } : s) }));
+      },
 
       appendOutput: (id, line) =>
         set((state) => ({
@@ -391,6 +408,7 @@ export const useSessionStore = create<SessionStore>()(
                 runner: hydrateRunnerConfig(hydratedRecovered.runner),
                 diffFiles: [...hydratedRecovered.diffFiles],
                 output: [...hydratedRecovered.output],
+                ...(existingSession.nameIsCustom ? { name: existingSession.name, nameIsCustom: true } : {}),
               };
               merged = true;
             } else {

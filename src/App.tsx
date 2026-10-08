@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { checkCliUpdatesOnStartup } from "./store/cliUpdateStore";
+import { checkAppUpdateOnStartup } from "./store/appUpdateStore";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -76,7 +77,7 @@ export default function App() {
   const setScmDiffOverride = useScmStore((s) => s.setDiffOverride);
 
   const { settings, patchSettings } = useSettingsStore();
-  useEffect(() => { checkCliUpdatesOnStartup(); }, []);
+  useEffect(() => { checkCliUpdatesOnStartup(); checkAppUpdateOnStartup(); }, []);
   const effectiveLocale = resolveEffectiveLocale(settings.locale);
   const direction = getLocaleDirection(effectiveLocale);
   const settingsOpen = useSettingsStore((s) => s.settingsOpen);

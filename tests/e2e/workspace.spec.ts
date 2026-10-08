@@ -1,9 +1,13 @@
 import { test, expect, type Page } from "@playwright/test";
 import { effortCases } from "./effort-cases";
 import { commandCases } from "./command-cases";
+import { sessionNameCases } from "./session-name-cases";
+import { appUpdateCases } from "./app-update-cases";
 
 effortCases(setup, openSession);
 commandCases(setup);
+sessionNameCases(setup, openSession);
+appUpdateCases(setup);
 
 test("titlebar CLI indicator opens update management and follows confirmed results", async ({ page }) => {
   await setup(page);
@@ -45,6 +49,19 @@ async function setup(page: Page, locale = "pt-BR") {
       unregisterCallback: (id: number) => callbacks.delete(id),
       invoke: async (command: string, args: any = {}) => {
         w.__calls.push({ command, args });
+        if (command === "check_app_update") {
+          if (w.__appUpdateCheckFail) throw new Error("network_unavailable");
+          return w.__appUpdateResult ?? { installed: "0.6.1", latest: "0.6.1", updateAvailable: false, supported: true, installerKind: "exe" };
+        }
+        if (command === "download_app_update") {
+          if (w.__appUpdateDownloadFail) throw new Error("checksum_mismatch");
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return { version: "0.6.2", filename: w.__appUpdateResult.installerKind === "msi" ? "Agentdeck_0.6.2_x64_en-US.msi" : "Agentdeck_0.6.2_x64-setup.exe" };
+        }
+        if (command === "install_app_update") {
+          if (w.__appUpdateInstallFail) throw new Error("checksum_mismatch");
+          return;
+        }
         if (command === "plugin:event|listen") {
           if (!listeners.has(args.event)) listeners.set(args.event, new Map());
           const listenerId = ++id;

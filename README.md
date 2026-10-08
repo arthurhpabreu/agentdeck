@@ -6,7 +6,15 @@ A desktop workspace for running coding agents, understanding their tasks and exp
 
 Agent Deck brings official Codex, Claude Code and Gemini CLIs into a Windows-first Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
 
-## New in 0.6.0
+## New in 0.6.1
+
+- **Application update checks:** Agent Deck checks stable official releases when it opens. Click the version badge to download the installer, then choose **Install update** in **Settings → System**. Downloads are verified against the release checksum, and the updater keeps the installed package type (`.exe` or `.msi`).
+- **Session names you control:** click the pencil in the session list or conversation header. Save with Enter or cancel with Escape. Your chosen name stays when sending messages, reopening the app or recovering sessions.
+- **Memory retrieval for large requests:** long prompts now use a bounded search sample instead of failing with `Query exceeds limit`. The agent still receives your full request; memory and global vault excerpts stay within your context budget.
+
+Install 0.6.1 over 0.6.0 using the same installer type. The application identity and local storage remain the same; no data migration is required. See the [changelog](CHANGELOG.md) for details.
+
+## Introduced in 0.6.0
 
 - **Commands and skills in every composer:** type `/`, type `$` for Codex skills, or open the searchable picker. Existing user/project definitions and supported plugin metadata are discovered automatically.
 - **Provider-aware execution:** session controls update the chat settings, Claude supports its reported non-interactive commands, and terminal-only commands open the native CLI with the current session binding.

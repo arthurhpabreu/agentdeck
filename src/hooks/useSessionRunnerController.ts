@@ -169,7 +169,8 @@ export function useSessionRunnerController({
     if (!trimmed || !session) return;
     const title = trimmed.length > 24 ? trimmed.slice(0, 24) + "…" : trimmed;
     lastQuerySentAtRef.current = Date.now();
-    updateSession(session.id, { name: title, currentTask: trimmed, status: "running" });
+    updateSession(session.id, { currentTask: trimmed, status: "running" });
+    useSessionStore.getState().setAutomaticSessionName(session.id, title);
     setQuerySent(true);
     useAgentActivityStore.getState().record(session.id, { phase: "starting", error: undefined, endedAt: undefined, startedAt: undefined, pid: undefined }, "activity.starting");
 

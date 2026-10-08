@@ -17,6 +17,124 @@ fn fixture() -> (std::path::PathBuf, Engine, String, std::path::PathBuf) {
     (root, engine, project, config)
 }
 #[test]
+fn automatic_queries_obey_byte_limit_and_preserve_utf8_and_both_ends() {
+    for query in [String::new(), "ação 🚀".into(), "x".repeat(MAX_QUERY_BYTES)] {
+        assert!(matches!(
+            automatic_query(&query),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(automatic_query(&query), query);
+    }
+    for padding in ["x", "ç", "🚀"] {
+        let query = format!(
+            "Opening context\n{}\nFinal request",
+            padding.repeat(MAX_QUERY_BYTES)
+        );
+        let bounded = automatic_query(&query);
+        assert!(bounded.len() <= MAX_QUERY_BYTES);
+        assert!(bounded.starts_with("Opening context\n"));
+        assert!(bounded.ends_with("\nFinal request"));
+    }
+    assert_eq!(
+        automatic_query(&"x".repeat(MAX_QUERY_BYTES + 1)).len(),
+        MAX_QUERY_BYTES
+    );
+}
+
+#[test]
+fn large_prompts_retrieve_project_memory_and_global_vault_without_changing_prompt() {
+    let (root, engine, project, config) = fixture();
+    fs::create_dir(root.join("docs/.obsidian")).unwrap();
+    fs::write(
+        root.join("docs/renewal.md"),
+        "# Renewal\nCheck refresh token expiry.",
+    )
+    .unwrap();
+    let record = engine
+        .save(
+            &project,
+            &MemoryDraft {
+                id: None,
+                title: "OAuth".into(),
+                content: "Use typed authentication errors.".into(),
+                kind: "decision".into(),
+                pinned: false,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    let query = format!("OAuth\n{}\nrenewal", "ação 🚀 ".repeat(6000));
+    let original = query.clone();
+    assert!(query.len() > MAX_QUERY_BYTES);
+    // Explicit search limits still apply to UI and MCP callers.
+    assert_eq!(
+        search(
+            &engine,
+            &project,
+            Some(root.to_str().unwrap()),
+            Some(&config),
+            &query
+        )
+        .err()
+        .as_deref(),
+        Some("Query exceeds limit")
+    );
+    let prepared = prepare(
+        &engine,
+        &project,
+        root.to_str().unwrap(),
+        &config,
+        "codex:large",
+        &query,
+        (3, 1400),
+    )
+    .unwrap();
+    assert_eq!(query, original);
+    assert!(prepared.hits.iter().any(|hit| hit.id == record.id));
+    assert!(prepared
+        .hits
+        .iter()
+        .any(|hit| hit.source == "document" && hit.scope == "global" && hit.title == "Renewal"));
+    assert!(!prepared.prepared.text.is_empty());
+    assert!(prepared.prepared.text.len() <= engine.config(&project).unwrap().budget_tokens * 4);
+    engine
+        .mark_delivered(&project, "codex:large", &prepared.prepared)
+        .unwrap();
+    for reference in &prepared.references {
+        engine
+            .mark_reference_delivered(&project, "codex:large", reference, 1)
+            .unwrap();
+    }
+    let repeated = prepare(
+        &engine,
+        &project,
+        root.to_str().unwrap(),
+        &config,
+        "codex:large",
+        &query,
+        (3, 1400),
+    )
+    .unwrap();
+    assert!(repeated.prepared.text.is_empty());
+    assert!(repeated.prepared.duplicate_count >= 2);
+    let command = format!("/compact {query}");
+    assert!(prepare(
+        &engine,
+        &project,
+        root.to_str().unwrap(),
+        &config,
+        "codex:command",
+        &command,
+        (3, 1400)
+    )
+    .unwrap()
+    .prepared
+    .text
+    .is_empty());
+}
+
+#[test]
 fn mixed_context_obeys_budget_and_delivery_without_cross_project_leaks() {
     let (root, engine, project, config) = fixture();
     fs::write(

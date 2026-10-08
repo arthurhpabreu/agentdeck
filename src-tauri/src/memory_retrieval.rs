@@ -2,7 +2,29 @@
 use crate::shared_memory::{Engine, MemoryReference, PreparedContext, GLOBAL_MEMORY_KEY};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, path::Path};
+use std::{borrow::Cow, collections::HashSet, path::Path};
+
+const MAX_QUERY_BYTES: usize = 8000;
+
+/// Automatic retrieval accepts full prompts; explicit searches remain bounded.
+/// Keep both the opening context and the final request without changing the prompt
+/// sent to the provider. Slice only at UTF-8 boundaries.
+fn automatic_query(query: &str) -> Cow<'_, str> {
+    if query.len() <= MAX_QUERY_BYTES {
+        return Cow::Borrowed(query);
+    }
+    let head_bytes = (MAX_QUERY_BYTES - 1) / 2;
+    let tail_bytes = MAX_QUERY_BYTES - 1 - head_bytes;
+    let mut head_end = head_bytes;
+    while !query.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = query.len() - tail_bytes;
+    while !query.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    Cow::Owned(format!("{}\n{}", &query[..head_end], &query[tail_start..]))
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +46,7 @@ pub fn search(
     config_path: Option<&Path>,
     query: &str,
 ) -> Result<Vec<RetrievalHit>, String> {
-    if query.len() > 8000 {
+    if query.len() > MAX_QUERY_BYTES {
         return Err("Query exceeds limit".into());
     }
     if !engine.config(project)?.enabled {
@@ -159,9 +181,10 @@ pub fn prepare(
     if !settings.enabled || query.trim_start().starts_with('/') {
         return Ok(output);
     }
-    let mut hits = search(engine, project, Some(path), Some(config), query)?;
+    let query = automatic_query(query);
+    let mut hits = search(engine, project, Some(path), Some(config), &query)?;
     // Existing baseline/continuation selection supplies pinned preferences and recent handoffs.
-    let baseline = engine.prepare_context(project, conversation, query)?;
+    let baseline = engine.prepare_context(project, conversation, &query)?;
     for note in baseline.records {
         if !hits.iter().any(|hit| hit.id == note.id) {
             if let Some(record) = engine.get_context(project, &note.id)? {

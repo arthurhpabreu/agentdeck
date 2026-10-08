@@ -135,7 +135,8 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   const transmittedPrompt = goalChanged ? (goal ? `Conversation objective: ${goal}\n\n${prompt.trim()}` : `The previous conversation objective has been cleared. Follow the current request.\n\n${prompt.trim()}`) : prompt.trim();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments };
   useChatStore.getState().patch(sessionId, { busy: true, turnId, error: undefined, diagnostic: undefined, status: "starting", draft: "", messages: [...old.messages, message] });
-  useSessionStore.getState().updateSession(sessionId, { status: "running", currentTask: prompt.trim(), ...(!old.messages.length ? { name: prompt.trim().slice(0, 44) || attachments[0]?.name } : {}) });
+  useSessionStore.getState().updateSession(sessionId, { status: "running", currentTask: prompt.trim() });
+  if (!old.messages.length) useSessionStore.getState().setAutomaticSessionName(sessionId, prompt.trim().slice(0, 44) || attachments[0]?.name || "");
   useAgentActivityStore.getState().record(sessionId, { phase: "starting", startedAt: Date.now(), endedAt: undefined, error: undefined, command: session.runner.type === "codex" ? "codex app-server" : "claude --print", pid: undefined }, "activity.starting");
   try {
     await ensureChatEvents();

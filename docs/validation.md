@@ -1,5 +1,41 @@
 # Validation evidence
 
+## 0.6.1
+
+Validated locally on Windows on October 8, 2026.
+
+| Check | Result |
+| --- | --- |
+| Frozen pnpm installation | Passed with the committed dependency lockfile. |
+| TypeScript and production build | Passed. Existing chunk-size and mixed-import warnings remain. |
+| Translations and Rust formatting | Passed: 405 EN/PT/ES keys and `cargo fmt --check`. |
+| Playwright browser suite | 93 passed, including four session naming and four application update scenarios. |
+| Rust library suite | 129 passed, 6 optional tests ignored, no failures. Final installer-type selection also passed the focused updater suite. |
+| Official release download smoke test | Explicit opt-in test passed separately: both published 0.6.0 installers downloaded and verified against their containers and release SHA-256. No installer was opened. |
+| Windows installers | Optimized x64 NSIS/MSI bundles generated; package versions, MSI publisher and unchanged upgrade code checked. |
+| Release integrity | SHA-256 manifest includes both installers and LICENSE. Generated artifacts stay outside source control. |
+
+Session naming coverage includes keyboard activation within sortable rows,
+blank-name rejection, Escape cancellation and focus restoration, persistence,
+recovery, renaming during active chat, first-message naming, and native startup.
+Older sessions keep their existing automatic naming until explicitly renamed.
+
+Application update coverage includes one startup check, numeric version ordering,
+stable-release filtering, exact official assets, both installer types, bounded
+downloads, checksum/container failures, retry, explicit installation and busy
+agent/terminal gating. Tauri's embedded bundle type selects the package format.
+Native commands do not accept caller-provided download URLs or executable paths.
+
+Memory regressions exercise prompts above 8,000 bytes with accents and emojis,
+project notes, a global Obsidian vault, the configured context budget and delivery
+deduplication. The provider prompt is retained in full; automatic retrieval uses
+only bounded opening/ending samples. Explicit search limits are preserved.
+
+Browser tests use mocked native boundaries. These checks do not establish a
+successful interactive in-place upgrade on a clean machine or live provider
+execution. Installers remain unsigned; macOS/Linux updating is not supported by
+the new application updater. GitHub CI runs independently of these local checks.
+
 ## 0.6.0
 
 Validated locally on Windows on October 7, 2026.

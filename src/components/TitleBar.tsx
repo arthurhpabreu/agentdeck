@@ -5,6 +5,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { WindowControls } from "./WindowControls";
 import { CliUpdateIndicator } from "./CliUpdates";
+import { AppUpdateIndicator } from "./AppUpdates";
 import type { ReactNode } from "react";
 
 export function TitleBar({ onAgents, navigation }: { onAgents?: () => void; navigation?: ReactNode }) {
@@ -23,6 +24,7 @@ export function TitleBar({ onAgents, navigation }: { onAgents?: () => void; navi
     <div className="ad-titlebar-actions">
       {navigation}
       <CliUpdateIndicator />
+      <AppUpdateIndicator />
       <button className="ad-button ad-button-ghost" onClick={onAgents} aria-label={locale.startsWith("en") ? "Agents" : "Agentes"}><Network size={16} />{locale.startsWith("en") ? "Agents" : "Agentes"}</button>
       <button className="ad-icon-button" onClick={() => openSettings()} title={t("titleBar.settings")} aria-label={t("titleBar.settings")}><Settings2 size={16} /></button>
       <WindowControls />

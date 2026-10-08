@@ -2,6 +2,7 @@
 mod agent_catalog;
 mod agent_models;
 mod agent_observability;
+mod app_updates;
 mod chat;
 mod cli_detect;
 mod cli_updates;
@@ -79,6 +80,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .manage(i18n::LocaleState::default())
+        .manage(app_updates::AppUpdateState::default())
         .manage(ProcessMap::default())
         .manage(chat::ChatProcessState::default())
         .manage(PtyWriterMap::default())
@@ -197,6 +199,9 @@ pub fn run() {
             agent_models::list_agent_models,
             agent_catalog::list_agent_commands,
             cli_updates::check_cli_update,
+            app_updates::check_app_update,
+            app_updates::download_app_update,
+            app_updates::install_app_update,
             cli_updates::update_agent_cli,
             agent_observability::observe_agent_sessions,
             provider_usage::get_provider_usage,

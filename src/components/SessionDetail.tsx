@@ -20,6 +20,7 @@ import { useChatStore } from "../store/chatStore";
 import { stopPtySession, usePtyRuntimeStore } from "../store/ptyRuntimeStore";
 import { effortCopy } from "./session/effortCopy";
 import { TokenEconomyControl } from "./economy/TokenEconomyControl";
+import { SessionRenameControl } from "./session/SessionRenameControl";
 
 const SPRING = {
   type: "spring" as const,
@@ -467,6 +468,7 @@ function SessionPanel(props: PanelProps) {
       <button role="tab" aria-selected={!native} disabled={session.runner.type === "gemini"} title={c.chat} onClick={() => setNative(false)}><MessageSquare size={14} />{c.chat}</button>
       <button role="tab" aria-selected={native} disabled={busy} title={busy ? c.runningSwitch : c.nativeHint} onClick={() => { setNative(true); setNativeMounted(true); }}><TerminalSquare size={14} />{c.native}</button>
       <span title={session.worktreePath || session.workdir}>{session.name}</span>
+      <SessionRenameControl session={session} />
       <SessionMemoryControl sessionId={session.id} provider={session.runner.type} projectPath={session.workdir} onOpen={() => { useWorkspaceStore.getState().setActiveWorkspace(session.workspaceId); useWorkbenchStore.getState().setSidebarSection("memory"); }} />
       {session.runner.type !== "gemini" && <TokenEconomyControl provider={session.runner.type} sessionId={session.id} workdir={session.worktreePath || session.workdir} disabled={busy || nativeLive} visible={props.isOpen} />}
     </div>

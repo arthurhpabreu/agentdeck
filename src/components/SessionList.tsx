@@ -11,6 +11,7 @@ import { useWorkspaceStore, getWorkspaceColor } from "../store/workspaceStore";
 import { useSettingsStore, RUNNER_LABELS, sanitizeRunnerConfig, isGlassTheme } from "../store/settingsStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { showExplorer, showSessionSurface } from "../services/workbenchCommands";
+import { SessionRenameControl } from "./session/SessionRenameControl";
 
 // ── Status configuration using CSS variables ─────────────────
 const STATUS_CONFIG: Record<SessionStatus, {
@@ -139,6 +140,8 @@ function SessionCard({
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setHovered(false); }}
       style={{
         display: "flex",
         alignItems: "center",
@@ -309,6 +312,7 @@ function SessionCard({
           pointerEvents: showActions ? "auto" : "none",
           transition: "opacity 0.12s",
         }}>
+          <SessionRenameControl session={session} style={iconButtonStyle} />
           {(isWaiting || isSuspended) && (
             <button
               onClick={(e) => { e.stopPropagation(); onRotateSuspend(); }}

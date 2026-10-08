@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.1 — 2026-10-08
+
+### Added
+
+- Agent Deck checks official stable GitHub releases at startup. Click the update
+  badge to download a verified installer, then explicitly open it from System
+  settings. The download uses the installed package type (NSIS or MSI).
+- Installer downloads verify release URLs, size, container and published SHA-256;
+  integrity is checked again before opening. Installation is blocked while agents
+  or terminals are running. Offline checks and failed downloads can be retried.
+- Rename sessions from the session list or conversation header, with a focused
+  name editor, Enter to save, Escape to cancel and English/Portuguese/Spanish labels.
+- Custom session names persist across restarts and recovery, and remain stable
+  when sending chat messages or launching the native terminal. Renaming keeps
+  the existing conversation, provider binding, worktree and history.
+
+### Fixed
+
+- Large prompts no longer disable automatic memory retrieval with
+  `Query exceeds limit`. Retrieval samples the opening and ending of the prompt
+  within an 8,000-byte UTF-8-safe query, while the provider receives the full prompt.
+- Project memory and global Markdown/Obsidian documents continue to share the
+  configured context budget and delivery deduplication for large prompts.
+
+### Compatibility
+
+- Existing sessions keep automatic naming until explicitly renamed. The optional
+  custom-name flag requires no data migration. Application identity, storage keys
+  and Windows installer upgrade code are unchanged from 0.6.0.
+
 ## 0.6.0
 
 ### Added

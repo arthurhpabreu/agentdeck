@@ -1,0 +1,41 @@
+.ad-session-rename-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ci-text-dim);
+  cursor: pointer;
+}
+.ad-session-rename-button:hover { color: var(--ci-text); background: var(--ci-btn-ghost-bg); }
+.ad-session-rename-button:focus-visible { outline: 2px solid var(--ci-accent); outline-offset: 2px; }
+.ad-session-rename-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  margin: auto;
+  padding: 24px;
+  border: 1px solid var(--ci-border-med);
+  border-radius: 14px;
+  background: var(--ci-bg);
+  color: var(--ci-text);
+  box-shadow: 0 20px 70px #0005;
+}
+.ad-session-rename-dialog::backdrop { background: #0006; }
+.ad-session-rename-dialog h2 { font-size: 17px; margin: 0 0 20px; }
+.ad-session-rename-dialog label { display: block; font-size: 12px; margin-bottom: 8px; }
+.ad-session-rename-dialog input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--ci-border-med);
+  border-radius: 7px;
+  background: var(--ci-surface);
+  color: var(--ci-text);
+  font: inherit;
+}
+.ad-session-rename-dialog input:focus { outline: 2px solid var(--ci-accent); outline-offset: 2px; }
+.ad-session-rename-dialog p { margin: 12px 0 20px; color: var(--ci-text-muted); font-size: 12px; line-height: 1.6; }
+.ad-session-rename-actions { display: flex; justify-content: flex-end; gap: 8px; }

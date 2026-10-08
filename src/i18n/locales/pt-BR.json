@@ -1,6 +1,9 @@
 {
   "common.close": "Fechar",
   "common.cancel": "Cancelar",
+  "session.rename": "Renomear sessão",
+  "session.nameLabel": "Nome da sessão",
+  "session.renameHint": "Até 120 caracteres. O nome escolhido é mantido ao enviar mensagens ou reabrir o aplicativo.",
   "common.create": "Criar",
   "common.open": "Abrir",
   "common.copy": "Copiar",

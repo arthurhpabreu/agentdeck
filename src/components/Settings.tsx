@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { type LocaleSetting, useAppI18n } from "../i18n";
 import { useSettingsStore, type ThemeMode, isGlassTheme } from "../store/settingsStore";
 import { CliUpdates } from "./CliUpdates";
+import { AppUpdates } from "./AppUpdates";
 
 const C = {
   surface: "var(--ci-surface)",
@@ -419,6 +420,7 @@ function SystemTab() {
           />
         </div>
       </div>
+      <AppUpdates />
       <CliUpdates />
     </div>
   );
