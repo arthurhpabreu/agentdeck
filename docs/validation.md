@@ -12,6 +12,7 @@ Validated locally on Windows on October 8, 2026.
 | Playwright browser suite | 93 passed, including four session naming and four application update scenarios. |
 | Rust library suite | 129 passed, 6 optional tests ignored, no failures. Final installer-type selection also passed the focused updater suite. |
 | Official release download smoke test | Explicit opt-in test passed separately: both published 0.6.0 installers downloaded and verified against their containers and release SHA-256. No installer was opened. |
+| Packaged memory MCP smoke test | 11 scenarios passed with 33 RPC requests against the release executable and an isolated temporary database; no provider/model requests. |
 | Windows installers | Optimized x64 NSIS/MSI bundles generated; package versions, MSI publisher and unchanged upgrade code checked. |
 | Release integrity | SHA-256 manifest includes both installers and LICENSE. Generated artifacts stay outside source control. |
 
