@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getI18n } from "../i18n";
+import { editorCopy } from "./editorCopy";
 import { useEditorBufferStore } from "../store/editorBufferStore";
 import { useEditorStore } from "../store/editorStore";
 import { type ExplorerEntry, useExplorerStore } from "../store/explorerStore";
@@ -199,6 +201,11 @@ export async function reloadExplorerDirectories(sessionId: string, dirs: string[
 }
 
 export function closeTab(tabId: string) {
+  const tab = useEditorStore.getState().tabsById[tabId];
+  const buffer = useEditorBufferStore.getState().buffersByTabId[tabId];
+  if (buffer?.saving) return false;
+  if (buffer?.dirty && !window.confirm(editorCopy(getI18n().language ?? "en").discard(tab?.path ?? tabId))) return false;
   useEditorStore.getState().closeTab(tabId);
   useEditorBufferStore.getState().removeBuffer(tabId);
+  return true;
 }

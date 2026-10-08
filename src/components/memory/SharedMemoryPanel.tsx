@@ -6,6 +6,7 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useSessionStore } from "../../store/sessionStore";
 import { RUNNER_LABELS, type RunnerType } from "../../store/settingsStore";
 import { useSharedMemoryStore, emptyProjectMemory } from "../../store/sharedMemoryStore";
+import { useMemoryDraftStore } from "../../store/memoryDraftStore";
 import { useMemoryRuntimeEvents, useMemoryRuntimeStore } from "../../store/memoryRuntimeStore";
 import { GLOBAL_MEMORY_KEY, memoryCommands, type MemoryConfiguration, type MemoryDraft, type MemoryKind, type MemoryRecord } from "../../services/memoryCommands";
 import { showSessionSurface } from "../../services/workbenchCommands";
@@ -20,8 +21,9 @@ const knownProvider = (provider?: string | null): provider is RunnerType => prov
 
 export function SharedMemoryPanel() {
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
+  const projectPath = useWorkspaceStore(state => state.workspaces.find(project => project.id === activeWorkspaceId)?.path);
   const scope = useSharedMemoryStore(state => state.memoryScope);
-  return <ProjectMemoryPanel key={`${scope}:${activeWorkspaceId ?? "no-project"}`} />;
+  return <ProjectMemoryPanel key={`${scope}:${scope === "global" ? GLOBAL_MEMORY_KEY : projectPath ?? "no-project"}`} />;
 }
 
 function ProjectMemoryPanel() {
@@ -42,9 +44,12 @@ function ProjectMemoryPanel() {
   const { load, save, setPinned, remove, configure, resetSession, clearError } = useSharedMemoryStore();
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<MemoryKind | "all">("all");
-  const [selected, setSelected] = useState<MemoryRecord | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<MemoryDraft>(emptyDraft);
+  const pending = useMemoryDraftStore(state => state.drafts[path]);
+  const [selected, setSelected] = useState<MemoryRecord | null>(() => pending?.selected ?? null);
+  const editing = !!pending;
+  const draft = pending?.draft ?? emptyDraft();
+  const setDraft = (value: MemoryDraft | ((previous: MemoryDraft) => MemoryDraft)) => useMemoryDraftStore.getState().put(path, typeof value === "function" ? value(draft) : value, selected);
+  const stopEditing = () => useMemoryDraftStore.getState().clear(path);
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Null follows the saved setting; every string, including empty, is an intentional draft.
   const [budget, setBudget] = useState<string | null>(null);
@@ -82,10 +87,6 @@ function ProjectMemoryPanel() {
     catch (error) { setStorageError(`${m.storageError} ${String(error)}`); }
   };
 
-  useEffect(() => {
-    setQuery(""); setKind("all"); setSelected(null); setEditing(false); setDraft(emptyDraft());
-    setConfirmDelete(false); setBudget(null); setValidation(""); setFeedback("");
-  }, [path]);
   useEffect(() => {
     if (!path || !desktop) return;
     const timer = setTimeout(() => void load(path, query.trim()), query ? 250 : 0);
@@ -130,13 +131,13 @@ function ProjectMemoryPanel() {
   const openEditor = (record?: MemoryRecord) => {
     clearMutationError();
     returnToNote.current = record?.id ?? "";
-    setSelected(record ?? null); setEditing(true); setConfirmDelete(false); setValidation(""); setFeedback("");
-    setDraft(record ? { id: record.id, title: record.title, content: record.content, kind: record.kind, pinned: record.pinned, sourceSessionId: record.sourceSessionId, provider: record.provider } : emptyDraft());
+    setSelected(record ?? null); setConfirmDelete(false); setValidation(""); setFeedback("");
+    useMemoryDraftStore.getState().put(path, record ? { id: record.id, title: record.title, content: record.content, kind: record.kind, pinned: record.pinned, sourceSessionId: record.sourceSessionId, provider: record.provider } : emptyDraft(), record ?? null);
     panelRef.current?.scrollTo({ top: 0 });
   };
-  const openRecord = (record: MemoryRecord) => { clearMutationError(); returnToNote.current = record.id; setSelected(record); setEditing(false); setConfirmDelete(false); setFeedback(""); setValidation(""); panelRef.current?.scrollTo({ top: 0 }); };
-  const back = () => { clearMutationError(); setSelected(null); setEditing(false); setConfirmDelete(false); setValidation(""); };
-  const cancelEditor = () => { clearMutationError(); setEditing(false); setValidation(""); };
+  const openRecord = (record: MemoryRecord) => { clearMutationError(); returnToNote.current = record.id; setSelected(record); stopEditing(); setConfirmDelete(false); setFeedback(""); setValidation(""); panelRef.current?.scrollTo({ top: 0 }); };
+  const back = () => { clearMutationError(); setSelected(null); stopEditing(); setConfirmDelete(false); setValidation(""); };
+  const cancelEditor = () => { clearMutationError(); stopEditing(); setValidation(""); };
   const cancelDelete = () => { if (memory.failedAction?.type === "delete") clearError(path); setConfirmDelete(false); };
   const saveDraft = async (value = draft) => {
     if (!value.title.trim() || !value.content.trim()) { setValidation(m.validation); return; }
@@ -145,7 +146,8 @@ function ProjectMemoryPanel() {
     const requestedPath = path;
     setValidation("");
     const record = await save(requestedPath, { ...value, title: value.title.trim(), content: value.content.trim() });
-    if (record && currentPath.current === requestedPath) { setSelected(record); setEditing(false); setFeedback(m.saved); }
+    if (record) useMemoryDraftStore.getState().clear(requestedPath);
+    if (record && currentPath.current === requestedPath) { setSelected(record); setFeedback(m.saved); }
   };
   const pinRecord = async (id: string, pinned: boolean) => {
     const requestedPath = path;

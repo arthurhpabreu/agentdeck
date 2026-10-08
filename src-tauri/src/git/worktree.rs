@@ -30,21 +30,41 @@ pub fn read_worktree_branch(worktree_path: &Path) -> Option<String> {
     Some(branch.to_string())
 }
 
-/// Force-remove a worktree, falling back to directory removal and prune if Git fails.
-fn force_remove_worktree(workdir: &str, wt_path: &str) {
-    let _ = background_command("git")
-        .current_dir(workdir)
-        .args(["worktree", "remove", "--force", wt_path])
-        .output();
-
-    let p = Path::new(wt_path);
-    if p.exists() {
-        let _ = fs::remove_dir_all(p);
-        let _ = background_command("git")
-            .current_dir(workdir)
-            .args(["worktree", "prune"])
-            .output();
+/// Refuse cleanup when tracked, untracked or ignored files would be lost.
+pub(super) fn ensure_clean_worktree(wt_path: &str) -> Result<(), String> {
+    let status = background_command("git")
+        .current_dir(wt_path)
+        .args([
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignored",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !status.status.success() {
+        return Err(String::from_utf8_lossy(&status.stderr).trim().to_string());
     }
+    if !status.stdout.is_empty() {
+        return Err(format!(
+            "Worktree preserved because it contains local files or changes: {wt_path}"
+        ));
+    }
+    Ok(())
+}
+
+/// Git validates worktree ownership; never fall back to deleting a directory.
+pub(super) fn remove_worktree(workdir: &str, wt_path: &str) -> Result<(), String> {
+    ensure_clean_worktree(wt_path)?;
+    let out = background_command("git")
+        .current_dir(workdir)
+        .args(["worktree", "remove", "--", wt_path])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
 }
 
 // ── Tauri Commands ────────────────────────────────────────────────
@@ -92,12 +112,12 @@ pub async fn git_worktree_remove(
     let expanded_wt_path = expand_path(&worktree_path);
 
     tokio::task::spawn_blocking(move || {
-        force_remove_worktree(&expanded_workdir, &expanded_wt_path);
+        remove_worktree(&expanded_workdir, &expanded_wt_path)?;
 
         if delete_branch && !branch.is_empty() {
             let _ = background_command("git")
                 .current_dir(&expanded_workdir)
-                .args(["branch", "-D", &branch])
+                .args(["branch", "-d", "--", &branch])
                 .output();
         }
         Ok(())
@@ -154,7 +174,7 @@ pub async fn git_worktree_list(workdir: String) -> Result<Vec<serde_json::Value>
     .map_err(|e| e.to_string())?
 }
 
-/// Merge a worktree branch into the target, then remove the worktree and its branch.
+/// Merge committed work, then clean up only when local files can be preserved.
 #[tauri::command]
 pub async fn git_worktree_merge(
     workdir: String,
@@ -196,12 +216,12 @@ pub async fn git_worktree_merge(
             ));
         }
 
-        // Remove the worktree and its branch.
-        force_remove_worktree(&expanded_workdir, &expanded_wt_path);
-        if !branch.is_empty() {
+        // Merge already succeeded. A dirty/locked worktree is retained; cleanup
+        // must not turn a completed merge into a misleading failure.
+        if remove_worktree(&expanded_workdir, &expanded_wt_path).is_ok() && !branch.is_empty() {
             let _ = background_command("git")
                 .current_dir(&expanded_workdir)
-                .args(["branch", "-D", &branch])
+                .args(["branch", "-d", "--", &branch])
                 .output();
         }
 
@@ -254,15 +274,8 @@ pub async fn setup_session_worktree(
         let branch_prefix = session_branch_prefix();
         let branch = session_branch_name(&branch_prefix, &session_id_clone);
 
-        // Keep creation idempotent by cleaning up an existing worktree and branch with this name.
-        let _ = background_command("git")
-            .current_dir(&expanded_workdir)
-            .args(["worktree", "remove", "--force", &worktree_path])
-            .output();
-        let _ = background_command("git")
-            .current_dir(&expanded_workdir)
-            .args(["branch", "-D", &branch])
-            .output();
+        // A retried launch must never destroy a previous session's files or branch.
+        // `worktree add` reports an existing destination without changing it.
 
         // Create the worktree.
         if let Some(parent) = Path::new(&worktree_path).parent() {
@@ -294,9 +307,10 @@ pub async fn setup_session_worktree(
     .map_err(|e| e.to_string())?
 }
 
-/// Clean up a session's Git worktree without surfacing cleanup failures.
+/// Clean up a session's Git worktree only when Git can safely remove it.
 #[tauri::command]
 pub async fn teardown_session_worktree(
+    app: tauri::AppHandle,
     workdir: String,
     worktree_path: String,
     branch: String,
@@ -305,24 +319,29 @@ pub async fn teardown_session_worktree(
     let expanded_wt = expand_path(&worktree_path);
 
     tokio::task::spawn_blocking(move || {
-        force_remove_worktree(&expanded_workdir, &expanded_wt);
-
-        // Prune dangling worktree references.
-        let _ = background_command("git")
-            .current_dir(&expanded_workdir)
-            .args(["worktree", "prune"])
-            .output();
-
-        if !branch.is_empty() {
-            let _ = background_command("git")
-                .current_dir(&expanded_workdir)
-                .args(["branch", "-D", &branch])
-                .output();
+        let target = fs::canonicalize(&expanded_wt).map_err(|e| e.to_string())?;
+        if super::worktree_recovery::in_use(&app, &target) {
+            return Err("Worktree preserved: session is still in use".into());
         }
-        Ok(())
+        teardown_folder(&expanded_workdir, &expanded_wt, &branch)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn teardown_folder(workdir: &str, path: &str, branch: &str) -> Result<(), String> {
+    remove_worktree(workdir, path)?;
+    let _ = background_command("git")
+        .current_dir(workdir)
+        .args(["worktree", "prune"])
+        .output();
+    if !branch.is_empty() {
+        let _ = background_command("git")
+            .current_dir(workdir)
+            .args(["branch", "-d", "--", branch])
+            .output();
+    }
+    Ok(())
 }
 
 /// Clean up orphan worktree directories and branches absent from known_worktree_paths.
@@ -367,20 +386,15 @@ pub async fn prune_orphan_worktrees(
             // Read the orphan worktree's branch name before cleanup.
             let branch = read_worktree_branch(&path);
 
-            let _ = background_command("git")
-                .current_dir(&expanded_workdir)
-                .args(["worktree", "remove", "--force", &canonical])
-                .output();
-
-            if path.exists() {
-                let _ = fs::remove_dir_all(&path);
+            if remove_worktree(&expanded_workdir, &canonical).is_err() {
+                continue;
             }
 
             if let Some(b) = &branch {
                 if !b.is_empty() {
                     let _ = background_command("git")
                         .current_dir(&expanded_workdir)
-                        .args(["branch", "-D", b])
+                        .args(["branch", "-d", "--", b])
                         .output();
                 }
             }
@@ -399,4 +413,163 @@ pub async fn prune_orphan_worktrees(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct Sandbox(PathBuf);
+    impl Sandbox {
+        fn new() -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("agentdeck-worktree-qa-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            Self(root)
+        }
+    }
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            // Cleanup is confined to the uniquely named synthetic fixture.
+            let temp = fs::canonicalize(std::env::temp_dir()).unwrap();
+            let root = fs::canonicalize(&self.0).unwrap();
+            assert_eq!(root.parent(), Some(temp.as_path()));
+            assert!(self
+                .0
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("agentdeck-worktree-qa-"));
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn git(root: &Path, args: &[&str]) {
+        let out = background_command("git")
+            .current_dir(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    fn repository(sandbox: &Sandbox) -> PathBuf {
+        let repo = sandbox.0.join("repository");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init"]);
+        git(&repo, &["config", "user.name", "QA fixture"]);
+        git(&repo, &["config", "user.email", "qa@example.invalid"]);
+        fs::write(repo.join("tracked.txt"), "saved").unwrap();
+        fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "fixture"]);
+        repo
+    }
+
+    #[test]
+    fn cleanup_preserves_tracked_untracked_ignored_and_unregistered_files() {
+        let sandbox = Sandbox::new();
+        let repo = repository(&sandbox);
+        let worktree = sandbox.0.join("session");
+        let repo_text = repo.to_str().unwrap();
+        let wt = worktree.to_str().unwrap();
+        git(&repo, &["worktree", "add", "-b", "qa-session", wt]);
+        fs::write(worktree.join("tracked.txt"), "unsaved").unwrap();
+        assert!(remove_worktree(repo_text, wt).is_err());
+        assert_eq!(
+            fs::read_to_string(worktree.join("tracked.txt")).unwrap(),
+            "unsaved"
+        );
+        git(&worktree, &["restore", "tracked.txt"]);
+        for filename in ["new.txt", "ignored.txt"] {
+            fs::write(worktree.join(filename), "local data").unwrap();
+            assert!(remove_worktree(repo_text, wt).is_err());
+            assert_eq!(
+                fs::read_to_string(worktree.join(filename)).unwrap(),
+                "local data"
+            );
+            fs::remove_file(worktree.join(filename)).unwrap();
+        }
+        let other = sandbox.0.join("ordinary-folder");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("keep.txt"), "keep").unwrap();
+        assert!(remove_worktree(repo_text, other.to_str().unwrap()).is_err());
+        assert!(other.join("keep.txt").exists());
+        remove_worktree(repo_text, wt).unwrap();
+        assert!(!worktree.exists());
+        assert!(repo.join("tracked.txt").exists());
+    }
+
+    #[test]
+    fn session_teardown_keeps_unmerged_commits_reachable() {
+        let sandbox = Sandbox::new();
+        let repo = repository(&sandbox);
+        let worktree = sandbox.0.join("session");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "qa-unmerged",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        fs::write(worktree.join("tracked.txt"), "committed session work").unwrap();
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-m", "session work"]);
+        teardown_folder(
+            repo.to_str().unwrap(),
+            worktree.to_str().unwrap(),
+            "qa-unmerged",
+        )
+        .unwrap();
+        assert!(!worktree.exists());
+        git(&repo, &["show-ref", "--verify", "refs/heads/qa-unmerged"]);
+    }
+
+    #[test]
+    fn completed_merge_keeps_local_files_when_cleanup_is_not_possible() {
+        let sandbox = Sandbox::new();
+        let repo = repository(&sandbox);
+        let base = background_command("git")
+            .current_dir(&repo)
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
+        let worktree = sandbox.0.join("session");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "qa-merge",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        fs::write(worktree.join("tracked.txt"), "committed session work").unwrap();
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-m", "session work"]);
+        fs::write(worktree.join("ignored.txt"), "local build artifact").unwrap();
+        tauri::async_runtime::block_on(git_worktree_merge(
+            repo.to_string_lossy().into_owned(),
+            worktree.to_string_lossy().into_owned(),
+            "qa-merge".into(),
+            String::from_utf8_lossy(&base.stdout).trim().into(),
+        ))
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(repo.join("tracked.txt")).unwrap(),
+            "committed session work"
+        );
+        assert_eq!(
+            fs::read_to_string(worktree.join("ignored.txt")).unwrap(),
+            "local build artifact"
+        );
+        git(&repo, &["show-ref", "--verify", "refs/heads/qa-merge"]);
+    }
 }

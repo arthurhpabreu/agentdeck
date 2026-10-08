@@ -55,16 +55,9 @@
 .ad-chat-progress { display: flex; align-items: center; gap: 9px; margin: 10px auto; max-width: 790px; padding: 8px 0; color: var(--ci-accent); font-size: 12px; }
 .ad-chat-progress time { margin-left: auto; font: 11px Consolas, monospace; color: var(--ci-text-dim); }
 .ad-chat-bottom { flex-shrink: 0; width: 100%; max-width: 930px; margin: 0 auto; padding: 10px 28px 13px; }
-.ad-chat-composer { box-shadow: 0 5px 28px #001b0a0a; border-radius: 16px; padding: 11px 14px; }
-.ad-chat-composer textarea { min-height: 54px; max-height: min(24vh, 200px); font-size: 13px; }
-.ad-chat-composer .ad-composer-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding-top: 7px; margin-top: 8px; gap: 9px; border-top: none; }
-.ad-chat-composer .ad-agent-controls { grid-column: 1 / -1; grid-row: 1; }
-.ad-chat-composer .ad-agent-controls .ad-full-access { white-space: nowrap; }
-.ad-chat-composer .ad-agent-options-trigger { order: 1; }
-.ad-chat-composer .ad-add-context { grid-column: 1; grid-row: 2; justify-self: start; }
-.ad-chat-actions { grid-column: 2; grid-row: 2; display: flex; align-items: center; gap: 9px; }
+.ad-chat-composer { box-shadow: 0 5px 28px #001b0a0a; }
+.ad-chat-actions { display: flex; align-items: center; gap: 5px; flex: none; }
 .ad-chat-actions .ad-chat-send { flex: none; }
-.ad-chat-composer .ad-field { font-size: 10px; } .ad-chat-composer .ad-field select { max-width: 170px; background: var(--ci-bg); }
 .ad-composer-spacer { flex: 1; } .ad-chat-send { width: 34px; height: 34px; padding: 0; border-radius: 50%; }
 .ad-chat-footnote { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-top: 8px; color: var(--ci-text-dim); font-size: 10px; line-height: 1.5; }
 .ad-chat-footnote > span:last-child { display: flex; gap: 5px; align-items: center; white-space: nowrap; }
@@ -87,7 +80,7 @@
 .ad-sketch-dialog { width: min(860px, 90vw); margin: auto; border: 1px solid var(--ci-border-med); border-radius: 16px; padding: 16px; background: var(--ci-surface); color: var(--ci-text); }
 .ad-sketch-dialog::backdrop { background: #0008; } .ad-sketch-dialog header, .ad-sketch-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; } .ad-sketch-dialog canvas { width: 100%; margin: 14px 0; border-radius: 8px; touch-action: none; cursor: crosshair; } .ad-sketch-dialog footer { justify-content: flex-end; }
 .ad-spin { animation: ad-spin 1.2s linear infinite; } @keyframes ad-spin { to { transform: rotate(360deg); } }
-@media (max-width: 1100px) { .ad-chat-scroll { padding: 14px 18px; } .ad-chat-bottom { padding: 8px 16px 10px; } .ad-chat-logo { width: 50px; height: 50px; border-radius: 15px; margin-bottom: 13px; } .ad-chat-welcome h2 { font-size: 25px; } .ad-chat-composer .ad-field select { max-width: 130px; } .ad-native-entry span { display: none; } }
+@media (max-width: 1100px) { .ad-chat-scroll { padding: 14px 18px; } .ad-chat-bottom { padding: 8px 16px 10px; } .ad-chat-logo { width: 50px; height: 50px; border-radius: 15px; margin-bottom: 13px; } .ad-chat-welcome h2 { font-size: 25px; } .ad-native-entry span { display: none; } }
 @media (max-height: 760px) { .ad-chat-logo { width: 44px; height: 44px; margin-bottom: 8px; border-radius: 12px; } .ad-chat-welcome h2 { font-size: 22px; margin-top: 8px; } .ad-chat-welcome .ad-agent-pills { margin: 12px 0; } .ad-native-entry { margin-top: 2px; } }
 
 /* Keep the original chat selector inside the restored chat surface. */
@@ -100,3 +93,48 @@
 .ad-full-access { display:flex; align-items:center; gap:5px; font-size:11px; color:var(--ci-text-muted); padding:4px; }
 .ad-full-access input { accent-color:var(--ci-accent); }
 .ad-supplement-status { display:block; margin-top:8px; color:var(--ci-text-muted); }
+
+/* A small command shelf and one continuous control row keep the writing area clear. */
+.ad-composer-compact { container-type: inline-size; border-radius: 12px; padding: 9px 11px; border-left: 2px solid var(--ci-accent-bdr); }
+.ad-composer-compact textarea { min-height: 42px; max-height: min(24vh, 200px); padding: 3px 2px; font-size: 13px; line-height: 1.5; }
+.ad-composer-compact .ad-command-shortcuts { gap: 3px; margin: 0 0 7px; }
+.ad-composer-compact .ad-command-shortcuts button { min-height: 23px; padding: 3px 7px; border: 0; border-radius: 5px; color: var(--ci-text-muted); background: var(--ci-surface-hi); }
+.ad-composer-compact .ad-command-shortcuts button:hover { color: var(--ci-accent); background: var(--ci-accent-bg); }
+.ad-composer-compact .ad-composer-footer { display: flex; flex-wrap: nowrap; align-items: center; gap: 5px; margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--ci-border); min-height: 38px; }
+.ad-composer-compact .ad-agent-controls { flex: 1 1 auto; flex-wrap: nowrap; gap: 4px; min-width: 0; }
+.ad-composer-compact .ad-agent-controls .ad-field { flex-direction: row; align-items: center; min-width: 0; gap: 0; }
+.ad-composer-compact .ad-control-label, .ad-composer-compact .ad-catalogue-error, .ad-composer-compact .ad-chat-context summary span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ad-composer-compact .ad-agent-controls .ad-model-field { flex: 1 1 190px; max-width: 230px; }
+.ad-composer-compact .ad-agent-controls .ad-model-field select { width: 100%; min-width: 0; max-width: none; }
+.ad-composer-compact .ad-agent-controls .ad-mode-field { flex: none; }
+.ad-composer-compact .ad-agent-controls .ad-mode-field select { width: 84px; max-width: 84px; }
+.ad-composer-compact .ad-agent-controls .ad-custom-model-field { flex: 1 1 100px; max-width: 130px; }
+.ad-composer-compact .ad-agent-controls .ad-custom-model-field input { width: 100%; min-width: 0; }
+.ad-composer-compact .ad-agent-controls select, .ad-composer-compact .ad-agent-controls input { height: 30px; padding: 4px 6px; background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 11px; }
+.ad-composer-compact .ad-agent-controls select:hover, .ad-composer-compact .ad-agent-controls input:hover { background: var(--ci-surface-hi); border-color: var(--ci-border); }
+.ad-composer-compact .ad-agent-controls .ad-model-field select { background: var(--ci-surface-hi); }
+.ad-composer-compact .ad-agent-controls .ad-effort-trigger { min-height: 30px; padding: 5px 6px; border-radius: 6px; flex: none; gap: 5px; }
+.ad-composer-compact .ad-agent-options-trigger { margin-left: 0; width: 28px; height: 30px; flex: none; }
+.ad-composer-compact .ad-access-control { flex: none; gap: 5px; height: 30px; padding: 0 7px; border: 0; border-radius: 6px; background: transparent; cursor: pointer; white-space: nowrap; font-size: 10px; }
+.ad-composer-compact .ad-access-control[data-enabled="true"] { color: var(--ci-accent); background: var(--ci-accent-bg); }
+.ad-composer-compact .ad-access-control:hover { background: var(--ci-surface-hi); }
+.ad-composer-compact .ad-access-control:disabled { opacity: .55; cursor: default; }
+.ad-composer-compact .ad-access-control:focus-within { outline: 2px solid var(--ci-accent); outline-offset: 2px; }
+.ad-composer-compact .ad-add-context { flex: none; }
+.ad-composer-compact .ad-add-button { width: 28px; height: 30px; border-radius: 6px; background: transparent; }
+.ad-composer-compact .ad-chat-context > summary { justify-content: center; width: 28px; min-height: 30px; padding: 0; }
+.ad-composer-compact .ad-chat-context > div { right: -35px; }
+.ad-composer-compact .ad-chat-send { width: 32px; height: 32px; border-radius: 9px; }
+.ad-chat-stop-slot { display: flex; width: 28px; height: 32px; align-items: center; justify-content: center; flex: none; }
+.ad-composer-compact .ad-chat-stop { width: 28px; height: 30px; background: var(--ci-surface-hi); color: var(--ci-text-muted); border-color: transparent; }
+@container (max-width: 680px) {
+  .ad-composer-compact .ad-access-control { width: 28px; justify-content: center; padding: 0; }
+  .ad-composer-compact .ad-access-control > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .ad-composer-compact .ad-agent-controls .ad-model-field { flex-basis: 140px; }
+}
+@container (max-width: 530px) {
+  .ad-composer-compact .ad-agent-controls .ad-effort-trigger > span, .ad-composer-compact .ad-agent-controls .ad-effort-trigger > small { display: none; }
+  .ad-composer-compact .ad-agent-controls .ad-effort-trigger { gap: 2px; padding: 5px; }
+  .ad-composer-compact .ad-agent-controls .ad-model-field { flex-basis: 100px; }
+  .ad-composer-compact .ad-agent-controls .ad-mode-field select { width: 74px; }
+}

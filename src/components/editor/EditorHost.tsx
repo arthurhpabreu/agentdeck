@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useAppI18n } from "../../i18n";
 import { loadFile, saveTab } from "../../services/editorCommands";
+import { editorCopy } from "../../services/editorCopy";
 import { useEditorBufferStore, type EditorBufferState } from "../../store/editorBufferStore";
 import { useEditorStore } from "../../store/editorStore";
 import { useScmStore } from "../../store/scmStore";
@@ -59,7 +60,8 @@ export function EditorHost({
   groupId: string;
   onRefreshDiff: (sessionId?: string | null, options?: { reloadExplorer?: boolean }) => void;
 }) {
-  const { t } = useAppI18n();
+  const { t, locale } = useAppI18n();
+  const copy = editorCopy(locale);
   const group = useEditorStore((s) => s.groupsById[groupId]);
   const tabsById = useEditorStore((s) => s.tabsById);
   const setActiveTab = useEditorStore((s) => s.setActiveTab);
@@ -136,10 +138,10 @@ export function EditorHost({
     );
   }
 
-  if (activeBuffer.error) {
+  if (activeBuffer.error && !activeBuffer.loaded) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%", minHeight: 0, overflow: "hidden", padding: 24, boxSizing: "border-box", color: "var(--ci-deleted-text)", fontSize: 12, lineHeight: 1.7 }}>
-        {activeBuffer.error}
+        <div role="alert"><p>{activeBuffer.error}</p><button type="button" className="ad-button" onClick={() => void loadFile(activeTab.id)}>{copy.retry}</button></div>
       </div>
     );
   }
@@ -202,11 +204,11 @@ export function EditorHost({
       <CodeEditorSurface
         path={activeTab.path}
         value={activeBuffer.content}
-        onChange={(value) => updateDraft(activeTab.id, value)}
+        onChange={(value) => { useEditorStore.getState().pinTab(activeTab.id); updateDraft(activeTab.id, value); }}
       />
 
       {activeBuffer.error && (
-        <div style={{ padding: "8px 14px", borderTop: "1px solid var(--ci-toolbar-border)", color: "var(--ci-deleted-text)", fontSize: 11 }}>
+        <div role="alert" style={{ padding: "8px 14px", borderTop: "1px solid var(--ci-toolbar-border)", color: "var(--ci-deleted-text)", fontSize: 11 }}>
           {activeBuffer.error}
         </div>
       )}

@@ -10,6 +10,7 @@ import "./knowledge.css";
 import { NoteGraph } from "./graph/KnowledgeGraph";
 import { knowledgeCopy } from "./knowledgeCopy";
 import { useWorkspaceStore } from "../store/workspaceStore";
+import { KnowledgeHealth } from "./memory/KnowledgeHealth";
 
 export function KnowledgePanel() {
   const { locale } = useAppI18n();
@@ -97,7 +98,7 @@ function ScopedDocuments({ projectPath }: { projectPath?: string }) {
       <button type="button" className="ad-button" disabled={!!busy} onClick={() => void changeSource()}><FolderOpen size={16} />{busy === "choosing" ? copy.choosing : t("knowledge.chooseFolder")}</button>
       {config && <div className="ad-documents-path">{config.sourcePath ? <><span>{t(config.mode === "obsidian" ? "knowledge.obsidian" : "knowledge.markdown")}</span><p title={config.sourcePath}>{config.sourcePath}</p><button type="button" className="ad-button ad-button-ghost" disabled={!!busy} onClick={() => void changeSource(true)}>{busy === "clearing" ? copy.clearing : t("knowledge.clear")}</button></> : <p>{t("knowledge.noSource")}</p>}</div>}
     </div>
-    {config?.sourcePath && <NoteGraph key={config.sourcePath} projectPath={projectPath} />}
+    {config?.sourcePath && <><KnowledgeHealth key={`health:${config.sourcePath}`} projectPath={projectPath} /><NoteGraph key={config.sourcePath} projectPath={projectPath} /></>}
     <form className="ad-documents-search" onSubmit={event => { event.preventDefault(); void search(); }}>
       <label htmlFor={searchId}>{t("knowledge.search")}</label>
       <div><input id={searchId} value={query} disabled={!config?.sourcePath} onChange={event => { request.current++; setQuery(event.target.value); setResults([]); setSearched(false); }} placeholder={t("knowledge.searchPlaceholder")} />

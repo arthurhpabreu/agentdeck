@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import type { RetrievalHit } from "../services/memoryIntelligenceCommands";
+import type { KnowledgeWarning } from "../services/knowledgeCommands";
 
-export interface MemoryContextEvent { sessionId: string; projectKey?: string; recordCount: number; estimatedTokens: number; duplicateCount: number }
+export interface MemoryContextEvent { sessionId: string; projectKey?: string; recordCount: number; estimatedTokens: number; duplicateCount: number; contextId?: string; phase?: "prepared" | "delivered"; sources?: RetrievalHit[]; warnings?: KnowledgeWarning[] }
 interface MemoryRuntime { context?: MemoryContextEvent; error?: string; updatedAt: number }
 export const useMemoryRuntimeStore = create<{
   sessions: Record<string, MemoryRuntime>;
@@ -15,7 +17,14 @@ export const useMemoryRuntimeStore = create<{
   context: event => {
     if (!event.sessionId || ![event.recordCount, event.estimatedTokens, event.duplicateCount].every(value => Number.isFinite(value) && value >= 0)) return;
     set(state => {
-      const sessions = { ...state.sessions, [event.sessionId]: { context: event, updatedAt: Date.now() } };
+      const current = state.sessions[event.sessionId]?.context;
+      if (event.phase === "delivered" && current?.contextId && event.contextId !== current.contextId) return state;
+      if (event.phase === "prepared" && current?.phase === "delivered" && event.contextId === current.contextId) return state;
+      const context = { ...event,
+        sources: Array.isArray(event.sources) ? event.sources.filter(source => source && typeof source.id === "string" && typeof source.title === "string" && typeof source.excerpt === "string").slice(0, 3) : undefined,
+        warnings: Array.isArray(event.warnings) ? event.warnings.filter(warning => warning && typeof warning.code === "string" && typeof warning.sourcePath === "string").slice(0, 4) : [],
+      };
+      const sessions = { ...state.sessions, [event.sessionId]: { context, updatedAt: Date.now() } };
       const keys = Object.keys(sessions);
       if (keys.length > 100) delete sessions[keys[0]];
       return { sessions };

@@ -4,12 +4,16 @@ import { commandCases } from "./command-cases";
 import { sessionNameCases } from "./session-name-cases";
 import { appUpdateCases } from "./app-update-cases";
 import { compactionCases } from "./compaction-cases";
+import { chatActivityCases } from "./chat-activity-cases";
+import { chatReliabilityCases } from "./chat-reliability-cases";
 
 effortCases(setup, openSession);
 commandCases(setup);
 sessionNameCases(setup, openSession);
 appUpdateCases(setup);
 compactionCases(setup, openSession);
+chatActivityCases(setup, openSession);
+chatReliabilityCases(setup, openSession);
 
 test("titlebar CLI indicator opens update management and follows confirmed results", async ({ page }) => {
   await setup(page);
@@ -83,6 +87,10 @@ async function setup(page: Page, locale = "pt-BR") {
         if (command === "list_agent_commands") return w.__agentCommands?.[args.runnerType] ?? null;
         if (command === "get_provider_usage") return [];
         if (command === "observe_agent_sessions") return [];
+        if (command === "get_chat_turn_status") {
+          if (w.__chatStatusFail) throw new Error("Process status unavailable");
+          return w.__chatTurnStatus ?? { turnId: w.__chatTurns[args.sessionId], running: true, pid: 8765, status: "running" };
+        }
         if (command === "save_chat_attachment") return { name: args.name, path: "C:\\AppData\\chat-attachments\\" + args.name, mimeType: args.mimeType, size: Math.floor(args.dataBase64.length * 3 / 4) };
         if (command === "start_chat_turn") {
           if (w.__failStart) throw new Error("chat spawn test failure");

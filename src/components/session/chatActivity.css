@@ -1,0 +1,41 @@
+.ad-tool-card { overflow: hidden; }
+.ad-tool-card.is-running { border-color: var(--ci-accent-bdr); }
+.ad-tool-card > summary { list-style: none; min-width: 0; }
+.ad-tool-card > summary::-webkit-details-marker { display: none; }
+.ad-tool-card > summary:focus-visible { outline: 2px solid var(--ci-accent); outline-offset: -2px; border-radius: 7px; }
+.ad-tool-card > summary .ad-tool-chevron { color: var(--ci-text-dim); transition: transform 120ms ease; }
+.ad-tool-card[open] > summary .ad-tool-chevron { transform: rotate(90deg); }
+.ad-tool-card > summary strong { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-tool-command-preview { flex: 1; min-width: 0; color: var(--ci-text-dim); font: 10px/1.6 "Cascadia Code", Consolas, monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ad-tool-card > summary .ad-tool-status { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
+.ad-tool-duration { flex-shrink: 0; font: 10px Consolas, monospace; color: var(--ci-text-dim); }
+.ad-tool-status.is-running, .ad-tool-status.is-in_progress { color: var(--ci-accent); }
+.ad-tool-status.is-failed, .ad-tool-status.is-error, .ad-tool-status.is-blocked { color: var(--ci-yellow-dark); }
+.ad-tool-body { border-top: 1px solid var(--ci-border); }
+.ad-tool-location { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; color: var(--ci-text-dim); font: 10px/1.5 Consolas, monospace; }
+.ad-tool-location span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-tool-section-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px 0 12px; color: var(--ci-text-dim); font-size: 10px; }
+.ad-tool-section-heading > div { display: flex; align-items: center; gap: 5px; }
+.ad-tool-card .ad-tool-body pre { border: 0; margin: 0; padding: 4px 12px 10px; max-height: 220px; }
+.ad-tool-command pre { color: var(--ci-text); background: var(--ci-code-bg); }
+.ad-tool-command { background: var(--ci-code-bg); }
+.ad-tool-result { border-top: 1px solid var(--ci-border); }
+.ad-tool-result:first-child { border-top: 0; }
+.ad-tool-waiting { padding: 10px 12px; color: var(--ci-text-dim); font-size: 11px; }
+.ad-tool-output-toggle { padding: 4px 6px; background: transparent; border: 0; border-radius: 4px; color: var(--ci-accent); cursor: pointer; font-size: 10px; }
+.ad-tool-output-toggle:hover { background: var(--ci-surface-hi); }
+.ad-tool-exit { padding: 5px 12px 8px; color: var(--ci-text-dim); font-size: 10px; }
+.ad-turn-activity { max-width: 790px; margin: 10px auto; }
+.ad-chat-scroll.is-empty:has(.ad-turn-activity) { flex-direction: column; }
+.ad-chat-scroll.is-empty .ad-turn-activity { width: min(100%, 790px); flex-shrink: 0; }
+.ad-turn-activity .ad-chat-progress { margin: 0; padding-bottom: 5px; }
+.ad-turn-activity-detail { display: flex; align-items: center; gap: 7px; padding-left: 25px; color: var(--ci-text-dim); font-size: 10px; min-width: 0; }
+.ad-turn-activity-detail > span { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ad-turn-activity-detail > small, .ad-turn-activity-detail > code { flex-shrink: 0; font-size: 10px; }
+.ad-chat-stall { margin-top: 10px; border: 1px solid var(--ci-yellow-bdr); background: var(--ci-yellow-bg); border-radius: 8px; padding: 10px 12px; font-size: 11px; color: var(--ci-text-muted); }
+.ad-chat-stall p { margin: 0 0 8px; }
+.ad-chat-stall p strong { display: block; margin-bottom: 4px; color: var(--ci-yellow-dark); }
+.ad-chat-stall > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.ad-chat-stall .ad-button { min-height: 28px; font-size: 11px; padding: 4px 8px; }
+.ad-chat-stall > small { display: block; margin-top: 8px; }
+@media (prefers-reduced-motion: reduce) { .ad-tool-card > summary .ad-tool-chevron { transition: none; } }

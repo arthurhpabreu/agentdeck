@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useAppI18n } from "../i18n";
 import { useSettingsStore, isGlassTheme, type ThemeMode } from "../store/settingsStore";
 import { startPtySession, stopPtySession } from "../store/ptyRuntimeStore";
+import { encodeTerminalInput } from "../services/terminalEncoding";
 
 interface Props {
   sessionId: string;
@@ -108,8 +109,7 @@ function getClampedTerminalSize(term: Terminal) {
 }
 
 function writePtyData(sessionId: string, data: string) {
-  const bytes = new TextEncoder().encode(data);
-  const b64 = btoa(String.fromCharCode(...bytes));
+  const b64 = encodeTerminalInput(data);
   return invoke("write_pty", { sessionId, data: b64 });
 }
 

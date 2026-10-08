@@ -13,6 +13,16 @@ pub struct ChatEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -39,10 +49,63 @@ pub struct ChatParser {
     provider_session_id: Option<String>,
     message_ids: HashMap<String, String>,
     text_blocks: HashMap<String, Vec<(u64, bool)>>,
+    tool_blocks: HashMap<(String, u64), ToolInput>,
     sequence: u64,
     pub failed: bool,
     saw_text: bool,
     context_input: u64,
+}
+
+struct ToolInput {
+    id: Option<String>,
+    title: Option<String>,
+    json: String,
+    depth: usize,
+    in_string: bool,
+    escaped: bool,
+    discarded: bool,
+}
+
+impl ToolInput {
+    fn append(&mut self, fragment: &str) -> Option<Value> {
+        if self.discarded {
+            return None;
+        }
+        if self.json.len() + fragment.len() > 512 * 1024 {
+            self.json.clear();
+            self.discarded = true;
+            return None;
+        }
+        self.json.push_str(fragment);
+        // Scan each byte once and parse only a complete object. Retrying a full
+        // JSON parse for every token makes large streamed edits quadratic too.
+        for byte in fragment.bytes() {
+            if self.in_string {
+                if self.escaped {
+                    self.escaped = false;
+                } else if byte == b'\\' {
+                    self.escaped = true;
+                } else if byte == b'"' {
+                    self.in_string = false;
+                }
+            } else {
+                match byte {
+                    b'"' => self.in_string = true,
+                    b'{' | b'[' => self.depth += 1,
+                    b'}' | b']' => self.depth = self.depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        }
+        if self.depth == 0 && !self.in_string {
+            let input = serde_json::from_str::<Value>(&self.json).ok()?;
+            self.json.clear();
+            self.discarded = true;
+            Some(input)
+        } else {
+            None
+        }
+    }
 }
 
 fn string(value: &Value, key: &str) -> Option<String> {
@@ -86,6 +149,36 @@ fn content_text(value: &Value) -> String {
     bounded_text(&value.to_string(), 32_768)
 }
 
+fn output_text(value: &Value) -> String {
+    let text = if let Some(text) = value.as_str() {
+        text.to_owned()
+    } else if let Some(blocks) = value.as_array() {
+        let text = blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            value.to_string()
+        } else {
+            text
+        }
+    } else if value.is_null() {
+        String::new()
+    } else {
+        value.to_string()
+    };
+    // Keep the latest output: test results and command failures usually come last.
+    if text.len() <= 32_768 {
+        return text;
+    }
+    let mut start = text.len() - 32_768;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("[earlier output omitted]\n{}", &text[start..])
+}
+
 impl ChatParser {
     pub fn new(session_id: String, turn_id: String) -> Self {
         Self {
@@ -94,6 +187,7 @@ impl ChatParser {
             provider_session_id: None,
             message_ids: HashMap::new(),
             text_blocks: HashMap::new(),
+            tool_blocks: HashMap::new(),
             sequence: 0,
             failed: false,
             saw_text: false,
@@ -124,6 +218,21 @@ impl ChatParser {
         event.item_id = Some("permission-required".into());
         event.title = Some("Permission required".into());
         event.status = Some("blocked".into());
+        event
+    }
+
+    fn tool_input(&self, id: Option<String>, title: Option<String>, input: &Value) -> ChatEvent {
+        let mut event = self.event("tool");
+        event.item_id = id;
+        event.title = title;
+        event.status = Some("running".into());
+        event.command = string(input, "command")
+            .or_else(|| string(input, "cmd"))
+            .map(|text| bounded_text(&text, 32_768));
+        event.cwd = string(input, "cwd").or_else(|| string(input, "workdir"));
+        if event.command.is_none() && !input.is_null() && input != &serde_json::json!({}) {
+            event.text = Some(content_text(input));
+        }
         event
     }
 
@@ -197,11 +306,18 @@ impl ChatParser {
                     "tool"
                 });
                 event.item_id = string(item, "id");
+                event.delta = record["delta"] == true;
                 event.parent_id =
                     string(item, "parent_tool_call_id").or_else(|| string(item, "parent_id"));
                 event.status = Some(
                     match item["status"].as_str() {
                         Some("failed" | "errored") => "failed",
+                        Some("declined") => "blocked",
+                        _ if item_type == "command_execution"
+                            && item["exit_code"].as_i64().is_some_and(|code| code != 0) =>
+                        {
+                            "failed"
+                        }
                         _ if completed => "completed",
                         _ => "running",
                     }
@@ -231,33 +347,40 @@ impl ChatParser {
                         _ => item_type.replace('_', " "),
                     });
                     let detail = match item_type {
-                        "command_execution" => format!(
-                            "{}{}{}",
-                            item["command"].as_str().unwrap_or(""),
-                            if item["aggregated_output"]
-                                .as_str()
-                                .is_some_and(|s| !s.is_empty())
-                            {
-                                "\n"
-                            } else {
-                                ""
-                            },
-                            item["aggregated_output"].as_str().unwrap_or("")
-                        ),
+                        "command_execution" => {
+                            event.command =
+                                string(item, "command").map(|text| bounded_text(&text, 32_768));
+                            event.output = item
+                                .get("aggregated_output")
+                                .filter(|value| value.is_string())
+                                .map(output_text);
+                            event.cwd = string(item, "cwd");
+                            event.exit_code = item["exit_code"].as_i64();
+                            String::new()
+                        }
                         "web_search" => item["query"].as_str().unwrap_or("").to_owned(),
                         "file_change" => content_text(&item["changes"]),
                         "todo_list" => content_text(&item["items"]),
                         _ => content_text(item),
                     };
-                    event.text = Some(bounded_text(&detail, 32_768));
+                    if item_type != "command_execution" {
+                        event.text = Some(bounded_text(&detail, 32_768));
+                    }
                 }
                 events.push(event);
             }
-            "turn.completed" => {
+            "turn.completed" | "usage.updated" => {
                 let mut event = self.event("status");
                 event.usage = record.get("usage").cloned();
                 event.context_tokens = record["context_tokens"].as_u64();
-                event.status = Some("finishing".into());
+                event.status = Some(
+                    if record["type"] == "usage.updated" {
+                        "running"
+                    } else {
+                        "finishing"
+                    }
+                    .into(),
+                );
                 events.push(event);
             }
             "turn.failed" | "error" => {
@@ -335,6 +458,27 @@ impl ChatParser {
         }
         let stream_key = parent.as_deref().unwrap_or("main").to_owned();
         match record["type"].as_str().unwrap_or("") {
+            "tool_progress" => {
+                let mut event = self.event("tool");
+                event.item_id = string(record, "tool_use_id");
+                event.title = string(record, "tool_name");
+                event.parent_id = parent;
+                event.status = Some("running".into());
+                event.elapsed_seconds = record["elapsed_time_seconds"]
+                    .as_f64()
+                    .filter(|value| value.is_finite() && *value >= 0.0);
+                events.push(event);
+            }
+            "tool_use_summary" => {
+                if let Some(summary) =
+                    string(record, "summary").filter(|text| !text.trim().is_empty())
+                {
+                    let mut event = self.message("status", &summary);
+                    event.status = Some("running".into());
+                    event.parent_id = parent;
+                    events.push(event);
+                }
+            }
             "system" => {
                 let subtype = record["subtype"].as_str().unwrap_or("");
                 let mut event = self.event("status");
@@ -367,6 +511,7 @@ impl ChatParser {
                         self.sequence += 1;
                         let id = string(&raw["message"], "id")
                             .unwrap_or_else(|| format!("message-{}", self.sequence));
+                        self.tool_blocks.retain(|(key, _), _| key != &stream_key);
                         self.message_ids.insert(stream_key, id);
                     }
                     "content_block_delta" if raw["delta"]["type"] == "text_delta" => {
@@ -389,11 +534,50 @@ impl ChatParser {
                     }
                     "content_block_start" if raw["content_block"]["type"] == "tool_use" => {
                         let block = &raw["content_block"];
-                        let mut event = self.event("tool");
-                        event.item_id = string(block, "id");
-                        event.title = string(block, "name");
+                        let id = string(block, "id");
+                        let title = string(block, "name");
+                        self.tool_blocks.insert(
+                            (stream_key, index),
+                            ToolInput {
+                                id: id.clone(),
+                                title: title.clone(),
+                                json: String::new(),
+                                depth: 0,
+                                in_string: false,
+                                escaped: false,
+                                discarded: false,
+                            },
+                        );
+                        let mut event = self.tool_input(id, title, &block["input"]);
                         event.parent_id = parent;
-                        event.status = Some("running".into());
+                        events.push(event);
+                    }
+                    "content_block_delta" if raw["delta"]["type"] == "input_json_delta" => {
+                        if let Some(tool) = self.tool_blocks.get_mut(&(stream_key, index)) {
+                            // Tool arguments stream as JSON fragments. Never display a partial
+                            // protocol record, and bound retained input for long editing tasks.
+                            if let Some(fragment) = raw["delta"]["partial_json"].as_str() {
+                                if let Some(input) = tool.append(fragment) {
+                                    let id = tool.id.clone();
+                                    let title = tool.title.clone();
+                                    let mut event = self.tool_input(id, title, &input);
+                                    event.parent_id = parent;
+                                    events.push(event);
+                                }
+                            }
+                        }
+                    }
+                    "content_block_stop" => {
+                        self.tool_blocks.remove(&(stream_key, index));
+                    }
+                    "content_block_start" if raw["content_block"]["type"] == "thinking" => {
+                        let mut event = self.event("status");
+                        event.status = Some("reasoning".into());
+                        events.push(event);
+                    }
+                    "content_block_delta" if raw["delta"]["type"] == "thinking_delta" => {
+                        let mut event = self.event("status");
+                        event.status = Some("reasoning".into());
                         events.push(event);
                     }
                     _ => {}
@@ -433,18 +617,18 @@ impl ChatParser {
                                     event.text.as_ref().is_some_and(|text| !text.is_empty());
                                 event
                             }
-                            "tool_use" => {
-                                let mut event = self.event("tool");
-                                event.item_id = string(block, "id");
-                                event.title = string(block, "name");
-                                event.text = Some(content_text(&block["input"]));
-                                event.status = Some("running".into());
-                                event
-                            }
+                            "tool_use" => self.tool_input(
+                                string(block, "id"),
+                                string(block, "name"),
+                                &block["input"],
+                            ),
                             "tool_result" => {
                                 let mut event = self.event("tool");
                                 event.item_id = string(block, "tool_use_id");
-                                event.text = Some(content_text(&block["content"]));
+                                event.output = Some(output_text(&block["content"]));
+                                event.exit_code = block["exit_code"]
+                                    .as_i64()
+                                    .or_else(|| record["tool_use_result"]["exit_code"].as_i64());
                                 event.status = Some(
                                     if block["is_error"] == true {
                                         "failed"
@@ -620,12 +804,122 @@ mod tests {
         let events = parser.parse("claude-code", r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool1","is_error":true,"content":"denied"}]}}"#);
         assert_eq!(events[0].item_id.as_deref(), Some("tool1"));
         assert_eq!(events[0].status.as_deref(), Some("failed"));
+        assert_eq!(events[0].output.as_deref(), Some("denied"));
         let events = parser.parse(
             "codex",
             r#"{"type":"turn.failed","error":{"message":"Authentication required"}}"#,
         );
         assert_eq!(events[0].text.as_deref(), Some("Authentication required"));
         assert!(parser.failed);
+    }
+
+    #[test]
+    fn claude_streams_tool_command_without_replacing_it_with_output() {
+        let mut parser = parser();
+        let start = parser.parse("claude-code", r#"{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"bash1","name":"Bash","input":{}}}}"#);
+        assert_eq!(start[0].item_id.as_deref(), Some("bash1"));
+        assert!(start[0].command.is_none());
+        let partial = parser.parse("claude-code", r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"cargo "}}}"#);
+        assert!(partial.is_empty());
+        let ready = parser.parse("claude-code", r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"test\",\"cwd\":\"/project\"}"}}}"#);
+        assert_eq!(ready[0].item_id.as_deref(), Some("bash1"));
+        assert_eq!(ready[0].command.as_deref(), Some("cargo test"));
+        assert_eq!(ready[0].cwd.as_deref(), Some("/project"));
+        assert!(ready[0].output.is_none());
+        let result = parser.parse("claude-code", r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","content":"tests passed"}]}}"#);
+        assert_eq!(result[0].output.as_deref(), Some("tests passed"));
+        assert!(result[0].command.is_none());
+        assert!(result[0].text.is_none());
+    }
+
+    #[test]
+    fn claude_parallel_tool_inputs_keep_distinct_parent_identity() {
+        let mut parser = parser();
+        for (parent, id) in [(None, "main-tool"), (Some("agent"), "child-tool")] {
+            parser.parse("claude-code", &serde_json::json!({"type":"stream_event","parent_tool_use_id":parent,"event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":id,"name":"Bash"}}}).to_string());
+        }
+        let child = parser.parse("claude-code", r#"{"type":"stream_event","parent_tool_use_id":"agent","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"pwd\"}"}}}"#);
+        let main = parser.parse("claude-code", r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"git status\"}"}}}"#);
+        assert_eq!(child[0].item_id.as_deref(), Some("child-tool"));
+        assert_eq!(child[0].parent_id.as_deref(), Some("agent"));
+        assert_eq!(main[0].item_id.as_deref(), Some("main-tool"));
+        assert_eq!(main[0].command.as_deref(), Some("git status"));
+    }
+
+    #[test]
+    fn streamed_tool_json_handles_fragmented_escapes_and_nested_input() {
+        let mut parser = parser();
+        parser.parse("claude-code", r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"bash1","name":"Bash"}}}"#);
+        let command = "echo \"}\"; path C:\\project\\test";
+        let json = serde_json::json!({"command":command,"extra":{"values":["}","á"]}}).to_string();
+        let mut events = Vec::new();
+        for character in json.chars() {
+            events.extend(parser.parse("claude-code", &serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":character.to_string()}}}).to_string()));
+        }
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].command.as_deref(), Some(command));
+        assert!(parser
+            .tool_blocks
+            .get(&("main".into(), 0))
+            .unwrap()
+            .json
+            .is_empty());
+    }
+
+    #[test]
+    fn claude_tool_progress_updates_original_tool_without_displacing_command() {
+        let mut parser = parser();
+        let progress = parser.parse("claude-code", r#"{"type":"tool_progress","tool_use_id":"bash1","tool_name":"Bash","parent_tool_use_id":"agent1","elapsed_time_seconds":25}"#);
+        assert_eq!(progress[0].item_id.as_deref(), Some("bash1"));
+        assert_eq!(progress[0].parent_id.as_deref(), Some("agent1"));
+        assert_eq!(progress[0].status.as_deref(), Some("running"));
+        assert_eq!(progress[0].elapsed_seconds, Some(25.0));
+        assert!(progress[0].text.is_none());
+        assert!(progress[0].command.is_none());
+        assert!(progress[0].output.is_none());
+        let summary = parser.parse("claude-code", r#"{"type":"tool_use_summary","summary":"Checked the project files","preceding_tool_use_ids":["bash1"]}"#);
+        assert_eq!(
+            summary[0].text.as_deref(),
+            Some("Checked the project files")
+        );
+    }
+
+    #[test]
+    fn codex_output_deltas_and_exit_code_have_separate_fields() {
+        let mut parser = parser();
+        let start = parser.parse("codex", r#"{"type":"item.started","item":{"id":"cmd","type":"command_execution","command":"cargo test","cwd":"/project"}}"#);
+        assert_eq!(start[0].command.as_deref(), Some("cargo test"));
+        let delta = parser.parse("codex", r#"{"type":"item.updated","delta":true,"item":{"id":"cmd","type":"command_execution","aggregated_output":"running tests\n"}}"#);
+        assert!(delta[0].delta);
+        assert_eq!(delta[0].output.as_deref(), Some("running tests\n"));
+        assert!(delta[0].command.is_none());
+        let end = parser.parse("codex", r#"{"type":"item.completed","item":{"id":"cmd","type":"command_execution","command":"cargo test","aggregated_output":"tests passed","exit_code":0}}"#);
+        assert!(!end[0].delta);
+        assert_eq!(end[0].command.as_deref(), Some("cargo test"));
+        assert_eq!(end[0].output.as_deref(), Some("tests passed"));
+        assert_eq!(serde_json::to_value(&end[0]).unwrap()["exitCode"], 0);
+        let failed = parser.parse("codex", r#"{"type":"item.completed","item":{"id":"cmd2","type":"command_execution","exit_code":1}}"#);
+        assert_eq!(failed[0].status.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn large_terminal_results_keep_latest_lines_and_unicode_boundaries() {
+        let text = format!("{}\nFINAL ERROR", "á".repeat(20_000));
+        let output = output_text(&Value::String(text));
+        assert!(output.starts_with("[earlier output omitted]\n"));
+        assert!(output.ends_with("FINAL ERROR"));
+        assert!(output.len() <= 32_768 + "[earlier output omitted]\n".len());
+    }
+
+    #[test]
+    fn codex_usage_update_does_not_pretend_the_turn_finished() {
+        let mut parser = parser();
+        let event = parser.parse(
+            "codex",
+            r#"{"type":"usage.updated","usage":{"input_tokens":100},"context_tokens":120}"#,
+        );
+        assert_eq!(event[0].status.as_deref(), Some("running"));
+        assert_eq!(event[0].context_tokens, Some(120));
     }
 
     #[test]

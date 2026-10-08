@@ -14,6 +14,9 @@ import {
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { useSettingsStore, isGlassTheme } from "../store/settingsStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
+import { WorktreeRecovery } from "./worktrees/WorktreeRecovery";
+import { cleanupSessionWorktree } from "../services/worktreeRecoveryCommands";
+import { useWorktreeRecoveryStore } from "../store/worktreeRecoveryStore";
 
 // ── Constants ────────────────────────────────────────────────
 const EMPTY_SESSIONS: ClaudeSession[] = [];
@@ -377,6 +380,7 @@ export function WorkspaceStack() {
       .sessions
       .filter((session) => session.workspaceId === id);
     const workspace = workspaces.find((item) => item.id === id);
+    if (workspace?.path) useWorktreeRecoveryStore.getState().remember(workspace.path);
 
     if ("__TAURI_INTERNALS__" in window) {
       await invoke("mark_deleted_items", {
@@ -406,13 +410,7 @@ export function WorkspaceStack() {
     sessionsToRemove.forEach((session: ClaudeSession) => {
       if (!session.worktreePath || !session.branchName) return;
 
-      invoke("teardown_session_worktree", {
-        workdir: workspace.path,
-        worktreePath: session.worktreePath,
-        branch: session.branchName,
-      }).catch((e) => {
-        console.warn("[worktree] workspace teardown failed:", e);
-      });
+      void cleanupSessionWorktree(workspace.path, session.worktreePath, session.branchName);
     });
   };
 
@@ -421,6 +419,7 @@ export function WorkspaceStack() {
       <h2 style={{ fontSize: 12, fontWeight: 600, color: "var(--ci-text-muted)" }}>{t("workspace.title")}</h2>
       <button className="ad-button" onClick={() => setShowForm(value => !value)}>+ {t("common.add")}</button>
     </div>
+    <div style={{ display: "flex", flexWrap: "wrap" }}><WorktreeRecovery /></div>
     {showForm && <NewWorkspaceForm onDone={() => setShowForm(false)} />}
     <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 190, overflow: "auto" }}>
       {sorted.map(ws => <WorkspaceCardExpanded key={ws.id} ws={ws} isActive={ws.id === activeWorkspaceId}

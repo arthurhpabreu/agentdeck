@@ -25,14 +25,13 @@ export function SessionPromptComposer({ workdir, pendingQuery, setPendingQuery, 
         <strong>{t("session.cliMissing", { command: cliCommand })}</strong><p><code>{installCmd}</code></p>
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}><button className="ad-button" onClick={onInstall}>{t("common.installOneClick")}</button><button className="ad-button" onClick={onRecheck}>{t("common.refresh")}</button></div>
       </div>}
-      <div className="ad-composer">
-        <CommandTextarea visible={visible} inputRef={queryInputRef} runner={runner} workdir={workdir} native value={pendingQuery} onValueChange={setPendingQuery} rows={3} placeholder={t("session.promptPlaceholder")} aria-label={t("session.promptTitle")} disabled={waitingForPtyLaunch} onKeyDown={e => {
+      <div className="ad-composer ad-composer-compact">
+        <CommandTextarea shortcutsPlacement="above" visible={visible} inputRef={queryInputRef} runner={runner} workdir={workdir} native value={pendingQuery} onValueChange={setPendingQuery} rows={2} placeholder={t("session.promptPlaceholder")} aria-label={t("session.promptTitle")} disabled={waitingForPtyLaunch} onKeyDown={e => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (!disabled && pendingQuery.trim()) onSubmit(pendingQuery); }
         }} />
         <div className="ad-composer-footer">
-          <AgentModelPicker workdir={workdir} runner={runner} onChange={onRunnerPatch} disabled={waitingForPtyLaunch} />
-          <span style={{ flex: 1 }} />
-          <button className="ad-button ad-button-primary" disabled={disabled || !pendingQuery.trim()} onClick={() => onSubmit(pendingQuery)}><ArrowUp size={16} />{t("chat.send")}</button>
+          <AgentModelPicker compact workdir={workdir} runner={runner} onChange={onRunnerPatch} disabled={waitingForPtyLaunch} />
+          <button className="ad-button ad-button-primary ad-chat-send" aria-label={t("chat.send")} title={t("chat.send")} disabled={disabled || !pendingQuery.trim()} onClick={() => onSubmit(pendingQuery)}><ArrowUp size={18} /></button>
         </div>
       </div>
       <div className="ad-welcome-foot">

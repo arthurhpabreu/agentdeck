@@ -194,6 +194,46 @@ test("unified search explains sources and incremental export blocks local confli
   await expect(intelligence.getByText("Exportação concluída", { exact: true })).toBeVisible();
 });
 
+test("failed export previews cannot apply a previous plan to a newly selected folder", async ({ page }) => {
+  await setupMemory(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    w.__previewDestination = "C:\\Vault-A";
+    w.__previewFailure = false;
+    w.__TAURI_INTERNALS__.invoke = async (command: string, args: any = {}) => {
+      if (command === "pick_folder") return w.__previewDestination;
+      if (command === "memory_export_incremental") {
+        w.__memoryCalls.push({ command, args });
+        if (!args.apply && w.__previewFailure) throw new Error("Export preview unavailable");
+        return { directory: `${args.destination}\\Agentdeck-project`, recordCount: 2, changes: [{ path: "memory-routing.md", action: "create" }], conflicts: [], applied: args.apply };
+      }
+      return original(command, args);
+    };
+  });
+  const memory = page.getByRole("region", { name: "Memória compartilhada", exact: true });
+  await memory.locator("summary").filter({ hasText: "Conhecimento dos projetos" }).click();
+  const intelligence = memory.locator(".ad-memory-intelligence").first();
+  await intelligence.getByRole("button", { name: "Exportação incremental", exact: true }).click();
+  const preview = intelligence.getByRole("button", { name: "Escolher pasta e visualizar", exact: true });
+  await preview.click();
+  await expect(intelligence.getByText("C:\\Vault-A\\Agentdeck-project", { exact: true })).toBeVisible();
+  await page.evaluate(() => { const w = window as any; w.__previewDestination = "C:\\Vault-B"; w.__previewFailure = true; });
+  await preview.click();
+  await expect(intelligence.getByRole("alert")).toContainText("Export preview unavailable");
+  await expect(intelligence.getByText("C:\\Vault-A\\Agentdeck-project", { exact: true })).toHaveCount(0);
+  await expect(intelligence.getByRole("button", { name: "Aplicar exportação", exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__memoryCalls.some((call: any) => call.command === "memory_export_incremental" && call.args.apply))).toBe(false);
+  await page.evaluate(() => { (window as any).__previewFailure = false; });
+  await preview.click();
+  await expect(intelligence.getByText("C:\\Vault-B\\Agentdeck-project", { exact: true })).toBeVisible();
+  await intelligence.getByRole("button", { name: "Aplicar exportação", exact: true }).click();
+  await expect(intelligence.getByText("Exportação concluída", { exact: true })).toBeVisible();
+  const applied = await page.evaluate(() => (window as any).__memoryCalls.filter((call: any) => call.command === "memory_export_incremental" && call.args.apply));
+  expect(applied).toHaveLength(1);
+  expect(applied[0].args.destination).toBe("C:\\Vault-B");
+});
+
 test("note history restores content and saves applicability and feedback", async ({ page }) => {
   await setupMemory(page);
   const memory = page.getByRole("region", { name: "Memória compartilhada", exact: true });
@@ -295,6 +335,113 @@ test("session memory indicators use real events and surface retrieval failures",
   await expect(page.getByRole("tab", { name: "Memória compartilhada", exact: true })).toHaveAttribute("aria-selected", "true");
 });
 
+async function openMemorySession(page: Page) {
+  await page.getByRole("button", { name: "Sessões", exact: true }).click();
+  await page.getByText("Memory session", { exact: true }).first().click();
+  const open = page.getByTitle("Abrir conversa");
+  if (await open.count()) await open.first().click();
+  await expect(page.getByRole("button", { name: "Abrir memória do projeto", exact: true })).toBeVisible();
+}
+
+test("context sources explain prepared and delivered excerpts with scope, warnings and keyboard recovery", async ({ page }) => {
+  await setupMemory(page);
+  await openMemorySession(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__contextEvidence = {
+      sessionId: "session-alpha", projectKey: "C:\\Projects\\Alpha", contextId: "context-visible", phase: "prepared", recordCount: 2, estimatedTokens: 230, duplicateCount: 1,
+      sources: [
+        { id: "routing", source: "memory", scope: "project", title: "Typed result policy", path: null, excerpt: "Only the admitted project excerpt.", revision: 2, score: .02, reason: "FTS5 lexical match" },
+        { id: "doc:global-guide", source: "document", scope: "global", title: "Vault authentication guide", path: "Guias/Autenticação.md", excerpt: "Only the admitted vault excerpt.", revision: 1, score: .01, reason: "linked document, one hop" },
+      ],
+      warnings: [{ scope: "project", sourcePath: "C:\\Vaults\\Alpha", code: "unavailable", message: "QA project vault temporarily unavailable" }],
+    };
+    w.__memoryEmit("shared-memory-context", w.__contextEvidence);
+  });
+  const sources = page.getByRole("button", { name: "Fontes do contexto", exact: true });
+  await sources.click();
+  const dialog = page.getByRole("dialog", { name: "Fontes do contexto", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText(/preparad/i);
+  await expect(dialog.getByText("Typed result policy", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Vault authentication guide", { exact: true })).toBeVisible();
+  await expect(dialog).toContainText("Guias/Autenticação.md");
+  await expect(dialog).toContainText("Only the admitted project excerpt.");
+  await expect(dialog).toContainText("Only the admitted vault excerpt.");
+  await expect(dialog).toContainText(/global/i);
+  await expect(dialog).toContainText(/projeto/i);
+  await expect(dialog.getByRole("alert")).toContainText("Pasta indisponível");
+  await expect(dialog.getByRole("alert")).toContainText("C:\\Vaults\\Alpha");
+  await page.evaluate(() => { const w = window as any; w.__memoryEmit("shared-memory-context", { ...w.__contextEvidence, phase: "delivered" }); });
+  await expect(dialog).toContainText(/enviad/i);
+  await expect(dialog.getByText("Typed result policy", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(sources).toBeFocused();
+  expect(await page.evaluate(() => (window as any).__memoryCalls.some((call: any) => call.command === "start_chat_turn"))).toBe(false);
+});
+
+test("context sources reject late delivery from an older context and remain isolated by session", async ({ page }) => {
+  await setupMemory(page);
+  await openMemorySession(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const context = (contextId: string, title: string) => ({
+      sessionId: "session-alpha", projectKey: "C:\\Projects\\Alpha", contextId, phase: "prepared", recordCount: 1, estimatedTokens: 90, duplicateCount: 0,
+      sources: [{ id: contextId, source: "memory", scope: "project", title, excerpt: `Excerpt for ${title}`, path: null, revision: 1, score: .02, reason: "lexical" }], warnings: [],
+    });
+    w.__oldContext = context("older-context", "Older source that must disappear");
+    w.__newContext = context("newer-context", "Latest relevant source");
+    w.__memoryEmit("shared-memory-context", w.__oldContext);
+    w.__memoryEmit("shared-memory-context", w.__newContext);
+  });
+  await page.getByRole("button", { name: "Fontes do contexto", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Fontes do contexto", exact: true });
+  await expect(dialog.getByText("Latest relevant source", { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__memoryEmit("shared-memory-context", { ...w.__oldContext, phase: "delivered" });
+    w.__memoryEmit("shared-memory-context", { ...w.__oldContext, sessionId: "session-beta", contextId: "beta-context" });
+  });
+  await expect(dialog.getByText("Latest relevant source", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Older source that must disappear", { exact: true })).toHaveCount(0);
+  await expect(dialog).toContainText(/preparad/i);
+  await page.evaluate(() => { const w = window as any; w.__memoryEmit("shared-memory-context", { ...w.__newContext, phase: "delivered" }); });
+  await expect(dialog).toContainText(/enviad/i);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__memoryEmit("shared-memory-context", { ...w.__newContext, contextId: "empty-context", phase: "prepared", recordCount: 0, estimatedTokens: 0, sources: [], warnings: [] });
+  });
+  await expect(dialog.getByText("Latest relevant source", { exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Abrir memória do projeto", exact: true })).toContainText("≈0");
+});
+
+test("unified retrieval shows available evidence and vault warnings together and clears recovered warnings", async ({ page }) => {
+  await setupMemory(page);
+  await page.evaluate(() => {
+    const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+    w.__retrievalWarnings = [{ scope: "global", sourcePath: "C:\\Vaults\\General", code: "index_limited", message: "QA only part of the global vault was indexed" }];
+    w.__TAURI_INTERNALS__.invoke = async (command: string, args: any = {}) => {
+      if (command === "memory_retrieval_preview") return { hits: [{ id: "project-policy", source: "memory", scope: "project", title: "Available project policy", excerpt: "Project evidence remains usable.", path: null, revision: 1, score: .02, reason: "lexical" }], warnings: w.__retrievalWarnings };
+      return original(command, args);
+    };
+  });
+  const memory = page.getByRole("region", { name: "Memória compartilhada", exact: true });
+  await memory.locator("summary").filter({ hasText: "Conhecimento dos projetos" }).click();
+  const intelligence = memory.locator(".ad-memory-intelligence").first();
+  await intelligence.getByRole("button", { name: "Busca integrada", exact: true }).click();
+  await intelligence.getByRole("searchbox").fill("policy");
+  await intelligence.getByRole("searchbox").press("Enter");
+  await expect(intelligence.getByText("Available project policy", { exact: true })).toBeVisible();
+  await expect(intelligence.getByRole("alert")).toContainText("Índice parcial");
+  await expect(intelligence.getByRole("alert")).toContainText("C:\\Vaults\\General");
+  await page.evaluate(() => { (window as any).__retrievalWarnings = []; });
+  await intelligence.getByRole("searchbox").press("Enter");
+  await expect(intelligence.getByRole("alert")).toHaveCount(0);
+  await expect(intelligence.getByText("Available project policy", { exact: true })).toBeVisible();
+});
+
 test("saving a response retains its project and provider provenance without sending a model request", async ({ page }) => {
   await setupMemory(page);
   await page.addInitScript(() => localStorage.setItem("agentdeck-chat-v1", JSON.stringify({ "session-alpha": { messages: [{ id: "response", turnId: "finished", role: "assistant", at: Date.now(), text: "# Durable architecture decision\nUse typed boundaries between the Rust engine and React interface." }], draft: "", busy: false } })));
@@ -312,6 +459,59 @@ test("saving a response retains its project and provider provenance without send
   expect(calls.some((call: any) => call.command === "start_chat_turn")).toBe(false);
   await page.getByRole("button", { name: "Abrir memória do projeto", exact: true }).click();
   await expect(page.getByRole("region", { name: "Memória compartilhada", exact: true }).getByText("Durable architecture decision", { exact: true })).toBeVisible();
+});
+
+test("memory note drafts survive switching to documents and return to their original project", async ({ page }) => {
+  await setupMemory(page);
+  const memory = page.getByRole("region", { name: "Memória compartilhada", exact: true });
+  await memory.getByRole("button", { name: "Nova nota", exact: true }).click();
+  await memory.getByRole("textbox", { name: "Título da nota", exact: true }).fill("Decision drafted while consulting the vault");
+  await memory.getByRole("textbox", { name: "Conteúdo da nota", exact: true }).fill("Keep this unsaved decision while I check the source documents.");
+  await page.getByRole("tab", { name: "Documentos", exact: true }).click();
+  await expect(page.locator(".ad-documents")).toBeVisible();
+  await page.getByRole("tab", { name: "Memória compartilhada", exact: true }).click();
+  await expect(memory.getByRole("textbox", { name: "Título da nota", exact: true })).toHaveValue("Decision drafted while consulting the vault");
+  await expect(memory.getByRole("textbox", { name: "Conteúdo da nota", exact: true })).toHaveValue("Keep this unsaved decision while I check the source documents.");
+  expect(await page.evaluate(() => (window as any).__memoryCalls.filter((call: any) => call.command === "memory_save"))).toHaveLength(0);
+  await memory.getByRole("button", { name: "Salvar nota", exact: true }).click();
+  await expect(memory.getByRole("heading", { name: "Decision drafted while consulting the vault", exact: true })).toBeVisible();
+  const saves = await page.evaluate(() => (window as any).__memoryCalls.filter((call: any) => call.command === "memory_save"));
+  expect(saves).toHaveLength(1);
+  expect(saves[0].args.projectPath).toBe("C:\\Projects\\Alpha");
+});
+
+for (const returnWhilePending of [false, true]) test(`a memory save completed after navigation does not resurrect a duplicate draft (return while pending: ${returnWhilePending})`, async ({ page }) => {
+  await setupMemory(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    w.__memoryWritePending = false;
+    w.__TAURI_INTERNALS__.invoke = async (command: string, args: any = {}) => {
+      if (command === "memory_save") {
+        w.__memoryWritePending = true;
+        await new Promise<void>(resolve => { w.__memoryReleaseWrite = resolve; });
+      }
+      return original(command, args);
+    };
+  });
+  const memory = page.getByRole("region", { name: "Memória compartilhada", exact: true });
+  await memory.getByRole("button", { name: "Nova nota", exact: true }).click();
+  await memory.getByRole("textbox", { name: "Título da nota", exact: true }).fill("Saved while consulting documents");
+  await memory.getByRole("textbox", { name: "Conteúdo da nota", exact: true }).fill("This decision should be saved once, even if its editor unmounts.");
+  await memory.getByRole("button", { name: "Salvar nota", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__memoryWritePending)).toBe(true);
+  await page.getByRole("tab", { name: "Documentos", exact: true }).click();
+  await expect(page.locator(".ad-documents")).toBeVisible();
+  if (returnWhilePending) {
+    await page.getByRole("tab", { name: "Memória compartilhada", exact: true }).click();
+    await expect(memory.getByRole("textbox", { name: "Título da nota", exact: true })).toHaveValue("Saved while consulting documents");
+  }
+  await page.evaluate(() => { (window as any).__memoryReleaseWrite(); });
+  await expect.poll(() => page.evaluate(() => (window as any).__memoryRecords["C:\\Projects\\Alpha"].filter((record: any) => record.title === "Saved while consulting documents").length)).toBe(1);
+  if (!returnWhilePending) await page.getByRole("tab", { name: "Memória compartilhada", exact: true }).click();
+  await expect(memory.getByRole("textbox", { name: "Título da nota", exact: true })).toHaveCount(0);
+  await expect(memory.getByRole("button").filter({ hasText: "Saved while consulting documents" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__memoryCalls.filter((call: any) => call.command === "memory_save"))).toHaveLength(1);
 });
 
 test("context budget allows empty drafts and survives provider refreshes until applied or cancelled", async ({ page }) => {

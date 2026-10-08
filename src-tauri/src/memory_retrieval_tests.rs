@@ -16,6 +16,123 @@ fn fixture() -> (std::path::PathBuf, Engine, String, std::path::PathBuf) {
     .unwrap();
     (root, engine, project, config)
 }
+
+#[test]
+fn unavailable_vault_reports_scope_without_disabling_healthy_evidence() {
+    let (root, engine, project, config) = fixture();
+    fs::write(
+        root.join("docs/oauth.md"),
+        "# OAuth\nHealthy global document",
+    )
+    .unwrap();
+    let missing = root.join("missing-vault");
+    let key = crate::shared_memory::project_key(&root).unwrap();
+    fs::write(
+        &config,
+        serde_json::json!({"sourcePath": root.join("docs"), "projects": {key: missing}})
+            .to_string(),
+    )
+    .unwrap();
+    let memory = engine
+        .save(
+            &project,
+            &MemoryDraft {
+                id: None,
+                title: "OAuth decision".into(),
+                content: "Keep OAuth rotation enabled".into(),
+                kind: "fact".into(),
+                pinned: false,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    let result = search_report(
+        &engine,
+        &project,
+        Some(root.to_str().unwrap()),
+        Some(&config),
+        "OAuth",
+    )
+    .unwrap();
+    assert!(result.hits.iter().any(|hit| hit.id == memory.id));
+    assert!(result
+        .hits
+        .iter()
+        .any(|hit| hit.source == "document" && hit.scope == "global"));
+    assert_eq!(result.warnings.len(), 1);
+    assert_eq!(result.warnings[0].scope, "project");
+    assert_eq!(result.warnings[0].code, "unavailable");
+    let context = prepare(
+        &engine,
+        &project,
+        root.to_str().unwrap(),
+        &config,
+        "codex:qa",
+        "OAuth",
+        (2, 1400),
+    )
+    .unwrap();
+    assert!(!context.prepared.text.is_empty());
+    assert_eq!(context.warnings.len(), 1);
+    fs::create_dir(&missing).unwrap();
+    assert!(search_report(
+        &engine,
+        &project,
+        Some(root.to_str().unwrap()),
+        Some(&config),
+        "unknown"
+    )
+    .unwrap()
+    .warnings
+    .is_empty());
+    fs::write(&config, "not json").unwrap();
+    let broken = search_report(
+        &engine,
+        &project,
+        Some(root.to_str().unwrap()),
+        Some(&config),
+        "OAuth",
+    )
+    .unwrap();
+    assert_eq!(broken.warnings[0].code, "configuration");
+    assert!(broken.hits.iter().any(|hit| hit.id == memory.id));
+    drop(engine);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn context_source_excerpts_match_the_evidence_actually_admitted() {
+    let (root, engine, project, config) = fixture();
+    fs::write(
+        root.join("docs/oauth.md"),
+        format!("# OAuth\n{}", "OAuth ação 🚀. ".repeat(500)),
+    )
+    .unwrap();
+    let result = prepare(
+        &engine,
+        &project,
+        root.to_str().unwrap(),
+        &config,
+        "codex:qa",
+        "OAuth",
+        (2, 2000),
+    )
+    .unwrap();
+    assert!(!result.hits.is_empty());
+    let lines = result
+        .prepared
+        .text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect::<Vec<_>>();
+    for hit in &result.hits {
+        let line = lines.iter().find(|line| line["id"] == hit.id).unwrap();
+        assert_eq!(line["excerpt"].as_str().unwrap(), hit.excerpt);
+    }
+    drop(engine);
+    fs::remove_dir_all(root).unwrap();
+}
 #[test]
 fn automatic_queries_obey_byte_limit_and_preserve_utf8_and_both_ends() {
     for query in [String::new(), "ação 🚀".into(), "x".repeat(MAX_QUERY_BYTES)] {

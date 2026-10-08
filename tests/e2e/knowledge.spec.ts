@@ -57,6 +57,11 @@ async function setupDocuments(page: Page) {
         const sourceKey = args.projectPath ?? "global";
         const configuration = () => ({ sourcePath: w.__sources[sourceKey] ?? "", mode: w.__sources[sourceKey] ? "markdown" : "none", scope: args.projectPath ? "project" : "global", projectPath: args.projectPath, storagePath: "C:\\AppData\\Agentdeck\\knowledge.json" });
         if (command === "get_knowledge_config") return configuration();
+        if (command === "get_knowledge_health") {
+          if (w.__healthFailure) throw new Error("QA health check unavailable");
+          const sourcePath = w.__sources[sourceKey] ?? "";
+          return { sourcePath, status: sourcePath ? (w.__healthStatus ?? "ready") : "none", noteCount: sourcePath ? (w.__healthNoteCount ?? 2) : 0, checkedAt: Date.now(), maxNotes: 3000, maxIndexBytes: 16 * 1024 * 1024, maxNoteBytes: 256 * 1024, message: w.__healthMessage ?? "" };
+        }
         if (command === "pick_folder") return w.__cancelPick ? null : "C:\\Notes";
         if (command === "set_knowledge_source") { if (w.__sourceFailure) throw new Error("Source unavailable"); w.__sources[sourceKey] = args.sourcePath; return configuration(); }
         if (command === "get_knowledge_graph") return w.__graph ?? { nodes: [{ path: "decisions.md", title: "Project decisions", links: 1 }, { path: "architecture.md", title: "Architecture", links: 1 }], edges: [{ source: "decisions.md", target: "architecture.md" }], noteCount: 2, linkCount: 1, truncated: false, indexLimited: false };
@@ -161,4 +166,42 @@ test("documents keep sources scoped and graph navigation reads connected notes w
   await graph.locator(".ad-note-graph-canvas").scrollIntoViewIfNeeded();
   await expect(graph.locator(".ad-note-graph-canvas")).toBeInViewport({ ratio: 1 });
   await page.screenshot({ path: "test-results/knowledge-graph.png", animations: "disabled" });
+});
+
+test("vault health explains an unavailable source and rechecks it without changing the selected folder", async ({ page }) => {
+  const docs = await setupDocuments(page);
+  await page.evaluate(() => { const w = window as any; w.__healthStatus = "unavailable"; w.__healthNoteCount = 0; w.__healthMessage = "QA vault folder is temporarily unavailable"; });
+  await docs.getByRole("button", { name: "Escolher pasta Markdown ou vault", exact: true }).click();
+  const health = docs.getByRole("region", { name: "Saúde da fonte", exact: true });
+  await expect(health).toBeVisible();
+  await expect(health.getByRole("alert")).toContainText("Pasta indisponível");
+  const selectedBefore = await page.evaluate(() => (window as any).__documentCalls.filter((call: any) => call.command === "set_knowledge_source").length);
+  await page.evaluate(() => { const w = window as any; w.__healthStatus = "ready"; w.__healthNoteCount = 2; w.__healthMessage = ""; });
+  await health.getByRole("button", { name: "Verificar fonte", exact: true }).click();
+  await expect(health.getByRole("alert")).toHaveCount(0);
+  await expect(health).toContainText(/2\s+notas/i);
+  const calls = await page.evaluate(() => (window as any).__documentCalls);
+  expect(calls.filter((call: any) => call.command === "set_knowledge_source")).toHaveLength(selectedBefore);
+  expect(calls.filter((call: any) => call.command === "get_knowledge_health").at(-1).args).toMatchObject({ projectPath: "C:\\Projects\\Alpha", refresh: true });
+});
+
+test("vault health reports index limits and offers retry after a health command failure", async ({ page }) => {
+  const docs = await setupDocuments(page);
+  await page.evaluate(() => { const w = window as any; w.__healthStatus = "limited"; w.__healthNoteCount = 3000; w.__healthMessage = "QA vault exceeds the configured index capacity"; });
+  await docs.getByRole("button", { name: "Escolher pasta Markdown ou vault", exact: true }).click();
+  const health = docs.getByRole("region", { name: "Saúde da fonte", exact: true });
+  await expect(health).toContainText(/3[.,]?000/);
+  await expect(health).toContainText("16 MiB");
+  await expect(health).toContainText("256 KiB");
+  await expect(health.getByRole("alert")).toContainText("Índice parcial");
+  await page.evaluate(() => { (window as any).__healthFailure = true; });
+  await health.getByRole("button", { name: "Verificar fonte", exact: true }).click();
+  await expect(health.getByRole("alert").filter({ hasText: "QA health check unavailable" })).toBeVisible();
+  await page.evaluate(() => { const w = window as any; w.__healthFailure = false; w.__healthStatus = "ready"; w.__healthMessage = ""; w.__healthNoteCount = 2; });
+  await health.getByRole("button", { name: "Verificar fonte", exact: true }).click();
+  await expect(health.getByRole("alert")).toHaveCount(0);
+  await expect(health).toContainText(/2\s+notas/i);
+  await docs.getByRole("button", { name: "Remover fonte", exact: true }).click();
+  await expect(docs.getByText("Nenhuma fonte local selecionada")).toBeVisible();
+  await expect(docs.getByRole("alert")).toHaveCount(0);
 });

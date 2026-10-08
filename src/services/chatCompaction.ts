@@ -1,4 +1,4 @@
-import type { ChatThread } from "../store/chatStore";
+import type { ChatMessage, ChatThread } from "../store/chatStore";
 
 export interface CompactionPolicy { enabled: boolean; maxPrompts: number; maxTokens: number; version?: number }
 export const defaultCompactionPolicy: CompactionPolicy = { enabled: true, maxPrompts: 50, maxTokens: 200_000, version: 2 };
@@ -26,18 +26,21 @@ export function shouldCompact(thread: ChatThread, prompt: string, providerSessio
 export const HISTORY_PAGE_SIZE = 80;
 export const RESIDENT_MESSAGE_LIMIT = 200;
 export const RESIDENT_TEXT_LIMIT = 512_000;
+export function messageTextSize(message: ChatMessage): number { return message.text.length + (message.output?.length ?? 0) + (message.command?.length ?? 0); }
 /** Eviction is only allowed after the archive transaction commits. Keep active input/output. */
 export function residentMessages(thread: ChatThread) {
   let bytes = 0; let start = thread.messages.length;
   for (let i = thread.messages.length - 1; i >= 0; i--) {
-    const message = thread.messages[i]; bytes += message.text.length;
+    const message = thread.messages[i]; bytes += messageTextSize(message);
     if (thread.messages.length - i > RESIDENT_MESSAGE_LIMIT || bytes > RESIDENT_TEXT_LIMIT) break;
     start = i;
   }
-  if (thread.busy) {
-    const active = thread.messages.findIndex(m => m.turnId === thread.turnId);
-    if (active >= 0) start = Math.min(start, active);
-  }
   // Always retain the latest message, even when a single response is unusually large.
-  return thread.messages.slice(Math.min(start, Math.max(0, thread.messages.length - 1)));
+  start = Math.min(start, Math.max(0, thread.messages.length - 1));
+  let latestAssistant = -1;
+  if (thread.busy) for (let index = thread.messages.length - 1; index >= 0; index--) if (thread.messages[index].turnId === thread.turnId && thread.messages[index].role === "assistant") { latestAssistant = index; break; }
+  return thread.messages.filter((message, index) => index >= start || thread.busy && message.turnId === thread.turnId && (
+    index === latestAssistant || message.id === `${thread.turnId}:user` || message.role === "user" && (message.status === "sending" || message.status === "queued") ||
+    message.role === "tool" && !["completed", "failed", "error", "stopped", "interrupted"].includes(message.status ?? "")
+  ));
 }

@@ -1,0 +1,15 @@
+.ad-context-dialog { width: min(680px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 40px)); box-sizing: border-box; padding: 20px; overflow: auto; border: 1px solid var(--ci-border); border-radius: 12px; background: var(--ci-surface); color: var(--ci-text); font-size: 13px; }
+.ad-context-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.ad-context-dialog header, .ad-source-health > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ad-context-dialog h2 { margin: 0; font-size: 17px; }
+.ad-context-dialog article { border-top: 1px solid var(--ci-border); padding: 16px 0; }
+.ad-context-dialog pre, .ad-context-dialog code, .ad-source-warning code { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; user-select: text; }
+.ad-context-dialog p, .ad-source-health p { line-height: 1.6; }
+.ad-context-hint, .ad-source-health small { color: var(--ci-text-muted); }
+.ad-source-health { margin: 14px 0; padding: 12px; border: 1px solid var(--ci-border); border-radius: 6px; font-size: 12px; }
+.ad-source-health small { display: block; margin-top: 6px; }
+.ad-source-warning { border-inline-start: 3px solid var(--ci-yellow-dark, #b88742); padding: 10px 12px; margin: 12px 0; background: var(--ci-hover); font-size: 12px; overflow-wrap: anywhere; }
+.ad-source-warning p { line-height: 1.6; }
+.ad-worktree-dialog select { display: block; width: 100%; margin: 8px 0; padding: 8px; color: var(--ci-text); background: var(--ci-surface); border: 1px solid var(--ci-border); }
+.ad-worktree-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.ad-worktree-notice { color: var(--ci-text-muted); font-size: 11px; line-height: 1.5; flex-basis: 100%; }

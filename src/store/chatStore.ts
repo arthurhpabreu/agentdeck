@@ -7,14 +7,25 @@ import { useSessionStore } from "./sessionStore";
 import { useWorkspaceStore } from "./workspaceStore";
 import { useAgentActivityStore } from "./agentActivityStore";
 import { useAgentObservabilityStore } from "./agentObservabilityStore";
-import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, residentMessages, shouldCompact } from "../services/chatCompaction";
-import { deleteChatHistory, restoreChatHistory, saveChatHistory } from "../services/chatHistory";
+import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, messageTextSize, residentMessages, shouldCompact } from "../services/chatCompaction";
+import { deleteChatHistory, readChatHistoryMessage, restoreChatHistory, saveChatHistory } from "../services/chatHistory";
 
 export interface ChatAttachment { name: string; path: string; mimeType: string; size: number }
 export interface ChatUsage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
-export interface ChatMessage { id: string; turnId: string; role: "user" | "assistant" | "tool"; text: string; at: number; order?: number; title?: string; status?: string; attachments?: ChatAttachment[]; parentId?: string }
-export interface ChatThread { messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number }
-export interface ChatEvent { sessionId: string; turnId: string; kind: "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number }
+export interface ChatMessage { id: string; turnId: string; role: "user" | "assistant" | "tool"; text: string; at: number; order?: number; title?: string; status?: string; attachments?: ChatAttachment[]; parentId?: string; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
+export interface ChatThread { messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number }
+export interface ChatEvent { sessionId: string; turnId: string; kind: "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
+export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number }
+interface BufferedChatEvent extends ChatEvent { textDelta?: boolean; outputDelta?: boolean; receivedAt?: number }
+const MESSAGE_TEXT_LIMIT = 524_288;
+function boundedText(value: string): string { return value.length > MESSAGE_TEXT_LIMIT ? value.slice(0, MESSAGE_TEXT_LIMIT) + "\n[output truncated]" : value; }
+function boundedOutput(value: string): string { return value.length > MESSAGE_TEXT_LIMIT ? "[earlier output truncated]\n" + value.slice(-MESSAGE_TEXT_LIMIT) : value; }
+function chatMessageId(e: ChatEvent): string { return `${e.turnId}:${e.parentId ? `${e.parentId}:` : ""}${e.kind}:${e.itemId ?? e.kind}`; }
+function restoreMessage(message: ChatMessage): ChatMessage {
+  if (message.role === "user" && (message.status === "sending" || message.status === "queued")) return { ...message, status: "failed" };
+  if (message.role === "tool" && ["running", "inProgress", "in_progress", "pending"].includes(message.status ?? "")) return { ...message, status: "interrupted" };
+  return message;
+}
 export const emptyThread: ChatThread = { messages: [], draft: "", busy: false };
 const KEY = "agentdeck-chat-v1";
 export function normalizeChatUsage(value: unknown): ChatUsage | undefined {
@@ -32,7 +43,7 @@ function restore(): Record<string, ChatThread> {
     const parsed = JSON.parse(localStorage.getItem(KEY) ?? "{}");
     return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value && Array.isArray((value as ChatThread).messages)).map(([id, value]) => {
       const thread = value as ChatThread;
-      const messages = thread.messages.map((m, i) => ({ ...m, order: m.order ?? i }));
+      const messages = thread.messages.map((m, i) => restoreMessage({ ...m, order: m.order ?? i }));
       return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + estimateTokens(m.text), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined }];
     }));
   } catch { return {}; }
@@ -41,8 +52,9 @@ export const useChatStore = create<{
   threads: Record<string, ChatThread>; storageError: boolean; historyReady: boolean;
   patch: (id: string, patch: Partial<ChatThread>) => void;
   event: (event: ChatEvent) => void;
+  events: (events: ChatEvent[]) => void;
   remove: (id: string) => void;
-}>((set) => ({
+}>((set, get) => ({
   threads: restore(), storageError: false, historyReady: false,
   patch: (id, patch) => set(s => {
     const old = s.threads[id] ?? emptyThread; let nextMessageOrder = old.nextMessageOrder ?? 0;
@@ -50,10 +62,20 @@ export const useChatStore = create<{
     return { threads: { ...s.threads, [id]: { ...old, ...patch, ...(messages ? { messages, nextMessageOrder } : {}), updatedAt: Date.now() } } };
   }),
   remove: id => { removed.add(id); set(s => { const threads = { ...s.threads }; delete threads[id]; return { threads }; }); scheduleSave(); },
-  event: e => set(s => {
-    const old = s.threads[e.sessionId];
-    if (!old || old.turnId !== e.turnId) return s;
-    let next = { ...old, updatedAt: Date.now() };
+  event: e => get().events([e]),
+  events: events => set(s => {
+    let threads = s.threads;
+    for (const event of events) {
+    const e = event as BufferedChatEvent;
+    const old = threads[e.sessionId];
+    if (!old?.busy || old.turnId !== e.turnId) continue;
+    const at = e.receivedAt ?? Date.now();
+    let next = e.kind === "heartbeat" ? { ...old, lastHeartbeatAt: at, ...(e.pid ? { pid: e.pid } : {}) } : { ...old, updatedAt: at, lastEventAt: at, ...(e.pid ? { pid: e.pid } : {}) };
+    if (e.kind === "heartbeat") {
+      if (threads === s.threads) threads = { ...threads };
+      threads[e.sessionId] = next;
+      continue;
+    }
     if (!e.parentId && typeof e.contextTokens === "number" && Number.isFinite(e.contextTokens) && e.contextTokens >= 0) { next.contextTokens = e.contextTokens; next.contextTokensEstimated = false; }
     const usage = !e.parentId ? normalizeChatUsage(e.usage) : undefined;
     if (usage) {
@@ -74,11 +96,12 @@ export const useChatStore = create<{
     }
     if (e.model && !e.parentId) next.resolvedModel = e.model;
     if (e.kind === "session") next.providerSessionId = e.providerSessionId;
-    if (e.kind === "status") {
-      next.status = e.status;
+    if (e.kind === "status" && !e.parentId) {
+      next.status = e.status ?? old.status;
+      if (e.text && e.status !== "reasoning") next.activity = e.text.slice(0, 240);
       if (e.status === "compacting") next.compacting = true;
       if (e.text && e.status !== "reasoning" && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
-      if (next.status === old.status && next.diagnostic === old.diagnostic && !usage && e.contextTokens === undefined && !e.model && next.compacting === old.compacting) return s;
+      if (next.status === old.status && next.diagnostic === old.diagnostic && !usage && e.contextTokens === undefined && !e.model && next.compacting === old.compacting && at - (old.lastEventAt ?? 0) < 1000) continue;
     }
     const compactionId = e.itemId ?? `${e.turnId}:compact`;
     if (e.kind === "compaction" && !e.parentId && compactionId !== old.lastCompactionId) {
@@ -91,19 +114,27 @@ export const useChatStore = create<{
       if (e.status === "accepted" && accepted && accepted.status !== "accepted") { next.contextPrompts = (old.contextPrompts ?? 0) + 1; next.contextTokens = (old.contextTokens ?? 0) + estimateTokens(accepted.text); next.contextTokensEstimated = true; }
       next.messages = old.messages.map(m => m.id === `${e.itemId}:user` ? { ...m, status: e.status, ...(e.text ? { title: e.text } : {}) } : m);
     }
-    if (e.kind === "done") next = { ...next, busy: false, compacting: false, status: e.status, draft: old.compacting && e.status !== "completed" ? old.draft || old.messages.find(m => m.id === `${e.turnId}:user`)?.text || "" : old.draft, messages: next.messages.map(m => m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m) };
+    if (e.kind === "done") next = { ...next, busy: false, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), draft: old.compacting && e.status !== "completed" ? old.draft || old.messages.find(m => m.id === `${e.turnId}:user`)?.text || "" : old.draft, messages: next.messages.map(m => m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && [undefined, "running", "inProgress", "in_progress", "started", "pending", "queued"].includes(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
     if (e.kind === "text" || e.kind === "tool") {
-      const id = `${e.turnId}:${e.itemId ?? e.kind}`;
+      const id = chatMessageId(e);
       const index = old.messages.findIndex(m => m.id === id);
       const previous = old.messages[index];
-      const text = e.delta ? (previous?.text ?? "") + (e.text ?? "") : e.text ?? previous?.text ?? "";
-      const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? Date.now(), order: previous?.order ?? old.nextMessageOrder ?? 0, title: e.title ?? previous?.title, status: e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, text: text.length > 524_288 ? text.slice(0, 524_288) + "\n[output truncated]" : text };
+      const text = e.text === undefined ? previous?.text ?? "" : (e.textDelta ?? (e.delta && e.output === undefined)) ? (previous?.text ?? "") + e.text : e.text;
+      const output = e.output === undefined ? previous?.output : (e.outputDelta ?? e.delta) ? (previous?.output ?? "") + e.output : e.output;
+      const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? at, order: previous?.order ?? old.nextMessageOrder ?? 0, title: e.title ?? previous?.title, status: e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, command: e.command ?? previous?.command, output: output === undefined ? undefined : boundedOutput(output), cwd: e.cwd ?? previous?.cwd, exitCode: e.exitCode ?? previous?.exitCode, elapsedSeconds: e.elapsedSeconds ?? previous?.elapsedSeconds, text: boundedText(text) };
       if (!previous) next.nextMessageOrder = (old.nextMessageOrder ?? 0) + 1;
-      const added = text.slice(previous?.text.length ?? 0);
+      const added = e.output !== undefined ? e.outputDelta ?? e.delta ? e.output : e.output.slice(previous?.output?.length ?? 0) : e.text !== undefined ? e.textDelta ?? e.delta ? e.text : e.text.slice(previous?.text.length ?? 0) : "";
       if (added && !message.parentId) { next.contextTokens = (next.contextTokens ?? 0) + estimateTokens(added); next.contextTokensEstimated = true; }
+      if (!e.parentId) {
+        if (e.kind === "tool") { next.activity = (message.command || message.title || message.text).slice(0, 240); next.status = message.status === "blocked" ? "blocked" : "tool"; }
+        else { next.status = "responding"; next.activity = undefined; }
+      }
       next.messages = index < 0 ? [...old.messages, message] : old.messages.map((m, i) => i === index ? message : m);
     }
-    return { threads: { ...s.threads, [e.sessionId]: next } };
+    if (threads === s.threads) threads = { ...threads };
+    threads[e.sessionId] = next;
+    }
+    return threads === s.threads ? s : { threads };
   }),
 }));
 
@@ -119,8 +150,8 @@ function cacheRecentThreads() {
   const threads: Record<string, ChatThread> = {}; let budget = 1_000_000;
   for (const [id, thread] of Object.entries(useChatStore.getState().threads).sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))) {
     let bytes = 0;
-    const messages = thread.messages.slice(-20).filter(m => { bytes += m.text.length; return bytes <= Math.min(40_000, budget); });
-    budget -= messages.reduce((n, m) => n + m.text.length, 0);
+    const messages = thread.messages.slice(-20).filter(m => { bytes += messageTextSize(m); return bytes <= Math.min(40_000, budget); });
+    budget -= messages.reduce((n, m) => n + messageTextSize(m), 0);
     threads[id] = { ...thread, messages, archivedCount: (thread.archivedCount ?? 0) + thread.messages.length - messages.length, diagnostic: undefined, compacting: false, busy: false };
   }
   localStorage.setItem(KEY, JSON.stringify(threads));
@@ -136,8 +167,17 @@ export async function persistChatHistory(): Promise<void> {
         const thread = useChatStore.getState().threads[id]; if (!thread) continue;
         const total = await saveChatHistory(id, thread, [...messages.values()], [...drops.get(id) ?? []]);
         const current = useChatStore.getState().threads[id]; if (!current) { removed.add(id); continue; }
-        const resident = residentMessages(current);
-        if (resident.length < current.messages.length) useChatStore.getState().patch(id, { messages: resident, archivedCount: Math.max(0, total - resident.length) });
+        const keep = new Set(residentMessages(current).map(m => m.id));
+        // Output arriving during the transaction still belongs to the next save batch.
+        const pending = dirty.get(id);
+        const resident = current.messages.filter(m => keep.has(m.id) || pending?.has(m.id));
+        if (resident.length < current.messages.length) {
+          const retained = new Set(resident.map(m => m.id));
+          const evicted = evictedActiveMessages.get(id) ?? new Set<string>();
+          for (const message of current.messages) if (current.busy && message.turnId === current.turnId && !retained.has(message.id)) evicted.add(message.id);
+          if (evicted.size) evictedActiveMessages.set(id, evicted);
+          useChatStore.getState().patch(id, { messages: resident, archivedCount: Math.max(0, total - resident.length) });
+        }
       }
       canCache = true; cacheRecentThreads(); useChatStore.setState({ storageError: false });
     } catch {
@@ -184,22 +224,98 @@ window.addEventListener("pagehide", () => { if (canCache) { try { cacheRecentThr
 let subscription: Promise<() => void> | undefined;
 const cancelledTurns = new Set<string>();
 const launches = new Map<string, Promise<void>>();
-const pendingEvents = new Map<string, ChatEvent>();
+const pendingEvents = new Map<string, BufferedChatEvent>();
 const outputLengths = new Map<string, number>();
+const evictedActiveMessages = new Map<string, Set<string>>();
+const deferredEvents = new Map<string, BufferedChatEvent[]>();
 let eventTimer: ReturnType<typeof setTimeout> | undefined;
 function flushChatEvents() {
   clearTimeout(eventTimer); eventTimer = undefined;
   const events = [...pendingEvents.values()]; pendingEvents.clear();
-  for (const event of events) {
-    const thread = useChatStore.getState().threads[event.sessionId];
-    if (thread?.busy && thread.turnId === event.turnId) useChatStore.getState().event(event);
-  }
+  processChatEvents(events);
 }
 function acceptChatEvent(e: ChatEvent) {
-  if (e.kind !== "text" && e.kind !== "tool") { flushChatEvents(); useChatStore.getState().event(e); return; }
-  const key = `${e.sessionId}:${e.turnId}:${e.itemId ?? e.kind}`; const previous = pendingEvents.get(key);
-  pendingEvents.set(key, previous && e.delta ? { ...previous, ...e, text: (previous.text ?? "") + (e.text ?? ""), delta: previous.delta } : e);
+  const receivedAt = (e as BufferedChatEvent).receivedAt ?? Date.now();
+  if (e.kind !== "text" && e.kind !== "tool" && !(e.kind === "status" && e.status === "reasoning")) { flushChatEvents(); processChatEvents([{ ...e, receivedAt }]); return; }
+  const key = `${e.sessionId}:${e.turnId}:${e.kind}:${e.parentId ?? ""}:${e.itemId ?? e.kind}`; const previous = pendingEvents.get(key);
+  const defined = Object.fromEntries(Object.entries(e).filter(([, value]) => value !== undefined));
+  const merged: BufferedChatEvent = { ...previous, ...defined, sessionId: e.sessionId, turnId: e.turnId, kind: e.kind, receivedAt };
+  if (e.text !== undefined) {
+    const delta = !!e.delta && e.output === undefined;
+    merged.text = boundedText(delta ? (previous?.text ?? "") + e.text : e.text);
+    merged.textDelta = previous?.text !== undefined && delta ? previous.textDelta : delta;
+  } else { merged.text = previous?.text; merged.textDelta = previous?.textDelta; }
+  if (e.output !== undefined) {
+    merged.output = boundedOutput(e.delta ? (previous?.output ?? "") + e.output : e.output);
+    merged.outputDelta = previous?.output !== undefined && e.delta ? previous.outputDelta : !!e.delta;
+  } else { merged.output = previous?.output; merged.outputDelta = previous?.outputDelta; }
+  pendingEvents.set(key, merged);
   if (!eventTimer) eventTimer = setTimeout(flushChatEvents, 40);
+}
+function enqueueChatEvent(incoming: BufferedChatEvent) {
+  const e = incoming.receivedAt === undefined ? { ...incoming, receivedAt: Date.now() } : incoming;
+  const waiting = deferredEvents.get(e.sessionId);
+  if (waiting) { waiting.push(e); return; }
+  const id = chatMessageId(e);
+  if ((e.kind !== "text" && e.kind !== "tool") || !evictedActiveMessages.get(e.sessionId)?.has(id)) { acceptChatEvent(e); return; }
+  flushChatEvents();
+  const queued: BufferedChatEvent[] = [e]; deferredEvents.set(e.sessionId, queued);
+  void readChatHistoryMessage(e.sessionId, id).then(message => {
+    const current = useChatStore.getState().threads[e.sessionId];
+    if (message && current?.busy && current.turnId === e.turnId && !current.messages.some(m => m.id === id)) {
+      useChatStore.getState().patch(e.sessionId, { messages: [...current.messages, message].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), archivedCount: Math.max(0, (current.archivedCount ?? 0) - 1) });
+    }
+    evictedActiveMessages.get(e.sessionId)?.delete(id);
+    deferredEvents.delete(e.sessionId);
+    for (const event of queued) enqueueChatEvent(event);
+    // Apply the recovered item before another archive transaction can evict it again.
+    flushChatEvents();
+  }).catch(error => {
+    deferredEvents.delete(e.sessionId);
+    useChatStore.setState({ storageError: true });
+    const current = useChatStore.getState().threads[e.sessionId];
+    if (current?.busy && current.turnId === e.turnId) useChatStore.getState().patch(e.sessionId, { diagnostic: `${current.diagnostic ?? ""}\n${String(error)}`.slice(-8000) });
+    // Preserve the committed item rather than replacing it with an incomplete delta.
+    for (const event of queued) if (event.kind !== "text" && event.kind !== "tool") enqueueChatEvent(event);
+  });
+}
+/** Apply one frame of streaming output before notifying React and the activity panels. */
+function processChatEvents(events: BufferedChatEvent[]) {
+  const state = useChatStore.getState();
+  const accepted = events.filter(e => state.threads[e.sessionId]?.busy && state.threads[e.sessionId]?.turnId === e.turnId);
+  if (!accepted.length) return;
+  state.events(accepted);
+  const outputActivity = new Map<string, { bytes: number; at: number; title?: string }>();
+  const record = useAgentActivityStore.getState().record;
+  for (const e of accepted) {
+    useAgentObservabilityStore.getState().recordChat(e);
+    if (e.kind === "session" && e.providerSessionId) useSessionStore.getState().updateSession(e.sessionId, { providerSessionId: e.providerSessionId });
+    if (e.kind === "text" || e.kind === "tool") {
+      const key = `${e.sessionId}:${e.turnId}:${e.kind}:${e.parentId ?? ""}:${e.itemId ?? e.kind}`;
+      const value = e.output ?? e.text ?? "";
+      const delta = e.output !== undefined ? e.outputDelta ?? e.delta : e.textDelta ?? e.delta;
+      const added = delta ? value : value.slice(outputLengths.get(key) ?? 0);
+      outputLengths.set(key, delta ? (outputLengths.get(key) ?? 0) + value.length : value.length);
+      const pending = outputActivity.get(e.sessionId);
+      outputActivity.set(e.sessionId, { bytes: (pending?.bytes ?? 0) + new TextEncoder().encode(added).length, at: e.receivedAt ?? Date.now(), title: e.kind === "tool" ? e.command || e.title : pending?.title });
+    }
+    if (e.kind === "status") record(e.sessionId, { phase: "running", ...(e.pid ? { pid: e.pid } : {}) });
+    if (e.kind === "error") record(e.sessionId, { error: e.text }, "activity.error", e.text);
+    if (e.kind === "done") {
+      for (const key of outputLengths.keys()) if (key.startsWith(`${e.sessionId}:${e.turnId}:`)) outputLengths.delete(key);
+      cancelledTurns.delete(e.turnId);
+      evictedActiveMessages.delete(e.sessionId);
+      const current = useChatStore.getState().threads[e.sessionId];
+      const phase = e.status === "stopped" || e.status === "interrupted" ? "stopped" : current?.error || e.status === "error" ? "error" : "done";
+      record(e.sessionId, { phase, endedAt: Date.now() }, `activity.${phase}`);
+      useSessionStore.getState().updateSession(e.sessionId, { status: phase === "error" ? "error" : phase === "stopped" ? "suspended" : "waiting" });
+      scheduleSave(250);
+    }
+  }
+  for (const [id, pending] of outputActivity) {
+    const bytes = useAgentActivityStore.getState().sessions[id]?.bytes ?? 0;
+    record(id, { phase: "running", bytes: bytes + pending.bytes, lastOutputAt: pending.at }, pending.title ? "activity.running" : undefined, pending.title);
+  }
 }
 export function ensureChatEvents() {
   if (!subscription) subscription = listen<ChatEvent>("chat-event", ({ payload: e }) => {
@@ -207,28 +323,7 @@ export function ensureChatEvents() {
     if (e.kind === "done") cancelledTurns.delete(e.turnId);
     const thread = useChatStore.getState().threads[e.sessionId];
     if (thread?.turnId !== e.turnId || !thread.busy) return;
-    useAgentObservabilityStore.getState().recordChat(e);
-    acceptChatEvent(e);
-    const record = useAgentActivityStore.getState().record;
-    if (e.kind === "session" && e.providerSessionId) useSessionStore.getState().updateSession(e.sessionId, { providerSessionId: e.providerSessionId });
-    if (e.kind === "text" || e.kind === "tool") {
-      const bytes = useAgentActivityStore.getState().sessions[e.sessionId]?.bytes ?? 0;
-      const key = `${e.sessionId}:${e.turnId}:${e.itemId ?? e.kind}`; const text = e.text ?? "";
-      const added = e.delta ? text : text.slice(outputLengths.get(key) ?? 0);
-      outputLengths.set(key, e.delta ? (outputLengths.get(key) ?? 0) + text.length : text.length);
-      record(e.sessionId, { phase: "running", lastOutputAt: Date.now(), bytes: bytes + new TextEncoder().encode(added).length }, e.kind === "tool" ? "activity.running" : undefined, e.title);
-    }
-    if (e.kind === "status") record(e.sessionId, { phase: "running", ...(e.pid ? { pid: e.pid } : {}) });
-    if (e.kind === "error") record(e.sessionId, { error: e.text }, "activity.error", e.text);
-    if (e.kind === "done") {
-      for (const key of outputLengths.keys()) if (key.startsWith(`${e.sessionId}:${e.turnId}:`)) outputLengths.delete(key);
-      cancelledTurns.delete(e.turnId);
-      const current = useChatStore.getState().threads[e.sessionId];
-      const phase = e.status === "stopped" ? "stopped" : current?.error || e.status === "error" ? "error" : "done";
-      record(e.sessionId, { phase, endedAt: Date.now() }, `activity.${phase}`);
-      useSessionStore.getState().updateSession(e.sessionId, { status: phase === "error" ? "error" : phase === "stopped" ? "suspended" : "waiting" });
-      scheduleSave(250);
-    }
+    enqueueChatEvent(e);
   }).catch(error => { subscription = undefined; throw error; });
   return subscription;
 }
@@ -249,13 +344,14 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   const goalChanged = (compactBeforeTurn && !!goal || goal !== (old.lastSentGoal ?? "")) && !prompt.trimStart().startsWith("/");
   const transmittedPrompt = goalChanged ? (goal ? `Conversation objective: ${goal}\n\n${prompt.trim()}` : `The previous conversation objective has been cleared. Follow the current request.\n\n${prompt.trim()}`) : prompt.trim();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments };
-  useChatStore.getState().patch(sessionId, { busy: true, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: (old.contextTokens ?? 0) + estimateTokens(prompt), contextTokensEstimated: true, turnId, error: undefined, diagnostic: undefined, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
+  useChatStore.getState().patch(sessionId, { busy: true, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: (old.contextTokens ?? 0) + estimateTokens(prompt), contextTokensEstimated: true, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, diagnostic: undefined, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
   useSessionStore.getState().updateSession(sessionId, { status: "running", currentTask: prompt.trim() });
   if (!old.messages.length) useSessionStore.getState().setAutomaticSessionName(sessionId, prompt.trim().slice(0, 44) || attachments[0]?.name || "");
   useAgentActivityStore.getState().record(sessionId, { phase: "starting", startedAt: Date.now(), endedAt: undefined, error: undefined, command: session.runner.type === "codex" ? "codex app-server" : "claude --print", pid: undefined }, "activity.starting");
   try {
     await ensureChatEvents();
     if (!useSessionStore.getState().sessions.some(session => session.id === sessionId)) { cancelledTurns.delete(turnId); return false; }
+    if (useChatStore.getState().threads[sessionId]?.turnId !== turnId) { cancelledTurns.delete(turnId); return false; }
     if (cancelledTurns.delete(turnId)) {
       useChatStore.getState().patch(sessionId, { busy: false, compacting: false, contextPrompts: old.contextPrompts, contextTokens: old.contextTokens, status: "stopped", draft: prompt });
       useSessionStore.getState().updateSession(sessionId, { status: "suspended" });
@@ -267,6 +363,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
     return true;
   } catch (error) {
     cancelledTurns.delete(turnId);
+    if (useChatStore.getState().threads[sessionId]?.turnId !== turnId) return false;
     useChatStore.getState().patch(sessionId, { busy: false, compacting: false, contextPrompts: old.contextPrompts, contextTokens: old.contextTokens, contextTokensEstimated: old.contextTokensEstimated, error: String(error), draft: prompt });
     useSessionStore.getState().updateSession(sessionId, { status: "error" });
     useAgentActivityStore.getState().record(sessionId, { phase: "error", endedAt: Date.now(), error: String(error) }, "activity.error", String(error));
@@ -307,7 +404,29 @@ export async function stopChatTurn(sessionId: string) {
   const thread = useChatStore.getState().threads[sessionId];
   if (thread?.busy && thread.turnId) cancelledTurns.add(thread.turnId);
   try { await invoke("stop_chat_turn", { sessionId }); }
-  catch (error) { useChatStore.getState().patch(sessionId, { error: String(error) }); }
+  catch (error) {
+    if (thread?.turnId) cancelledTurns.delete(thread.turnId);
+    if (useChatStore.getState().threads[sessionId]?.turnId === thread?.turnId) useChatStore.getState().patch(sessionId, { error: String(error) });
+  }
+}
+
+/** Verify the native process without treating a quiet model as a failed turn. */
+export async function refreshChatTurnStatus(sessionId: string): Promise<ChatTurnStatus | undefined> {
+  const before = useChatStore.getState().threads[sessionId];
+  if (!before?.busy || !before.turnId || launches.has(sessionId)) return undefined;
+  const status = await invoke<ChatTurnStatus>("get_chat_turn_status", { sessionId });
+  const current = useChatStore.getState().threads[sessionId];
+  if (!current?.busy || current.turnId !== before.turnId || launches.has(sessionId)) return status;
+  if (!status || typeof status.running !== "boolean") throw new Error("Invalid chat process status.");
+  if (status.turnId && status.turnId !== current.turnId) return status;
+  if (status.running) {
+    useChatStore.getState().patch(sessionId, { lastHeartbeatAt: Date.now(), ...(status.pid ? { pid: status.pid } : {}), ...(status.status && status.status !== "running" ? { status: status.status } : {}) });
+  } else {
+    flushChatEvents();
+    const latest = useChatStore.getState().threads[sessionId];
+    if (latest?.busy && latest.turnId === before.turnId) enqueueChatEvent({ sessionId, turnId: before.turnId, kind: "done", status: status.status || "interrupted" });
+  }
+  return status;
 }
 
 // Removing a conversation must also stop its background turn and remove its local transcript.

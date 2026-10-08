@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
+import { cleanupSessionWorktree } from "../services/worktreeRecoveryCommands";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -572,13 +573,7 @@ export function SessionList() {
       return;
     }
 
-    invoke("teardown_session_worktree", {
-      workdir: workspacePath,
-      worktreePath: session.worktreePath,
-      branch: session.branchName,
-    }).catch((e) => {
-      console.warn("[worktree] teardown failed:", e);
-    });
+    void cleanupSessionWorktree(workspacePath, session.worktreePath, session.branchName);
   };
 
   if (!activeWorkspace) return null;

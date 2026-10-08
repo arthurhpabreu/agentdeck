@@ -12,11 +12,11 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ExitStatus, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -80,13 +80,87 @@ struct ChatProcess {
     turn_id: String,
     provider: String,
     project_path: String,
+    workdir: String,
     input: Mutex<live::LiveInput>,
     child: Mutex<Child>,
     cancelled: AtomicBool,
+    last_output_at: AtomicU64,
 }
 
 #[derive(Default)]
-pub struct ChatProcessState(Mutex<HashMap<String, Arc<ChatProcess>>>);
+pub struct ChatProcessState(
+    Mutex<HashMap<String, Arc<ChatProcess>>>,
+    Mutex<HashMap<String, ChatTurnStatus>>,
+);
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTurnStatus {
+    pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_at: Option<u64>,
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[derive(Default)]
+struct CompactionProgress {
+    prolonged_notice_sent: bool,
+}
+
+impl CompactionProgress {
+    fn observe(&mut self, compacting: bool, elapsed: Duration) -> Option<&'static str> {
+        if compacting && !self.prolonged_notice_sent && elapsed >= Duration::from_secs(180) {
+            self.prolonged_notice_sent = true;
+            Some("Context compaction is still running. The conversation is preserved; you can wait or stop this turn.")
+        } else {
+            None
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_chat_turn_status(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<ChatTurnStatus, String> {
+    let state = app.state::<ChatProcessState>();
+    let active = state.0.lock().map_err(|_| "Chat registry unavailable")?;
+    if let Some(process) = active.get(&session_id) {
+        let child = process
+            .child
+            .lock()
+            .map_err(|_| "Process status unavailable")?;
+        // Registry membership remains authoritative while the worker drains final
+        // output. A manual refresh never interrupts a silent but live provider.
+        return Ok(ChatTurnStatus {
+            running: true,
+            turn_id: Some(process.turn_id.clone()),
+            pid: Some(child.id()),
+            status: Some("running".into()),
+            last_event_at: Some(process.last_output_at.load(Ordering::Relaxed)),
+        });
+    }
+    let completed = state
+        .1
+        .lock()
+        .map_err(|_| "Chat status unavailable")?
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_default();
+    Ok(completed)
+}
 
 fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
@@ -714,6 +788,7 @@ pub async fn start_chat_turn(
         turn_id: request.turn_id.clone(),
         provider: request.runner_type.clone(),
         project_path: project_path.clone(),
+        workdir: request.workdir.clone(),
         input: Mutex::new(live::LiveInput::new(
             stdin,
             request.runner_type == "codex",
@@ -721,7 +796,11 @@ pub async fn start_chat_turn(
         )),
         child: Mutex::new(child),
         cancelled: AtomicBool::new(false),
+        last_output_at: AtomicU64::new(now_millis()),
     });
+    if let Ok(mut completed) = state.1.lock() {
+        completed.remove(&request.session_id);
+    }
     processes.insert(request.session_id.clone(), process.clone());
     drop(processes);
     let parser = ChatParser::new(request.session_id.clone(), request.turn_id.clone());
@@ -785,9 +864,14 @@ pub async fn start_chat_turn(
         let mut capture_stream = crate::memory_capture::StreamCapture::default();
         let mut live = live::LiveProtocol::new(&request);
         let launched_at = Instant::now();
+        let mut last_heartbeat = launched_at;
+        let mut compaction_progress = CompactionProgress::default();
         loop {
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(ProcessOutput::Stdout(line)) => {
+                    process
+                        .last_output_at
+                        .store(now_millis(), Ordering::Relaxed);
                     let lines = match process.input.lock() {
                         Ok(mut input) => live.ingest(&line, &mut input),
                         Err(_) => vec![
@@ -805,7 +889,7 @@ pub async fn start_chat_turn(
                                     );
                                 }
                                 if let Some(memory) = &memory {
-                                    crate::memory_runtime::mark_delivered(memory);
+                                    crate::memory_runtime::mark_delivered(&app, memory);
                                 }
                                 continue;
                             }
@@ -890,6 +974,9 @@ pub async fn start_chat_turn(
                 }
                 Ok(ProcessOutput::Stderr(line)) => {
                     if !line.trim().is_empty() {
+                        process
+                            .last_output_at
+                            .store(now_millis(), Ordering::Relaxed);
                         stderr_tail = bounded_text(&format!("{line}\n{stderr_tail}"), 8_192);
                         let mut event = parser.message("status", &line);
                         event.status = Some("diagnostic".into());
@@ -902,11 +989,12 @@ pub async fn start_chat_turn(
                 Ok(ProcessOutput::Closed) => closed += 1,
                 Err(_) => {}
             }
-            if live.compacting() && launched_at.elapsed() > Duration::from_secs(180) {
-                parser.failed = true;
-                emit_event(&app, &request.runner_type, parser.message("error", "Context compaction timed out. Your next request was not sent; the existing conversation is preserved. Retry or adjust automatic compaction in the chat context settings."));
-                terminate_process(&process);
-                break;
+            if let Some(notice) =
+                compaction_progress.observe(live.compacting(), launched_at.elapsed())
+            {
+                let mut event = parser.message("status", notice);
+                event.status = Some("compacting".into());
+                emit_event(&app, &request.runner_type, event);
             }
             if exit.is_none() {
                 match process
@@ -938,6 +1026,12 @@ pub async fn start_chat_turn(
             {
                 break;
             }
+            if exit.is_none() && last_heartbeat.elapsed() >= Duration::from_secs(10) {
+                let mut heartbeat = parser.event("heartbeat");
+                heartbeat.pid = Some(pid);
+                emit_event(&app, &request.runner_type, heartbeat);
+                last_heartbeat = Instant::now();
+            }
         }
         let cancelled = process.cancelled.load(Ordering::SeqCst);
         if !cancelled && exit.is_some_and(|status| !status.success()) && !parser.failed {
@@ -949,12 +1043,42 @@ pub async fn start_chat_turn(
             };
             emit_event(&app, &request.runner_type, parser.message("error", &detail));
         }
-        // Remove only our generation; a late worker cannot remove a newer turn.
-        if let Ok(mut processes) = app.state::<ChatProcessState>().0.lock() {
+        let final_status = if cancelled {
+            "stopped"
+        } else if parser.failed {
+            "error"
+        } else {
+            "completed"
+        };
+        // Retain a bounded completion record so the UI can recover a missed done
+        // event. Remove only our generation; a late worker cannot remove a new turn.
+        let state = app.state::<ChatProcessState>();
+        if let Ok(mut processes) = state.0.lock() {
             if processes
                 .get(&request.session_id)
                 .is_some_and(|entry| entry.turn_id == request.turn_id)
             {
+                if let Ok(mut completed) = state.1.lock() {
+                    if completed.len() >= 256 {
+                        if let Some(oldest) = completed
+                            .iter()
+                            .min_by_key(|(_, status)| status.last_event_at.unwrap_or(0))
+                            .map(|(id, _)| id.clone())
+                        {
+                            completed.remove(&oldest);
+                        }
+                    }
+                    completed.insert(
+                        request.session_id.clone(),
+                        ChatTurnStatus {
+                            running: false,
+                            turn_id: Some(request.turn_id.clone()),
+                            pid: Some(pid),
+                            status: Some(final_status.into()),
+                            last_event_at: Some(process.last_output_at.load(Ordering::Relaxed)),
+                        },
+                    );
+                }
                 processes.remove(&request.session_id);
             }
         }
@@ -1003,16 +1127,7 @@ pub async fn start_chat_turn(
                 events,
             );
         }
-        done.status = Some(
-            if cancelled {
-                "stopped"
-            } else if parser.failed {
-                "error"
-            } else {
-                "completed"
-            }
-            .into(),
-        );
+        done.status = Some(final_status.into());
         emit_event(&app, &request.runner_type, done);
     });
     Ok(())
@@ -1104,9 +1219,40 @@ pub fn has_active_processes(app: &tauri::AppHandle) -> bool {
         .unwrap_or(true)
 }
 
+pub fn uses_workdir(app: &tauri::AppHandle, path: &Path) -> bool {
+    app.state::<ChatProcessState>()
+        .0
+        .lock()
+        .map(|map| {
+            map.values().any(|process| {
+                std::fs::canonicalize(crate::util::expand_path(&process.workdir))
+                    .is_ok_and(|dir| dir.starts_with(path))
+            })
+        })
+        .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prolonged_compaction_reports_progress_and_keeps_waiting() {
+        let mut progress = CompactionProgress::default();
+        assert!(progress.observe(false, Duration::from_secs(180)).is_none());
+        assert!(progress.observe(true, Duration::from_secs(179)).is_none());
+        assert!(progress
+            .observe(true, Duration::from_secs(180))
+            .unwrap()
+            .contains("still running"));
+        assert!(progress
+            .observe(true, Duration::from_secs(24 * 3600))
+            .is_none());
+        // No deadline failure is produced: confirmed completion can still arrive.
+        assert!(progress
+            .observe(false, Duration::from_secs(24 * 3600))
+            .is_none());
+    }
 
     pub(super) fn request(provider: &str) -> ChatTurnRequest {
         ChatTurnRequest {

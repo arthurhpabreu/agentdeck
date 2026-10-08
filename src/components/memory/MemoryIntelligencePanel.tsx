@@ -8,6 +8,8 @@ import { intelligenceCommands as api, type CatalogProject, type ExportPlan, type
 import { intelligenceCopy } from "./intelligenceCopy";
 import "./memoryIntelligence.css";
 import { MemoryCurationControl, curationCopy } from "./MemoryCurationControl";
+import { KnowledgeWarnings } from "./KnowledgeWarnings";
+import type { KnowledgeWarning } from "../../services/knowledgeCommands";
 
 function useAction() {
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -30,7 +32,7 @@ export function MemoryIntelligencePanel({ path }: { path: string }) {
     {open && <><nav aria-label={c.title}>{(["profile", "catalog", "search", "archive", "sync"] as const).map(value => <button type="button" key={value} aria-pressed={value === tab} onClick={() => setTab(value)}>{c[value]}</button>)}</nav>
       {tab === "profile" && <Profile />}{tab === "catalog" && <Catalog />}
       {tab === "search" && <Search />}{tab === "archive" && <Archive path={path} />}
-      {tab === "sync" && <Sync path={path} />}</>}
+      {tab === "sync" && <Sync key={path} path={path} />}</>}
   </details></>;
 }
 function Profile() {
@@ -80,9 +82,12 @@ function Search() {
   const projects = useWorkspaceStore(s => s.workspaces), active = useWorkspaceStore(s => s.activeWorkspaceId);
   const path = projects.find(p => p.id === active)?.path;
   const [query, setQuery] = useState(""), [rows, setRows] = useState<RetrievalHit[]>([]);
+  const [warnings, setWarnings] = useState<KnowledgeWarning[]>([]);
+  const sequence = useRef(0);
+  useEffect(() => { sequence.current++; setRows([]); setWarnings([]); }, [path]);
   const { busy, error, run } = useAction();
-  return <div><p>{c.searchHint}</p><form onSubmit={e => { e.preventDefault(); if (path) void run(async () => setRows(await api.search(path, query))); }}><input type="search" aria-label={c.query} placeholder={c.query} value={query} maxLength={2000} onChange={e => setQuery(e.target.value)} /><button type="submit" disabled={busy || !path || !query.trim()}>{c.search}</button></form>
-    {error && <p role="alert">{error}</p>}{rows.map(row => <article key={row.id}><strong>{row.title}</strong><p>{row.source} · {row.scope} · {row.score.toFixed(5)}</p><code>{row.path ?? row.id}</code><p>{row.reason}</p><pre>{row.excerpt.slice(0, 1600)}</pre></article>)}
+  return <div><p>{c.searchHint}</p><form onSubmit={e => { e.preventDefault(); if (path) void run(async () => { const request = ++sequence.current; setRows([]); setWarnings([]); const result = await api.search(path, query); if (request === sequence.current) { setRows(result.hits); setWarnings(result.warnings); } }); }}><input type="search" aria-label={c.query} placeholder={c.query} value={query} maxLength={2000} onChange={e => { sequence.current++; setQuery(e.target.value); setRows([]); setWarnings([]); }} /><button type="submit" disabled={busy || !path || !query.trim()}>{c.search}</button></form>
+    {error && <p role="alert">{error}</p>}<KnowledgeWarnings warnings={warnings} />{rows.map(row => <article key={row.id}><strong>{row.title}</strong><p>{row.source} · {row.scope} · {row.score.toFixed(5)}</p><code>{row.path ?? row.id}</code><p>{row.reason}</p><pre>{row.excerpt.slice(0, 1600)}</pre></article>)}
   </div>;
 }
 function Archive({ path }: { path: string }) {
@@ -99,12 +104,13 @@ function Archive({ path }: { path: string }) {
 }
 function Sync({ path }: { path: string }) {
   const { locale } = useAppI18n(); const c = intelligenceCopy(locale);
-  const [destination, setDestination] = useState(""), [plan, setPlan] = useState<ExportPlan | null>(null);
+  const [preview, setPreview] = useState<{ destination: string; plan: ExportPlan } | null>(null);
+  const plan = preview?.plan;
   const { busy, error, run } = useAction();
-  return <div><p>{c.syncHint}</p><button type="button" disabled={busy} onClick={() => void run(async () => { const folder = await invoke<string | null>("pick_folder"); if (!folder) return; setDestination(folder); setPlan(await api.export(path, folder, false)); })}>{c.preview}</button>
+  return <div><p>{c.syncHint}</p><button type="button" disabled={busy} onClick={() => void run(async () => { setPreview(null); const folder = await invoke<string | null>("pick_folder"); if (!folder) return; const plan = await api.export(path, folder, false); setPreview({ destination: folder, plan }); })}>{c.preview}</button>
     {error && <p role="alert">{error}</p>}{plan && <article><code>{plan.directory}</code><p>{plan.recordCount}</p>{plan.conflicts.length > 0 && <p role="alert">{c.conflicts}</p>}
       <ul>{plan.changes.map(change => <li key={change.path}><b>{change.action}</b>: {change.path}</li>)}</ul>
-      {plan.applied ? <p role="status">{c.exported}</p> : <button type="button" disabled={busy || !!plan.conflicts.length} onClick={() => void run(async () => setPlan(await api.export(path, destination, true)))}>{c.applyExport}</button>}
+      {plan.applied ? <p role="status">{c.exported}</p> : <button type="button" disabled={busy || !!plan.conflicts.length} onClick={() => void run(async () => { if (!preview) return; const plan = await api.export(path, preview.destination, true); setPreview({ ...preview, plan }); })}>{c.applyExport}</button>}
     </article>}
   </div>;
 }

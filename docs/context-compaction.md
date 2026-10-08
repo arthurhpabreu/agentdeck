@@ -53,9 +53,11 @@ Compaction preserves goals, constraints, decisions and pending work through the
 provider's summary. Summaries can omit details; the complete local transcript
 remains available to the user.
 
-A failure, unsupported CLI command, missing confirmation or 180-second timeout
+A failure, unsupported CLI command or a finished compaction without confirmation
 does not start a fresh provider conversation or send the pending task. The pending
-request is restored in the composer. Retry after correcting the provider issue,
+request is restored in the composer. After 180 seconds, an ongoing compaction
+reports that it is still waiting; elapsed time alone does not terminate it.
+Retry after correcting a provider error,
 or disable automatic compaction to continue using native context management.
 Stopping during compaction terminates the current provider process as it does
 during a normal response. Counters reset only on confirmed compaction. Lifetime
@@ -63,6 +65,18 @@ usage remains cumulative and includes compaction usage when the provider reports
 
 Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-server)
 and [Claude Agent SDK commands](https://code.claude.com/docs/en/agent-sdk/slash-commands).
+
+## Terminal activity and recovery
+
+Tool cards show the command, working directory, available output and exit status
+reported by the provider. Running tools expand automatically; long output starts
+with its latest lines and can be expanded or copied. Codex streams output deltas;
+Claude shows the progress and results exposed by its CLI protocol.
+
+The activity indicator separates the last meaningful event from process heartbeats.
+A live process is not proof that a task is advancing. Quiet turns expose **Check
+process** and **Stop response** controls. Checking the native process can recover a
+completion event missed by the interface without launching another model request.
 
 ## Local chat archive
 
@@ -73,8 +87,11 @@ The original localStorage transcript is not replaced with a bounded cache until
 archive writes succeed. No cloud upload is introduced.
 
 After a successful save, inactive history is evicted from the live store beyond
-200 messages or roughly 512,000 text characters. An active turn remains resident
-so streamed updates and queued input retain their message identity. The UI always
+200 messages or roughly 512,000 text characters, including terminal output and
+commands. Completed tools can also leave the live store during a long active turn;
+the current input, latest assistant response and running tools remain resident.
+Late updates reload the archived item before applying new output, retaining its
+identity and order. The UI always
 displays at most 80 messages or search results. **View earlier messages** loads
 another page; **Return to latest messages** restores the current conversation view.
 Search includes archived text, titles and attachment names. Markdown export includes

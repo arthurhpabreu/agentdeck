@@ -65,22 +65,25 @@ export const useEditorBufferStore = create<EditorBufferStore>()((set) => ({
     };
   }),
 
-  markSaved: (tabId, content, versionToken) => set((state) => ({
+  markSaved: (tabId, content, versionToken) => set((state) => {
+    const current = state.buffersByTabId[tabId];
+    if (!current) return {};
+    return {
     buffersByTabId: {
       ...state.buffersByTabId,
       [tabId]: {
-        ...(state.buffersByTabId[tabId] ?? defaultBufferState()),
-        content,
+        ...current,
         originalContent: content,
         versionToken,
         loaded: true,
         saving: false,
-        dirty: false,
+        dirty: current.content !== content,
         error: null,
         missing: false,
       },
     },
-  })),
+    };
+  }),
 
   removeBuffer: (tabId) => set((state) => {
     if (!state.buffersByTabId[tabId]) return {};

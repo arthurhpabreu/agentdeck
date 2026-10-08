@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { KnowledgeWarning } from "./knowledgeCommands";
 import { GLOBAL_MEMORY_KEY, type MemoryRecord } from "./memoryCommands";
 const scopeArgs = (path: string) => path === GLOBAL_MEMORY_KEY ? { projectPath: "", scope: "global" } : { projectPath: path, scope: "project" };
 export interface IntelligenceSettings { contribute: boolean; consume: boolean; discovery: boolean; visible: boolean }
@@ -8,6 +9,7 @@ export interface MemoryMetadata { category: string; appliesTo: string[]; state: 
 export interface MemoryVersion { record: MemoryRecord; recordedAt: number }
 export interface ExportPlan { directory: string; changes: { path: string; action: string }[]; conflicts: string[]; recordCount: number; applied: boolean }
 export interface RetrievalHit { id: string; source: string; scope: string; title: string; excerpt: string; revision: number; score: number; reason: string; path: string | null }
+export interface RetrievalSearch { hits: RetrievalHit[]; warnings: KnowledgeWarning[] }
 export const intelligenceCommands = {
   catalog: (projects: { path: string; name: string }[], query = "") => invoke<CatalogProject[]>("memory_catalog", { projects, query }),
   updateProject: (project: CatalogProject) => invoke<void>("memory_update_project", { id: project.id, name: project.name, description: project.description, settings: project.settings }),
@@ -21,5 +23,8 @@ export const intelligenceCommands = {
   inactive: (path: string) => invoke<MemoryRecord[]>("memory_inactive", scopeArgs(path)),
   maintain: (path: string, apply: boolean) => invoke<MemoryRecord[]>("memory_maintain", { ...scopeArgs(path), apply }),
   export: (path: string, destination: string, apply: boolean) => invoke<ExportPlan>("memory_export_incremental", { ...scopeArgs(path), destination, apply }),
-  search: (projectPath: string, query: string) => invoke<RetrievalHit[]>("memory_retrieval_preview", { projectPath, query }),
+  search: async (projectPath: string, query: string): Promise<RetrievalSearch> => {
+    const result = await invoke<RetrievalSearch | RetrievalHit[]>("memory_retrieval_preview", { projectPath, query });
+    return Array.isArray(result) ? { hits: result, warnings: [] } : result;
+  },
 };

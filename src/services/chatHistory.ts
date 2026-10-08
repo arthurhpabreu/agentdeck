@@ -44,7 +44,7 @@ export async function restoreChatHistory(): Promise<Record<string, ChatThread>> 
   const threads: Record<string, ChatThread> = {};
   for (const record of metadata) {
     const messages = await readChatHistory(record.id);
-    threads[record.id] = { ...record.thread, compactionPolicy: restoreCompactionPolicy(record.thread.compactionPolicy), messages: messages.map(m => m.status === "queued" || m.status === "sending" ? { ...m, status: "failed" } : m), archivedCount: Math.max(0, record.total - messages.length), busy: false, compacting: false, turnId: undefined, status: undefined };
+    threads[record.id] = { ...record.thread, compactionPolicy: restoreCompactionPolicy(record.thread.compactionPolicy), messages: messages.map(m => m.role === "user" && (m.status === "queued" || m.status === "sending") ? { ...m, status: "failed" } : m.role === "tool" && ["running", "inProgress", "in_progress", "pending"].includes(m.status ?? "") ? { ...m, status: "interrupted" } : m), archivedCount: Math.max(0, record.total - messages.length), busy: false, compacting: false, turnId: undefined, status: undefined };
   }
   return threads;
 }
@@ -55,6 +55,15 @@ export async function readChatHistory(id: string, before?: number, limit = HISTO
     const result: ChatMessage[] = [];
     request.onerror = () => reject(request.error);
     request.onsuccess = () => { const cursor = request.result; if (!cursor || result.length >= limit) { resolve(result.reverse()); return; } const { sessionId: _, ...message } = cursor.value; result.push(message); cursor.continue(); };
+  });
+}
+/** Recover a committed item before applying a late update to an evicted active-turn message. */
+export async function readChatHistoryMessage(id: string, messageId: string): Promise<ChatMessage | undefined> {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("messages").objectStore("messages").get([id, messageId]);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => { if (!request.result) { resolve(undefined); return; } const { sessionId: _, ...message } = request.result; resolve(message); };
   });
 }
 /** Cursor-based search yields to IndexedDB between records and caps rendered results. */
@@ -74,7 +83,7 @@ export async function searchChatHistory(id: string, query: string): Promise<Chat
   });
 }
 export function matchesChatMessage(message: ChatMessage, query: string): boolean {
-  return `${message.title ?? ""} ${message.text} ${message.attachments?.map(a => a.name).join(" ") ?? ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  return `${message.title ?? ""} ${message.command ?? ""} ${message.cwd ?? ""} ${message.output ?? ""} ${message.text} ${message.attachments?.map(a => a.name).join(" ") ?? ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
 }
 export async function deleteChatHistory(id: string): Promise<void> {
   const db = await openDatabase(); const transaction = db.transaction(["messages", "threads"], "readwrite"); const done = completion(transaction);

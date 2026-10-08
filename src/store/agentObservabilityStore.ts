@@ -44,6 +44,8 @@ export interface ChatActivityEvent {
   status?: string;
   parentId?: string;
   pid?: number;
+  command?: string;
+  output?: string;
 }
 
 interface LiveActivity {
@@ -71,13 +73,13 @@ export const useAgentObservabilityStore = create<{
       const previous = state.live[event.sessionId];
       const tools = previous?.tools.slice() ?? [];
       if (event.kind === "tool") {
-        const id = `${event.turnId}:${event.itemId ?? event.title ?? "tool"}`;
+        const id = `${event.turnId}:${event.parentId ?? ""}:${event.itemId ?? event.title ?? "tool"}`;
         const index = tools.findIndex(tool => tool.id === id);
         const tool: AgentToolEvent = {
-          id, kind: "tool", title: event.title ?? tools[index]?.title ?? "Tool", detail: event.text?.slice(0, 3000) ?? tools[index]?.detail ?? "",
+          id, kind: "tool", title: event.title ?? tools[index]?.title ?? "Tool", detail: event.output?.slice(-3000) ?? event.text?.slice(0, 3000) ?? tools[index]?.detail ?? "",
           status: event.status ?? "running", timestamp: tools[index]?.timestamp ?? new Date().toISOString(),
           parentId: event.parentId ? `${event.turnId}:${event.parentId}` : tools[index]?.parentId,
-          input: event.status === "running" && event.text ? event.text.slice(0, 3000) : tools[index]?.input,
+          input: event.command?.slice(0, 3000) ?? (event.status === "running" && event.text ? event.text.slice(0, 3000) : tools[index]?.input),
         };
         if (index >= 0) tools[index] = tool;
         else tools.push(tool);

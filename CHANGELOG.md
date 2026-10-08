@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Chat shows terminal commands, available output, working directories and exit
+  status, with activity timestamps and process recovery controls for quiet turns.
+- The compact composer keeps commands and skills above the input and groups
+  settings, attachments and response actions in one row.
+- Long turns archive completed tools, batch streaming updates and recover late
+  output without losing message identity. Slow compaction reports its state and
+  continues waiting for provider confirmation.
+- Memory retrieval shows the selected sources and distinguishes prepared context
+  from delivery. Vault diagnostics explain unavailable folders and partial indexes
+  while preserving results from healthy sources.
+- Preserved session worktrees remain discoverable after removing projects or
+  restarting. Cleanup requires confirmation, rechecks Git state and keeps branches;
+  dirty, locked, detached or active worktrees cannot be cleaned through recovery.
+- The README describes the product and setup; version history stays in release notes.
+
+### Fixed
+
+- Editor saves preserve text typed during a pending write; failed writes retain
+  drafts, and closing unsaved tabs requires confirmation.
+- Memory drafts survive panel navigation. Export destinations remain bound to
+  their validated previews, including after failed folder selections.
+- Markdown indexing handles encoded fragments and fenced code correctly, and
+  connected-note reads reject deleted files or paths outside the selected source.
+- Large terminal input no longer overflows JavaScript argument limits.
+- Worktree cleanup preserves ignored/untracked files, and Windows path variations
+  no longer leave stale recovery notices after successful cleanup.
+
 ## 0.6.4 — 2026-10-08
 
 ### Changed

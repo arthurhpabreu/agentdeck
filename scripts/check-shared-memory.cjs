@@ -225,6 +225,21 @@ async function main() {
     return { initial_revision: record.revision, same_revision_after_identical_update: true };
   });
 
+  await step('unavailable_vault_warns_without_hiding_saved_memories', async () => {
+    fs.writeFileSync(knowledgeConfig, JSON.stringify({ sourcePath: path.join(temporary, 'unavailable fixture vault') }));
+    try {
+      const documents = await a.tool('documents_search', { query: 'OAuth renewal' });
+      assert.ok(documents.includes('Document source warning') && documents.includes('unavailable'));
+      const found = await a.tool('memory_search', { query: 'Aurora cursor' });
+      assert.ok(found.includes('unavailable') && found.includes('AURORA_SHARED_FACT'));
+    } finally {
+      fs.writeFileSync(knowledgeConfig, JSON.stringify({ sourcePath: docs }));
+    }
+    const recovered = await a.tool('documents_search', { query: 'OAuth renewal' });
+    assert.ok(recovered.includes('oauth.md') && !recovered.includes('Document source warning'));
+    return { scoped_warning_visible: true, saved_memory_still_available: true, recovered_without_restarting: true };
+  });
+
   const b = new MemoryClient(projects.B, 'gemini', 'smoke-b');
   await step('project_isolation_with_shared_database', async () => {
     await b.initialize();

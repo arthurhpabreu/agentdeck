@@ -180,10 +180,10 @@ pub async fn memory_retrieval_preview(
     app: tauri::AppHandle,
     project_path: String,
     query: String,
-) -> Result<Vec<crate::memory_retrieval::RetrievalHit>, String> {
+) -> Result<crate::memory_retrieval::RetrievalSearch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let (engine, project) = open(&app, &project_path)?;
-        crate::memory_retrieval::search(
+        crate::memory_retrieval::search_report(
             &engine,
             &project,
             Some(&project_path),

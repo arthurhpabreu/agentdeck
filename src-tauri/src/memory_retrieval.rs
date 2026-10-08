@@ -39,6 +39,13 @@ pub struct RetrievalHit {
     pub reason: String,
     pub path: Option<String>,
 }
+#[derive(Default, Serialize)]
+pub struct RetrievalSearch {
+    pub hits: Vec<RetrievalHit>,
+    pub warnings: Vec<crate::knowledge::KnowledgeWarning>,
+}
+
+#[cfg(test)]
 pub fn search(
     engine: &Engine,
     project: &str,
@@ -46,13 +53,24 @@ pub fn search(
     config_path: Option<&Path>,
     query: &str,
 ) -> Result<Vec<RetrievalHit>, String> {
+    Ok(search_report(engine, project, project_path, config_path, query)?.hits)
+}
+
+pub fn search_report(
+    engine: &Engine,
+    project: &str,
+    project_path: Option<&str>,
+    config_path: Option<&Path>,
+    query: &str,
+) -> Result<RetrievalSearch, String> {
     if query.len() > MAX_QUERY_BYTES {
         return Err("Query exceeds limit".into());
     }
     if !engine.config(project)?.enabled {
-        return Ok(Vec::new());
+        return Ok(RetrievalSearch::default());
     }
     let mut hits = Vec::new();
+    let mut warnings = Vec::new();
     for (rank, record) in engine
         .search_context(project, query, 30)?
         .into_iter()
@@ -119,15 +137,14 @@ pub fn search(
         }
     }
     if let Some(config) = config_path {
-        for (rank, document) in crate::knowledge::search_documents(
+        let documents = crate::knowledge::search_documents_report(
             config,
             project_path,
             query,
             engine.config(GLOBAL_MEMORY_KEY)?.enabled,
-        )?
-        .into_iter()
-        .enumerate()
-        {
+        )?;
+        warnings = documents.warnings;
+        for (rank, document) in documents.hits.into_iter().enumerate() {
             hits.push(RetrievalHit {
                 id: document.id,
                 source: "document".into(),
@@ -150,12 +167,13 @@ pub fn search(
     let mut seen = HashSet::new();
     hits.retain(|hit| seen.insert(hit.excerpt.trim().to_owned()));
     hits.truncate(40);
-    Ok(hits)
+    Ok(RetrievalSearch { hits, warnings })
 }
 pub struct RetrievalContext {
     pub prepared: PreparedContext,
     pub references: Vec<String>,
     pub hits: Vec<RetrievalHit>,
+    pub warnings: Vec<crate::knowledge::KnowledgeWarning>,
 }
 pub fn reference(hit: &RetrievalHit) -> String {
     format!(
@@ -176,13 +194,16 @@ pub fn prepare(
         prepared: PreparedContext::default(),
         references: vec![],
         hits: vec![],
+        warnings: vec![],
     };
     let settings = engine.config(project)?;
     if !settings.enabled || query.trim_start().starts_with('/') {
         return Ok(output);
     }
     let query = automatic_query(query);
-    let mut hits = search(engine, project, Some(path), Some(config), &query)?;
+    let result = search_report(engine, project, Some(path), Some(config), &query)?;
+    output.warnings = result.warnings;
+    let mut hits = result.hits;
     // Existing baseline/continuation selection supplies pinned preferences and recent handoffs.
     let baseline = engine.prepare_context(project, conversation, &query)?;
     for note in baseline.records {
@@ -282,6 +303,8 @@ pub fn prepare(
             documents += 1;
         }
         output.references.push(key);
+        // The UI shows exactly the evidence admitted into the outgoing context.
+        hit.excerpt = value["excerpt"].as_str().unwrap_or_default().to_owned();
         output.hits.push(hit);
     }
     if !output.hits.is_empty() {

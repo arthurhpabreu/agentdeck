@@ -140,7 +140,6 @@ pub(super) fn codex_input(request: &ChatTurnRequest) -> Result<Value, String> {
 }
 pub(super) struct LiveProtocol {
     request: ChatTurnRequest,
-    text: HashMap<String, String>,
     usage: Value,
     totals: Value,
     claude_totals: Value,
@@ -155,7 +154,6 @@ impl LiveProtocol {
     pub fn new(request: &ChatTurnRequest) -> Self {
         Self {
             request: request.clone(),
-            text: HashMap::new(),
             usage: json!({}),
             totals: json!({}),
             claude_totals: json!({}),
@@ -420,9 +418,15 @@ impl LiveProtocol {
             "turn/started"=>{input.turn=params["turn"]["id"].as_str().map(str::to_owned);input.started=true;out.push(json!({"type":"turn.started"}));}
             "item/agentMessage/delta"=>{
                 let id=params["itemId"].as_str().unwrap_or("message");
-                let text=self.text.entry(id.into()).or_default();text.push_str(params["delta"].as_str().unwrap_or(""));
-                if text.len()>512*1024 { *text=super::bounded_text(text,512*1024); }
-                out.push(json!({"type":"item.updated","item":{"id":id,"type":"agent_message","text":text}}));
+                // Send only the new text. Re-serializing the growing message on every
+                // token causes quadratic work and floods the UI in long sessions.
+                out.push(json!({"type":"item.updated","delta":true,"item":{"id":id,"type":"agent_message","text":params["delta"]}}));
+            }
+            "item/commandExecution/outputDelta"=>{
+                out.push(json!({"type":"item.updated","delta":true,"item":{"id":params["itemId"],"type":"command_execution","aggregated_output":params["delta"]}}));
+            }
+            "item/reasoning/summaryTextDelta"|"item/reasoning/summaryPartAdded"|"item/reasoning/textDelta"=>{
+                out.push(json!({"type":"item.updated","item":{"id":params["itemId"],"type":"reasoning"}}));
             }
             "item/started"|"item/completed"=>{
                 if params["item"]["type"]=="userMessage" {return Ok(());}
@@ -436,7 +440,7 @@ impl LiveProtocol {
             "thread/tokenUsage/updated"=>{
                 let usage=&params["tokenUsage"]["last"];
                 self.usage=json!({"input_tokens":usage["inputTokens"],"output_tokens":usage["outputTokens"],"cached_input_tokens":usage["cachedInputTokens"]});
-                out.push(json!({"type":"turn.completed","usage":sum_usage(&self.totals,&self.usage),"context_tokens":usage["inputTokens"].as_u64().unwrap_or(0)+usage["outputTokens"].as_u64().unwrap_or(0)}));
+                out.push(json!({"type":"usage.updated","usage":sum_usage(&self.totals,&self.usage),"context_tokens":usage["inputTokens"].as_u64().unwrap_or(0)+usage["outputTokens"].as_u64().unwrap_or(0)}));
             }
             "turn/completed"=>{
                 if params["turn"]["status"]=="failed" {out.push(json!({"type":"error","message":params["turn"]["error"]["message"].as_str().unwrap_or("Codex turn failed")}));}
@@ -505,6 +509,83 @@ pub(super) fn normalize_item(item: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn successful_native_turn_closes_input_without_waiting_for_process_exit() {
+        let req = super::super::tests::request("codex");
+        let mut input = LiveInput::with_writer(Box::new(Vec::new()), true);
+        input.thread = Some("thread".into());
+        input.turn = Some("native-turn".into());
+        input.started = true;
+        let mut protocol = LiveProtocol::new(&req);
+        let out = protocol.ingest(r#"{"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"native-turn","status":"completed"}}}"#, &mut input);
+        assert_eq!(
+            serde_json::from_str::<Value>(&out[0]).unwrap()["type"],
+            "turn.completed"
+        );
+        assert!(input.turn.is_none());
+        assert!(input.writer.is_none());
+        assert!(input.submit(&req, "too-late").is_err());
+    }
+    #[test]
+    fn codex_live_deltas_keep_native_identity_and_only_send_new_text() {
+        let req = super::super::tests::request("codex");
+        let mut input = LiveInput::with_writer(Box::new(Vec::new()), true);
+        input.thread = Some("thread".into());
+        let mut protocol = LiveProtocol::new(&req);
+        for (method, id, delta, item_type, field) in [
+            (
+                "item/agentMessage/delta",
+                "message",
+                "first ",
+                "agent_message",
+                "text",
+            ),
+            (
+                "item/agentMessage/delta",
+                "message",
+                "second",
+                "agent_message",
+                "text",
+            ),
+            (
+                "item/commandExecution/outputDelta",
+                "command",
+                "building\n",
+                "command_execution",
+                "aggregated_output",
+            ),
+        ] {
+            let output = protocol.ingest(
+                &json!({"method":method,"params":{"threadId":"thread","itemId":id,"delta":delta}})
+                    .to_string(),
+                &mut input,
+            );
+            let record: Value = serde_json::from_str(&output[0]).unwrap();
+            assert_eq!(record["delta"], true);
+            assert_eq!(record["item"]["id"], id);
+            assert_eq!(record["item"]["type"], item_type);
+            assert_eq!(record["item"][field], delta);
+        }
+        let unrelated = protocol.ingest(r#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"other","itemId":"command","delta":"hidden"}}"#, &mut input);
+        assert!(unrelated.is_empty());
+    }
+
+    #[test]
+    fn codex_token_updates_and_reasoning_remain_live_activity() {
+        let req = super::super::tests::request("codex");
+        let mut input = LiveInput::with_writer(Box::new(Vec::new()), true);
+        let mut protocol = LiveProtocol::new(&req);
+        let usage = protocol.ingest(r#"{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":5}}}}"#, &mut input);
+        assert_eq!(
+            serde_json::from_str::<Value>(&usage[0]).unwrap()["type"],
+            "usage.updated"
+        );
+        let reasoning = protocol.ingest(r#"{"method":"item/reasoning/textDelta","params":{"itemId":"thinking","delta":"private reasoning"}}"#, &mut input);
+        let event: Value = serde_json::from_str(&reasoning[0]).unwrap();
+        assert_eq!(event["item"]["type"], "reasoning");
+        assert!(!reasoning[0].contains("private reasoning"));
+        assert!(input.writer.is_some());
+    }
     #[test]
     fn codex_skill_inputs_are_explicit_and_cannot_be_injected_by_frontend_paths() {
         let mut request = super::super::tests::request("codex");

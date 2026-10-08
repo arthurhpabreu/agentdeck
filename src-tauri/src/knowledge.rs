@@ -103,17 +103,55 @@ pub struct DocumentHit {
     pub score: usize,
     pub reason: String,
 }
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeWarning {
+    pub scope: String,
+    pub source_path: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Default, serde::Serialize)]
+pub struct DocumentSearch {
+    pub hits: Vec<DocumentHit>,
+    pub warnings: Vec<KnowledgeWarning>,
+}
+
+#[cfg(test)]
+pub fn search_documents(
+    config: &Path,
+    project: Option<&str>,
+    query: &str,
+    global: bool,
+) -> Result<Vec<DocumentHit>, String> {
+    Ok(search_documents_report(config, project, query, global)?.hits)
+}
 fn document_id(scope: &str, path: &str) -> String {
     format!("doc:{}", serde_json::to_string(&(scope, path)).unwrap())
 }
 /// Uses only folders selected in the application. MCP callers cannot supply a root.
-pub fn search_documents(
+pub fn search_documents_report(
     config_path: &Path,
     project_path: Option<&str>,
     query: &str,
     global: bool,
-) -> Result<Vec<DocumentHit>, String> {
-    let stored = read_stored(config_path)?;
+) -> Result<DocumentSearch, String> {
+    let stored = match read_stored(config_path) {
+        Ok(value) => value,
+        Err(message) => {
+            return Ok(DocumentSearch {
+                hits: vec![],
+                warnings: vec![KnowledgeWarning {
+                    scope: "configuration".into(),
+                    source_path: config_path.to_string_lossy().into_owned(),
+                    code: "configuration".into(),
+                    message,
+                }],
+            })
+        }
+    };
     let project = project_key(project_path)?;
     let mut sources = Vec::new();
     if let Some(project) = project.as_deref() {
@@ -129,10 +167,24 @@ pub fn search_documents(
         sources.push(("global", stored.source_path));
     }
     let mut hits = Vec::new();
+    let mut warnings = Vec::new();
     for (scope, source) in sources {
-        let Ok(index) = index_source(&source, false) else {
-            continue;
+        let index = match index_source(&source, false) {
+            Ok(index) => index,
+            Err(message) => {
+                warnings.push(KnowledgeWarning {
+                    scope: scope.into(),
+                    source_path: source,
+                    code: "unavailable".into(),
+                    message,
+                });
+                continue;
+            }
         };
+        if index.limited {
+            warnings.push(KnowledgeWarning { scope: scope.into(), source_path: source,
+                code: "index_limited".into(), message: "Partial index: a size, depth or note limit was reached, or some files could not be read.".into() });
+        }
         let direct = search_index(&index, query);
         let mut paths = HashSet::new();
         for result in &direct {
@@ -181,7 +233,63 @@ pub fn search_documents(
         }
     }
     hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.id.cmp(&b.id)));
-    Ok(hits)
+    Ok(DocumentSearch { hits, warnings })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeHealth {
+    source_path: String,
+    status: String,
+    note_count: usize,
+    checked_at: u64,
+    max_notes: usize,
+    max_index_bytes: usize,
+    max_note_bytes: u64,
+    message: Option<String>,
+}
+
+fn source_health(source: &str, refresh: bool) -> KnowledgeHealth {
+    let mut health = KnowledgeHealth {
+        source_path: source.into(),
+        status: "none".into(),
+        note_count: 0,
+        checked_at: std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+        max_notes: MAX_NOTES,
+        max_index_bytes: MAX_INDEX_BYTES,
+        max_note_bytes: MAX_NOTE_BYTES,
+        message: None,
+    };
+    if !source.is_empty() {
+        match index_source(source, refresh) {
+            Ok(index) => {
+                health.status = if index.limited { "limited" } else { "ready" }.into();
+                health.note_count = index.notes.len();
+            }
+            Err(error) => {
+                health.status = "unavailable".into();
+                health.message = Some(error);
+            }
+        }
+    }
+    health
+}
+
+#[tauri::command]
+pub async fn get_knowledge_health(
+    app: tauri::AppHandle,
+    project_path: Option<String>,
+    refresh: Option<bool>,
+) -> Result<KnowledgeHealth, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = read_config(&app, project_path.as_deref())?;
+        Ok(source_health(&config.source_path, refresh.unwrap_or(false)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 pub fn read_document(
     config_path: &Path,
@@ -214,13 +322,7 @@ pub fn read_document(
         .find(|note| note.path == path)
         .ok_or("Document not found in configured source")?;
     // Recheck existence/containment on read instead of returning a deleted cached note.
-    let root = fs::canonicalize(&source).map_err(|e| e.to_string())?;
-    let target = fs::canonicalize(root.join(&path)).map_err(|e| e.to_string())?;
-    if !target.starts_with(&root) {
-        return Err("Document escaped configured source".into());
-    }
-    let text =
-        crate::shared_memory::redact_secrets(&read_note(&target).map_err(|e| e.to_string())?);
+    let text = crate::shared_memory::redact_secrets(&read_scoped_text(&source, &path)?);
     let mut offset = offset.min(text.len());
     while !text.is_char_boundary(offset) {
         offset += 1;
@@ -353,15 +455,25 @@ fn collect_markdown(
         return;
     }
     let Ok(canonical) = fs::canonicalize(dir) else {
+        *limited = true;
         return;
     };
     if !canonical.starts_with(root) || !visited.insert(canonical) {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else {
+        *limited = true;
         return;
     };
-    let mut entries = entries.flatten().collect::<Vec<_>>();
+    let mut entries = entries
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(_) => {
+                *limited = true;
+                None
+            }
+        })
+        .collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         if out.len() >= MAX_NOTES {
@@ -378,6 +490,7 @@ fn collect_markdown(
             continue;
         }
         let Ok(kind) = entry.file_type() else {
+            *limited = true;
             continue;
         };
         if kind.is_symlink() {
@@ -485,19 +598,53 @@ fn read_note(path: &Path) -> std::io::Result<String> {
         .read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
+
+fn read_scoped_text(source: &str, path: &str) -> Result<String, String> {
+    let root = fs::canonicalize(source).map_err(|e| e.to_string())?;
+    let target = fs::canonicalize(root.join(path)).map_err(|e| e.to_string())?;
+    if !target.starts_with(&root) {
+        return Err("Document escaped configured source".into());
+    }
+    read_note(&target).map_err(|e| e.to_string())
+}
+
+fn selected_note(source: &str, path: &str) -> Result<KnowledgeResult, String> {
+    let index = index_source(source, false)?;
+    let note = index
+        .notes
+        .iter()
+        .find(|note| note.path == path)
+        .ok_or("Note not found in the selected source")?;
+    let text = read_scoped_text(source, path)?;
+    Ok(KnowledgeResult {
+        path: note.path.clone(),
+        title: title(&text, &note.title),
+        excerpt: excerpt(&text, &[], 4000),
+        score: 0,
+    })
+}
 fn note_links(text: &str) -> Vec<String> {
     static LINKS: OnceLock<regex::Regex> = OnceLock::new();
     let markdown = LINKS.get_or_init(|| {
         regex::Regex::new(r#"\[[^\]\n]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+[^)]*)?\)"#).unwrap()
     });
     let mut links = Vec::new();
-    let mut fenced = false;
+    let mut fence: Option<(char, usize)> = None;
     for line in text.lines() {
-        if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
-            fenced = !fenced;
+        let trimmed = line.trim_start();
+        let marker = trimmed.chars().next().unwrap_or(' ');
+        let length = trimmed.chars().take_while(|&c| c == marker).count();
+        if matches!(marker, '`' | '~') && length >= 3 {
+            if let Some((open, minimum)) = fence {
+                if marker == open && length >= minimum && trimmed[length..].trim().is_empty() {
+                    fence = None;
+                }
+            } else {
+                fence = Some((marker, length));
+            }
             continue;
         }
-        if fenced {
+        if fence.is_some() {
             continue;
         }
         for part in line.split("[[").skip(1) {
@@ -548,8 +695,8 @@ fn decode_path(path: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 fn normalized_link(base: &str, target: &str) -> Option<String> {
-    let target = decode_path(target).replace('\\', "/");
-    let target = target.split(['#', '?']).next()?.trim();
+    let target = decode_path(target.split(['#', '?']).next()?).replace('\\', "/");
+    let target = target.trim();
     if target.is_empty() || target.contains(':') || target.starts_with('/') {
         return None;
     }
@@ -623,6 +770,7 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
     if !root.is_dir() {
         return Err("Knowledge source folder is unavailable. Choose its current location.".into());
     }
+    fs::read_dir(root).map_err(|e| format!("Knowledge folder cannot be read: {e}"))?;
     let mut paths = Vec::new();
     let mut limited = false;
     collect_markdown(root, root, &mut paths, &mut HashSet::new(), &mut limited, 0);
@@ -639,6 +787,7 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
     let mut bytes = 0;
     for full in paths {
         let Ok(metadata) = fs::metadata(&full) else {
+            limited = true;
             continue;
         };
         let path = full
@@ -659,6 +808,7 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
             Arc::clone(note)
         } else {
             let Ok(text) = read_note(&full) else {
+                limited = true;
                 continue;
             };
             let title = title(
@@ -894,18 +1044,7 @@ pub async fn read_knowledge_note(
         if config.source_path.is_empty() {
             return Err("Choose a knowledge source first".into());
         }
-        let index = index_source(&config.source_path, false)?;
-        let note = index
-            .notes
-            .iter()
-            .find(|note| note.path == path)
-            .ok_or("Note not found in the selected source")?;
-        Ok(KnowledgeResult {
-            path: note.path.clone(),
-            title: note.title.clone(),
-            excerpt: excerpt(&note.text, &[], 4000),
-            score: 0,
-        })
+        selected_note(&config.source_path, &path)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -977,6 +1116,35 @@ mod tests {
         assert!(!result.truncated);
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn real_obsidian_vault_indexes_unicode_subfolders_and_reports_capacity() {
+        let root = test_dir();
+        fs::create_dir(root.join(".obsidian")).unwrap();
+        fixture(&root, ".obsidian/private.md", "# Internal configuration");
+        for id in 0..MAX_NOTES + 1 {
+            fixture(
+                &root,
+                &format!("Notas de ação/note-{id:04}.md"),
+                &format!("# Note {id}\n[[note-{:04}]]", (id + 1) % MAX_NOTES),
+            );
+        }
+        assert_eq!(source_mode(root.to_str().unwrap()), "obsidian");
+        let index = build_index(&fs::canonicalize(&root).unwrap(), None).unwrap();
+        assert_eq!(index.notes.len(), MAX_NOTES);
+        let result = graph(&index);
+        assert!(result.index_limited);
+        let health = source_health(root.to_str().unwrap(), true);
+        assert_eq!(health.status, "limited");
+        assert_eq!(health.note_count, MAX_NOTES);
+        assert_eq!(result.nodes.len(), MAX_NOTES);
+        assert_eq!(result.edges.len(), MAX_NOTES);
+        assert!(!index.notes.iter().any(|note| note.path.starts_with('.')));
+        assert!(search_index(&index, "Note 2999")
+            .iter()
+            .any(|hit| hit.path.ends_with("note-2999.md")));
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn excerpts_include_late_query_matches_and_avoid_substring_noise() {
         let root = test_dir();
@@ -1025,6 +1193,56 @@ mod tests {
         assert_eq!(
             note_links("```md\n[[fake]]\n```\n[[real|alias]] [target](next.md)"),
             vec!["real", "next.md"]
+        );
+    }
+
+    #[test]
+    fn encoded_filename_separators_are_not_url_fragments() {
+        assert_eq!(
+            normalized_link("docs", "../Release%23one.md#section"),
+            Some("release#one".into())
+        );
+    }
+
+    #[test]
+    fn selected_note_reads_current_content_and_rejects_deleted_or_external_files() {
+        let root = test_dir();
+        let vault = root.join("vault");
+        fixture(&vault, "note.md", "# Before\nOriginal content");
+        let source = vault.to_string_lossy();
+        index_source(&source, true).unwrap();
+        fixture(&vault, "note.md", "# After\nUpdated in Obsidian");
+        let note = selected_note(&source, "note.md").unwrap();
+        assert_eq!(note.title, "After");
+        assert!(note.excerpt.contains("Updated in Obsidian"));
+        fs::remove_file(vault.join("note.md")).unwrap();
+        assert!(selected_note(&source, "note.md").is_err());
+        fixture(&root, "outside.md", "Not part of vault");
+        assert!(read_scoped_text(&source, "../outside.md").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_health_distinguishes_no_source_unavailable_and_empty_ready_folder() {
+        assert_eq!(source_health("", true).status, "none");
+        let root = test_dir();
+        let missing = root.join("unavailable");
+        let unavailable = source_health(missing.to_str().unwrap(), true);
+        assert_eq!(unavailable.status, "unavailable");
+        assert!(unavailable.message.is_some());
+        fs::create_dir(&missing).unwrap();
+        let recovered = source_health(missing.to_str().unwrap(), true);
+        assert_eq!(recovered.status, "ready");
+        assert_eq!(recovered.note_count, 0);
+        assert!(recovered.message.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn code_fences_only_close_with_the_matching_marker_and_length() {
+        assert_eq!(
+            note_links("````md\n```\n[[example]]\n~~~\n[[another example]]\n````\n[[real]]"),
+            vec!["real"]
         );
     }
 }

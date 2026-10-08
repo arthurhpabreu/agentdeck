@@ -8,7 +8,7 @@ import { effortCopy } from "./effortCopy";
 import { useCliUpdateStore } from "../../store/cliUpdateStore";
 import "./effort.css";
 
-export function AgentEffortControl({ runner, onChange, disabled = false, native = false, workdir = "" }: { runner: RunnerConfig; onChange: (patch: Partial<RunnerConfig>) => void; disabled?: boolean; native?: boolean; workdir?: string }) {
+export function AgentEffortControl({ runner, onChange, disabled = false, native = false, workdir = "", compact = false }: { runner: RunnerConfig; onChange: (patch: Partial<RunnerConfig>) => void; disabled?: boolean; native?: boolean; workdir?: string; compact?: boolean }) {
   const { locale } = useAppI18n(); const c = effortCopy(locale);
   const [open, setOpen] = useState(false);
   const [, refresh] = useState(0);
@@ -47,8 +47,8 @@ export function AgentEffortControl({ runner, onChange, disabled = false, native 
   const codexUltra = runner.type === "codex" && value.ultraMode;
   const level = !cap.efforts.length ? "—" : codexUltra ? c.ultraCodex : c[value.effort];
   return <>
-    <button ref={trigger} type="button" className="ad-effort-trigger" aria-label={`${c.effort}: ${level}${value.fastMode ? " · Fast" : ""}`} aria-expanded={open} aria-controls={open ? id : undefined} aria-haspopup="dialog" title={disabled && native ? c.nativeHint : c.title} onClick={() => setOpen(!open)}>
-      <Gauge size={14} /><span>{c.effort} <strong>{level}</strong></span>{value.ultraMode && !codexUltra && <small>{c.ultraClaude}</small>}{value.fastMode && <Zap size={12} />}
+    <button ref={trigger} type="button" className="ad-effort-trigger" aria-label={`${c.effort}: ${level}${value.fastMode ? " · Fast" : ""}`} aria-expanded={open} aria-controls={open ? id : undefined} aria-haspopup="dialog" title={disabled && native ? c.nativeHint : compact ? `${c.title} · ${level}${value.fastMode ? " · Fast" : ""}` : c.title} onClick={() => setOpen(!open)}>
+      <Gauge size={14} /><span>{!compact && <>{c.effort} </>}<strong>{level}</strong></span>{value.ultraMode && !codexUltra && <small>{c.ultraClaude}</small>}{value.fastMode && <Zap size={12} />}
     </button>
     {open && createPortal(<div ref={panel} id={id} role="dialog" aria-modal="true" aria-label={c.title} className="ad-effort-panel" style={position}>
       <header><strong>{c.title}</strong><button className="ad-icon-button" aria-label={c.close} onClick={close}><X size={16} /></button></header>

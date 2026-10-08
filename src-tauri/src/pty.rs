@@ -366,7 +366,7 @@ pub async fn start_pty_session(
         crate::token_economy::mark_guidance_delivered(&runner_type, &session_id);
     }
     if let Some(memory) = &turn_memory {
-        crate::memory_runtime::mark_delivered(memory);
+        crate::memory_runtime::mark_delivered(&app, memory);
     }
     let run_id = NEXT_PTY_RUN.fetch_add(1, Ordering::Relaxed);
 
@@ -583,7 +583,7 @@ pub async fn send_pty_query(
             crate::token_economy::mark_guidance_delivered(&provider, &session_id);
         }
         if let Some(memory) = &memory {
-            crate::memory_runtime::mark_delivered(memory);
+            crate::memory_runtime::mark_delivered(&app, memory);
         }
         Ok(())
     } else {
