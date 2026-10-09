@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.7 — 2026-10-09
+
+### Added
+
+- Optional Telegram completion alerts for the official Android and iPhone/iPad
+  apps. Settings → System → Notifications connects a personal bot through a
+  private pairing link that expires after 10 minutes.
+- Telegram controls include an independent opt-in toggle, an explicit test,
+  reconnect and disconnect. Automatic alerts also respect the main Notifications
+  switch and reuse the existing successful main-response completion detector.
+- Bot tokens are saved in the operating system's credential store after pairing.
+  Alerts contain only a short completion notice, without prompts, response
+  content, project paths or progress updates.
+
 ## 0.6.6 — 2026-10-08
 
 ### Changed

@@ -1,5 +1,35 @@
 # Validation evidence
 
+## 0.6.7
+
+Validated locally on Windows on October 9, 2026.
+
+| Check | Result |
+| --- | --- |
+| TypeScript and production frontend build | Passed for the Telegram implementation and again with version 0.6.7 during packaging. Existing Vite chunk-size and mixed-import warnings remain. |
+| Translations and Rust formatting | Passed: 471 EN/PT/ES keys and `cargo fmt --check`. |
+| Playwright browser coverage | 144 scenarios covered across the full run and a focused rerun. The full run passed 143; an existing history scenario timed out and then passed independently. All four Telegram scenarios passed. |
+| Rust library suite | 183 passed, 6 optional tests ignored, no failures. |
+| Independent implementation CI | The Windows workflow passed for feature commit `d5ab238`: [GitHub Actions run](https://github.com/arthurhpabreu/agentdeck/actions/runs/37989008766). |
+| Repository hygiene | Passed for 350 tracked project files; required inputs and application versions verified. |
+| Packaged memory MCP smoke test | 12 scenarios passed against the optimized 0.6.7 executable: 36 RPC requests, 3 processes, no stderr or unexpected responses. |
+| Packaged Codex RTK smoke test | Five checks passed against the actual adapter and installed RTK: canonical hook contract, preserved arguments, double-prefix protection, unrelated-event rejection and isolated command measurements. No model requests. |
+| Windows installers | Both Windows x64 packages generated. Application and NSIS/MSI signatures, version 0.6.7, publisher, bundled LICENSE and unchanged MSI upgrade identity verified without installation. |
+| Release integrity | SHA-256 manifest covers both installers and LICENSE; staged copies match the generated artifacts and repository license. |
+
+Telegram browser coverage exercises private pairing, token masking, explicit test
+sends, the main notification switch, disconnect, pairing retries and credential
+cleanup failures. Native tests cover exact recent pairing codes in private human
+chats, expiry, token validation, token-free configuration, disconnect recovery,
+encoded API requests, bounded responses and redacted transport/server errors.
+The existing completion tests cover successful main responses, duplicate events,
+queued input, child events, compaction and interruptions.
+
+Browser tests mock native commands and native Telegram API tests use a local
+HTTP fixture. No real Telegram bot or Android/iPhone delivery was exercised.
+These results do not establish real phone delivery or an interactive
+clean-machine upgrade. Installers remain unsigned.
+
 ## 0.6.6
 
 Validated locally on Windows on October 8, 2026.
