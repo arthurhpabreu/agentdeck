@@ -39,6 +39,20 @@ Provider requirements can differ from the app's requirements. Check the linked i
 
 Open a project, create a session and select a provider. Git projects can use independent session worktrees. Choose a Markdown folder or Obsidian vault under **Knowledge → Documents**; global and project sources are independent.
 
+## Telegram notifications
+
+Agent Deck can also send a short notification to your private Telegram chat when an agent finishes a response and awaits your next instruction. Telegram has official apps for both [Android and iPhone/iPad](https://telegram.org/apps). This optional integration starts disabled and sends no task progress, prompts, response content or project paths.
+
+1. In Telegram, open the official [@BotFather](https://t.me/BotFather), send `/newbot` and follow its instructions to create a bot specifically for Agent Deck. Copy the bot token it provides. See Telegram's [bot setup guide](https://core.telegram.org/bots/tutorial#obtain-your-bot-token).
+2. In Agent Deck, open **Settings → System → Notifications → Telegram notifications**. Paste the token into **Bot token** and click **Connect Telegram**.
+3. Click **Open bot in Telegram** and press **Start** in the private conversation. The link includes a pairing code that expires in 10 minutes so Agent Deck can identify the conversation you authorized.
+4. Return to Agent Deck and click **I started the conversation** to confirm the connection.
+5. Turn on **Also notify me on Telegram** and keep the main **Notifications** toggle on for automatic completion alerts. Click **Send test** to check delivery on your phone. Tests are sent only when you click this button, including when automatic alerts are disabled.
+
+Allow Telegram notifications in Android or iOS settings and make sure the bot conversation is not muted. The computer must remain awake, with Agent Deck running and internet access; messages go directly from the desktop app to Telegram, without an Agent Deck server. The native completion detector filters duplicate and progress events before forwarding an alert.
+
+The token is hidden in the setup field and stored in the operating system's credential store after successful pairing, outside browser preferences and the repository. Keep it private: Telegram identifies it as the credential controlling your bot. **Disconnect** removes the saved connection and token from this computer. If you revoke a token in BotFather, reconnect with the replacement token.
+
 ## Optional RTK integration
 
 The token economy panel detects RTK and reports measurements separately from AI

@@ -91,6 +91,7 @@ Code mode enables full machine access by default and can be disabled per convers
 ## Documentation
 
 - [Setup](docs/setup.md)
+- [Telegram notifications on Android and iPhone](docs/setup.md#telegram-notifications)
 - [Architecture](docs/architecture.md)
 - [Testing](docs/testing.md)
 - [Commands and skills](docs/commands-and-skills.md)

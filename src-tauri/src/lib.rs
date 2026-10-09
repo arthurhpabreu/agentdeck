@@ -27,6 +27,7 @@ mod session_files;
 mod session_lifecycle;
 mod shared_memory;
 mod state;
+mod telegram_notifications;
 mod token_economy;
 mod ui_state;
 mod util;
@@ -81,6 +82,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(i18n::LocaleState::default())
         .manage(app_updates::AppUpdateState::default())
+        .manage(telegram_notifications::TelegramState::default())
         .manage(ProcessMap::default())
         .manage(chat::ChatProcessState::default())
         .manage(PtyWriterMap::default())
@@ -315,6 +317,12 @@ pub fn run() {
             hooks::setup_codex_hooks,
             hooks::set_notifications_and_hooks_enabled,
             hooks::get_notifications_and_hooks_status,
+            telegram_notifications::get_telegram_notification_settings,
+            telegram_notifications::start_telegram_pairing,
+            telegram_notifications::finish_telegram_pairing,
+            telegram_notifications::set_telegram_notifications_enabled,
+            telegram_notifications::send_telegram_test,
+            telegram_notifications::disconnect_telegram_notifications,
             hooks::trust_workspace,
             // Native notifications with click callbacks (persistent waiting on macOS).
             notification::send_notification_with_callback,

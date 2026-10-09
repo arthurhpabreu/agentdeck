@@ -154,6 +154,7 @@ fn show_completion(app: &tauri::AppHandle, session: &str) {
         Some(true),
         Some(session.into()),
     );
+    crate::telegram_notifications::dispatch_completion(app, body);
 }
 
 pub(crate) fn terminal_completed(

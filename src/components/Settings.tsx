@@ -3,6 +3,7 @@ import { type LocaleSetting, useAppI18n } from "../i18n";
 import { useSettingsStore, type ThemeMode, isGlassTheme } from "../store/settingsStore";
 import { CliUpdates } from "./CliUpdates";
 import { AppUpdates } from "./AppUpdates";
+import { TelegramNotifications } from "./TelegramNotifications";
 
 const C = {
   surface: "var(--ci-surface)",
@@ -373,6 +374,7 @@ function SystemTab() {
             labelStyle={{ fontSize: 14, fontWeight: 600 }}
           />
         </div>
+        <TelegramNotifications notificationsEnabled={integrationStatus?.enabled ?? false} />
       </div>
       <AppUpdates />
       <CliUpdates />

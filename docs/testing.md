@@ -24,7 +24,7 @@ corepack pnpm test:ui
 
 Focused checks: `corepack pnpm test:ui tests/e2e/knowledge.spec.ts tests/e2e/agents.spec.ts`.
 
-Coverage includes a synthetic 1,600-note vault, complete-index lookup, folder drilldown, connection depth, zoom, modal focus restoration, agent/task selection, filters, active versus historical state and reduced motion. Other suites cover chat, permissions, memory, editor/workspace behavior, provider usage and economy. Traces and failure screenshots stay in ignored directories.
+Coverage includes a synthetic 1,600-note vault, complete-index lookup, folder drilldown, connection depth, zoom, modal focus restoration, agent/task selection, filters, active versus historical state and reduced motion. Other suites cover chat, permissions, memory, editor/workspace behavior, provider usage and economy. Telegram notification tests mock the native API to exercise private pairing, protected token input, explicit test sends, notification preferences, disconnect and recoverable errors without contacting Telegram or using real bot credentials. Traces and failure screenshots stay in ignored directories.
 
 ## Native tests
 
