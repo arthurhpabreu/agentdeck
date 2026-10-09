@@ -1,9 +1,5 @@
 # Agent Deck
 
-<a href="https://buymeacoffee.com/tuxao">
-  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="60" width="217">
-</a>
-
 ![Agent Deck chat workspace in English with a synthetic example conversation](docs/images/chat-workspace-en.png)
 
 A desktop workspace for running coding agents, understanding their tasks and exploring project knowledge in one place.
@@ -114,3 +110,11 @@ require prior written permission. You may share links to the official downloads.
 The public repository makes the source available; this is not an open-source
 license. Version 0.5.0 retains its original Apache 2.0 permissions. Third-party
 dependencies retain their own licenses. See [licensing details](docs/licensing.md).
+
+## Support the project
+
+If Agent Deck is useful to you, you can support its development with a coffee.
+
+<a href="https://buymeacoffee.com/tuxao">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="40" width="144">
+</a>
