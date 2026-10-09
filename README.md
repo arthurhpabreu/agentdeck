@@ -1,5 +1,9 @@
 # Agent Deck
 
+<a href="https://buymeacoffee.com/tuxao">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="60" width="217">
+</a>
+
 ![Agent Deck chat workspace in English with a synthetic example conversation](docs/images/chat-workspace-en.png)
 
 A desktop workspace for running coding agents, understanding their tasks and exploring project knowledge in one place.
