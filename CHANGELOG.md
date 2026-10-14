@@ -16,6 +16,7 @@
 - Shared Tauri configuration now uses platform overlays and target-specific Rust features.
 - Portable Node build/dev wrappers replace shell-dependent command invocation.
 - SemVer synchronization, tag validation and aggregate release checksums ensure one consistent version across platforms.
+- Integration authentication notices appear briefly for a new error and then disappear; duplicate events and restored history do not keep the banner visible.
 
 ## 0.6.8 — 2026-10-14
 

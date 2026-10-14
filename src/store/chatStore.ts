@@ -15,11 +15,14 @@ export interface ChatAttachment { name: string; path: string; mimeType: string; 
 export interface ChatUsage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export interface ChatContinuation { sourceSessionId: string; sourceSessionName: string; archivePath: string; messageCount: number; createdAt: number }
 export interface ChatMessage { id: string; turnId: string; role: "user" | "assistant" | "tool"; text: string; at: number; order?: number; title?: string; status?: string; attachments?: ChatAttachment[]; parentId?: string; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
-export interface ChatThread { messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation }
+export interface ChatThread { messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; mcpAuthWarningUntil?: number; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation }
 export interface ChatEvent { sessionId: string; turnId: string; kind: "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; contextWindow?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
 export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number }
 interface BufferedChatEvent extends ChatEvent { textDelta?: boolean; outputDelta?: boolean; receivedAt?: number }
 const MESSAGE_TEXT_LIMIT = 524_288;
+const MCP_AUTH_WARNING_TTL = 8_000;
+// Runtime deduplication survives dismissals and tab switches, but never a reload.
+const mcpWarningsBySession = new Map<string, { turnId: string; texts: Set<string> }>();
 function boundedText(value: string): string { return value.length > MESSAGE_TEXT_LIMIT ? value.slice(0, MESSAGE_TEXT_LIMIT) + "\n[output truncated]" : value; }
 function boundedOutput(value: string): string { return value.length > MESSAGE_TEXT_LIMIT ? "[earlier output truncated]\n" + value.slice(-MESSAGE_TEXT_LIMIT) : value; }
 function chatMessageId(e: ChatEvent): string { return `${e.turnId}:${e.parentId ? `${e.parentId}:` : ""}${e.kind}:${e.itemId ?? e.kind}`; }
@@ -46,7 +49,7 @@ function restore(): Record<string, ChatThread> {
     return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value && Array.isArray((value as ChatThread).messages)).map(([id, value]) => {
       const thread = value as ChatThread;
       const messages = thread.messages.map((m, i) => restoreMessage({ ...m, order: m.order ?? i }));
-      return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + (m.parentId ? 0 : estimateTokens(m.text + (m.output ?? "") + (m.command ?? ""))), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined }];
+      return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + (m.parentId ? 0 : estimateTokens(m.text + (m.output ?? "") + (m.command ?? ""))), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined }];
     }));
   } catch { return {}; }
 }
@@ -63,7 +66,7 @@ export const useChatStore = create<{
     const messages = patch.messages?.map(m => m.order === undefined ? { ...m, order: nextMessageOrder++ } : m);
     return { threads: { ...s.threads, [id]: { ...old, ...patch, ...(messages ? { messages, nextMessageOrder } : {}), updatedAt: Date.now() } } };
   }),
-  remove: id => { removed.add(id); set(s => { const threads = { ...s.threads }; delete threads[id]; return { threads }; }); scheduleSave(); },
+  remove: id => { removed.add(id); mcpWarningsBySession.delete(id); set(s => { const threads = { ...s.threads }; delete threads[id]; return { threads }; }); scheduleSave(); },
   event: e => get().events([e]),
   events: events => set(s => {
     let threads = s.threads;
@@ -104,7 +107,14 @@ export const useChatStore = create<{
     if (e.model && !e.parentId) next.resolvedModel = e.model;
     if (e.kind === "session") next.providerSessionId = e.providerSessionId;
     if (connectionNotice) {
-      if (e.status === "mcp-auth-warning") next.mcpAuthWarning = e.text ?? old.mcpAuthWarning;
+      if (e.status === "mcp-auth-warning") {
+        if (e.text?.trim()) {
+          let seen = mcpWarningsBySession.get(e.sessionId);
+          if (!seen || seen.turnId !== e.turnId) { seen = { turnId: e.turnId, texts: new Set() }; mcpWarningsBySession.set(e.sessionId, seen); }
+          const text = e.text.trim();
+          if (!seen.texts.has(text)) { seen.texts.add(text); next.mcpAuthWarning = text; next.mcpAuthWarningUntil = at + MCP_AUTH_WARNING_TTL; }
+        }
+      }
       else next.recoveryNotice = e.text ?? old.recoveryNotice;
     }
     if (passiveDiagnostic && e.text && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
@@ -156,6 +166,12 @@ export const useChatStore = create<{
   }),
 }));
 
+/** An expired or dismissed notice must not clear a newer real authentication error. */
+export function dismissMcpAuthWarning(sessionId: string, deadline: number) {
+  const store = useChatStore.getState();
+  if (store.threads[sessionId]?.mcpAuthWarningUntil === deadline) store.patch(sessionId, { mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined });
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let saving: Promise<void> | undefined;
 let canCache = false;
@@ -170,7 +186,7 @@ function cacheRecentThreads() {
     let bytes = 0;
     const messages = thread.messages.slice(-20).filter(m => { bytes += messageTextSize(m); return bytes <= Math.min(40_000, budget); });
     budget -= messages.reduce((n, m) => n + messageTextSize(m), 0);
-    threads[id] = { ...thread, messages, archivedCount: (thread.archivedCount ?? 0) + thread.messages.length - messages.length, diagnostic: undefined, compacting: false, busy: false };
+    threads[id] = { ...thread, messages, archivedCount: (thread.archivedCount ?? 0) + thread.messages.length - messages.length, diagnostic: undefined, compacting: false, busy: false, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined };
   }
   localStorage.setItem(KEY, JSON.stringify(threads));
 }
@@ -373,7 +389,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   launches.set(sessionId, launching);
   const turnId = createUuid();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments };
-  useChatStore.getState().patch(sessionId, { busy: true, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
+  useChatStore.getState().patch(sessionId, { busy: true, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
   useSessionStore.getState().updateSession(sessionId, { status: "running", currentTask: prompt.trim() });
   if (!old.messages.length) useSessionStore.getState().setAutomaticSessionName(sessionId, prompt.trim().slice(0, 44) || attachments[0]?.name || "");
   useAgentActivityStore.getState().record(sessionId, { phase: "starting", startedAt: Date.now(), endedAt: undefined, error: undefined, command: session.runner.type === "codex" ? "codex app-server" : "claude --print", pid: undefined }, "activity.starting");

@@ -68,11 +68,80 @@ fn send_hook(arguments: &[String]) -> Result<(), String> {
 #[cfg(unix)]
 fn deliver_hook(socket_path: &str, payload: &Value) -> Result<(), String> {
     use std::{os::unix::net::UnixStream, time::Duration};
-    let mut stream = UnixStream::connect(socket_path).map_err(|_| "bridge_connect")?;
+    let stream = UnixStream::connect(socket_path).map_err(|_| "bridge_connect")?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .map_err(|_| "bridge_timeout")?;
-    serde_json::to_writer(&mut stream, payload).map_err(|_| "bridge_write")?;
+        .set_nonblocking(true)
+        .map_err(|_| "bridge_nonblocking")?;
+    let bytes = serde_json::to_vec(payload).map_err(|_| "bridge_json")?;
+    write_with_deadline(stream, &bytes, Duration::from_secs(2)).map_err(|_| "bridge_write")?;
+    Ok(())
+}
+
+#[cfg(any(unix, test))]
+fn wait_for_socket(deadline: std::time::Instant) -> std::io::Result<()> {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(std::io::ErrorKind::TimedOut.into());
+    }
+    std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
+    Ok(())
+}
+
+/// Darwin can reject socket timeout options after a fast sender disconnects.
+/// Nonblocking IO keeps buffered EOF data readable and enforces a total deadline.
+#[cfg(any(unix, test))]
+pub(crate) fn read_with_deadline(
+    mut reader: impl Read,
+    limit: usize,
+    timeout: std::time::Duration,
+) -> std::io::Result<Vec<u8>> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(bytes),
+            Ok(count) => {
+                if bytes.len().saturating_add(count) > limit {
+                    return Err(std::io::ErrorKind::InvalidData.into());
+                }
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_for_socket(deadline)?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(any(unix, test))]
+fn write_with_deadline(
+    mut writer: impl Write,
+    bytes: &[u8],
+    timeout: std::time::Duration,
+) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut written = 0;
+    while written < bytes.len() {
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        let end = written.saturating_add(8192).min(bytes.len());
+        match writer.write(&bytes[written..end]) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(count) => written += count,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_for_socket(deadline)?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
     Ok(())
 }
 
@@ -126,13 +195,11 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-                .unwrap();
-            let mut bytes = Vec::new();
-            stream.read_to_end(&mut bytes).unwrap();
-            let _ = tx.send(serde_json::from_slice::<Value>(&bytes).unwrap());
+            let (stream, _) = listener.accept().unwrap();
+            let _ = tx.send(
+                crate::hooks::read_unix_hook_payload(stream, std::time::Duration::from_secs(2))
+                    .unwrap(),
+            );
         });
         let payload = json!({"hook_event_name":"Stop", "cwd":"/Users/O'Brien/Projeto café"});
         deliver_hook(path.to_str().unwrap(), &payload).unwrap();
@@ -141,5 +208,75 @@ mod tests {
             payload
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn native_io_preserves_partial_writes_and_expires_backpressure() {
+        struct Writer {
+            output: Vec<u8>,
+            blocked: bool,
+        }
+        impl Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.blocked {
+                    self.blocked = false;
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+                self.blocked = true;
+                let count = bytes.len().min(3);
+                self.output.extend_from_slice(&bytes[..count]);
+                Ok(count)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = Writer {
+            output: Vec::new(),
+            blocked: true,
+        };
+        write_with_deadline(
+            &mut writer,
+            b"caf\xc3\xa9 literal payload",
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(writer.output, b"caf\xc3\xa9 literal payload");
+        struct Blocked;
+        impl Read for Blocked {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+        }
+        impl Write for Blocked {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            read_with_deadline(Blocked, 1024, std::time::Duration::from_millis(10))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            write_with_deadline(Blocked, b"payload", std::time::Duration::from_millis(10))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            read_with_deadline(
+                std::io::Cursor::new(vec![0; 1025]),
+                1024,
+                std::time::Duration::from_secs(1)
+            )
+            .unwrap_err()
+            .kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 }

@@ -31,7 +31,7 @@ export async function saveChatHistory(id: string, thread: ChatThread, changed: C
   let total = 0;
   count.onsuccess = () => {
     total = count.result;
-    const { messages: _, ...metadata } = thread;
+    const { messages: _, mcpAuthWarning: _warning, mcpAuthWarningUntil: _deadline, ...metadata } = thread;
     transaction.objectStore("threads").put({ id, thread: { ...metadata, busy: false, status: undefined }, total });
   };
   await done; return total;
@@ -44,7 +44,7 @@ export async function restoreChatHistory(): Promise<Record<string, ChatThread>> 
   const threads: Record<string, ChatThread> = {};
   for (const record of metadata) {
     const messages = await readChatHistory(record.id);
-    threads[record.id] = { ...record.thread, compactionPolicy: restoreCompactionPolicy(record.thread.compactionPolicy), messages: messages.map(m => m.role === "user" && (m.status === "queued" || m.status === "sending") ? { ...m, status: "failed" } : m.role === "tool" && ["running", "inProgress", "in_progress", "pending"].includes(m.status ?? "") ? { ...m, status: "interrupted" } : m), archivedCount: Math.max(0, record.total - messages.length), busy: false, compacting: false, turnId: undefined, status: undefined };
+    threads[record.id] = { ...record.thread, compactionPolicy: restoreCompactionPolicy(record.thread.compactionPolicy), messages: messages.map(m => m.role === "user" && (m.status === "queued" || m.status === "sending") ? { ...m, status: "failed" } : m.role === "tool" && ["running", "inProgress", "in_progress", "pending"].includes(m.status ?? "") ? { ...m, status: "interrupted" } : m), archivedCount: Math.max(0, record.total - messages.length), busy: false, compacting: false, turnId: undefined, status: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined };
   }
   return threads;
 }

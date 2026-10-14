@@ -46,6 +46,7 @@ jobs:
         with:
           workspaces: src-tauri
           shared-key: ${{ matrix.platform }}
+          cache-on-failure: true
       - run: npm install --global corepack --force
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm check:repo

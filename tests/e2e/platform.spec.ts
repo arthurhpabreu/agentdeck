@@ -71,6 +71,26 @@ async function setup(page: Page, { locale = "en-US", native = true, update = fal
 
 const calls = (page: Page, command: string) => page.evaluate(command => (window as any).__calls.filter((call: any) => call.command === command), command);
 
+async function openMacConversation(page: Page) {
+  await page.getByText("Mac conversation", { exact: true }).first().click();
+  const open = page.getByTitle("Open conversation");
+  if (await open.count()) await open.first().click();
+  await expect(page.locator(".ad-chat-composer textarea:visible")).toBeVisible();
+}
+
+async function prepareWarningTurn(page: Page, turnId = "warning-turn") {
+  await page.evaluate(async turnId => {
+    const path = "/src/store/chatStore.ts";
+    const store = await import(/* @vite-ignore */ path);
+    await store.ensureChatEvents();
+    store.useChatStore.getState().patch("mac-session", { busy: true, turnId, status: "reasoning", activity: "Reviewing the project", lastEventAt: Date.now() - 120000 });
+  }, turnId);
+}
+
+async function emitWarning(page: Page, text = "MCP authentication failed for server miro. Refresh OAuth login to reconnect.", turnId = "warning-turn") {
+  await page.evaluate(({ text, turnId }) => { (window as any).__emit("chat-event", { sessionId: "mac-session", turnId, kind: "status", status: "mcp-auth-warning", text }); }, { text, turnId });
+}
+
 test("@macos native platform drives Command navigation, login shell and terminal clipboard", async ({ page }) => {
   // Intel WebKit's first xterm mount can take longer while Vite compiles the lazy module.
   test.setTimeout(60_000);
@@ -208,4 +228,71 @@ test("@macos missing randomUUID preserves terminal tabs, active input and chat c
   const history = JSON.parse(Buffer.from(savedArchive.dataBase64, "base64").toString("utf8"));
   expect(history.session.workdir).toBe("/Users/test/Projects/Agentdeck");
   expect(history.messages.some((message: any) => message.text === "Include the existing architectural decision")).toBe(true);
+});
+
+test("@macos real MCP authentication notices expire without duplicate renewal or losing fatal errors", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.clock.install();
+  await setup(page); await openMacConversation(page); await prepareWarningTurn(page);
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now() + 1000)));
+  const warning = page.locator(".ad-chat-warning");
+  const before = await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; return (await import(/* @vite-ignore */ path)).useChatStore.getState().threads["mac-session"].lastEventAt; });
+  await emitWarning(page);
+  await expect(warning).toContainText("miro");
+  const deadline = await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; const t = (await import(/* @vite-ignore */ path)).useChatStore.getState().threads["mac-session"]; return { until: t.mcpAuthWarningUntil, lastEventAt: t.lastEventAt, activity: t.activity }; });
+  expect(deadline.lastEventAt).toBe(before); expect(deadline.activity).toBe("Reviewing the project");
+  await page.clock.runFor(5000);
+  await emitWarning(page);
+  await page.evaluate(async () => { const path = "/src/store/settingsStore.ts"; (await import(/* @vite-ignore */ path)).useSettingsStore.getState().patchSettings({ theme: "light" }); });
+  expect(await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; return (await import(/* @vite-ignore */ path)).useChatStore.getState().threads["mac-session"].mcpAuthWarningUntil; })).toBe(deadline.until);
+  await page.clock.runFor(2999); await expect(warning).toBeVisible();
+  await page.clock.runFor(1); await expect(warning).toHaveCount(0);
+  await emitWarning(page); await expect(warning).toHaveCount(0);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__emit("chat-event", { sessionId: "mac-session", turnId: "warning-turn", kind: "heartbeat", pid: 8765 });
+    w.__emit("chat-event", { sessionId: "mac-session", turnId: "warning-turn", kind: "text", itemId: "normal-output", text: "Historical MCP authentication warning mentioned during the review", delta: true });
+    w.__emit("chat-event", { sessionId: "mac-session", turnId: "warning-turn", kind: "status", status: "diagnostic", text: "MCP authentication failed for server miro." });
+  });
+  await page.clock.runFor(40); await expect(warning).toHaveCount(0);
+  await emitWarning(page, "MCP authentication failed for server slack. Refresh OAuth login.");
+  await expect(warning).toContainText("slack");
+  await warning.getByRole("button", { name: "Dismiss authentication notice", exact: true }).click();
+  await emitWarning(page, "MCP authentication failed for server slack. Refresh OAuth login.");
+  await expect(warning).toHaveCount(0);
+  await prepareWarningTurn(page, "next-warning-turn");
+  await emitWarning(page, undefined, "next-warning-turn"); await expect(warning).toContainText("miro");
+  await page.evaluate(() => { (window as any).__emit("chat-event", { sessionId: "mac-session", turnId: "next-warning-turn", kind: "error", text: "Provider request failed permanently" }); });
+  await page.clock.runFor(8000); await expect(warning).toHaveCount(0);
+  await expect(page.locator('.ad-chat-error[role="alert"]')).toContainText("Provider request failed permanently");
+});
+
+test("@macos restored MCP warnings stay hidden and live notices are omitted from persistent snapshots", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => localStorage.setItem("agentdeck-chat-v1", JSON.stringify({ "mac-session": { messages: [], draft: "Keep this draft", busy: false, mcpAuthWarning: "Legacy miro OAuth warning", mcpAuthWarningUntil: Date.now() + 600000 } })));
+  await setup(page); await openMacConversation(page);
+  const warning = page.locator(".ad-chat-warning");
+  await expect(warning).toHaveCount(0);
+  await prepareWarningTurn(page); await emitWarning(page); await expect(warning).toContainText("miro");
+  const saved = await page.evaluate(async () => {
+    const path = "/src/store/chatStore.ts"; await (await import(/* @vite-ignore */ path)).persistChatHistory();
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("agentdeck-chat-history-v1"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const record = await new Promise<any>((resolve, reject) => { const request = db.transaction("threads").objectStore("threads").get("mac-session"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    db.close(); return { cache: JSON.parse(localStorage.getItem("agentdeck-chat-v1")!)["mac-session"], archive: record.thread };
+  });
+  expect(saved.cache).not.toHaveProperty("mcpAuthWarning"); expect(saved.cache).not.toHaveProperty("mcpAuthWarningUntil");
+  expect(saved.archive).not.toHaveProperty("mcpAuthWarning"); expect(saved.archive).not.toHaveProperty("mcpAuthWarningUntil");
+  // Simulate a pre-upgrade IndexedDB record, independently of the clean startup cache.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>(resolve => { const request = indexedDB.open("agentdeck-chat-history-v1"); request.onsuccess = () => resolve(request.result); });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("threads", "readwrite"), store = tx.objectStore("threads");
+      const request = store.get("mac-session"); request.onsuccess = () => store.put({ ...request.result, thread: { ...request.result.thread, mcpAuthWarning: "Archived miro OAuth warning", mcpAuthWarningUntil: Date.now() + 600000 } });
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    }); db.close();
+  });
+  await page.reload(); await openMacConversation(page); await expect(warning).toHaveCount(0);
+  const restored = await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; const store = await import(/* @vite-ignore */ path); await store.chatHistoryReady; return store.useChatStore.getState().threads["mac-session"]; });
+  expect(restored.mcpAuthWarning).toBeUndefined(); expect(restored.mcpAuthWarningUntil).toBeUndefined();
+  await expect(page.locator(".ad-chat-composer textarea:visible")).toHaveValue("Keep this draft");
 });

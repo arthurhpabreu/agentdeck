@@ -27,6 +27,7 @@ import { ChatToolCard } from "./ChatToolCard";
 import { ChatTurnActivity } from "./ChatTurnActivity";
 import { createChatContinuation } from "../../services/chatContinuity";
 import { showSessionSurface } from "../../services/workbenchCommands";
+import { McpAuthNotice } from "./McpAuthNotice";
 
 interface PendingAttachment extends ChatAttachment { preview?: string }
 const CHAT_BRAND = "AGENTDECK / WORKSPACE";
@@ -153,7 +154,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
     {!follow && thread.messages.length > 0 && <button className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => { setFollow(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><ArrowDown size={16} /></button>}
     <div className="ad-chat-bottom">
       {thread.continuation && <p className="ad-chat-continuation" role="status"><span>{context.continuation} <button type="button" disabled={!useSessionStore.getState().sessions.some(s => s.id === thread.continuation!.sourceSessionId)} onClick={() => showSessionSurface(thread.continuation!.sourceSessionId)}>{thread.continuation.sourceSessionName}</button></span><small title={thread.continuation.archivePath}>{context.transcript}: {thread.continuation.messageCount.toLocaleString(locale)}</small></p>}
-      {thread.mcpAuthWarning && <div className="ad-chat-warning" role="status"><strong>{context.mcpWarning}</strong><p>{thread.mcpAuthWarning}</p><small>{context.mcpHint}</small><button type="button" className="ad-button ad-button-ghost" disabled={thread.busy || nativeLive} onClick={() => onNative()}><TerminalSquare size={14} />{c.native}</button></div>}
+      <McpAuthNotice sessionId={session.id} warning={thread.mcpAuthWarning} deadline={thread.mcpAuthWarningUntil} busy={thread.busy || nativeLive} onNative={() => onNative()} />
       {thread.recoveryNotice && <p className="ad-chat-reconnecting" role="status">{context.reconnecting} <small>{thread.recoveryNotice}</small></p>}
       {commandNotice && <div className="ad-command-notice" role="status"><span>{commandNotice}</span><button type="button" className="ad-icon-button" aria-label={c.cancel} onClick={() => setCommandNotice("")}><X size={13} /></button></div>}
       {!thread.busy && thread.messages.some(m => m.turnId === thread.turnId && m.status === "blocked") && <div className="ad-chat-error"><p>{c.nativeHint}</p><button className="ad-button" onClick={() => onNative()}><TerminalSquare size={14} />{c.native}</button></div>}

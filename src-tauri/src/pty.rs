@@ -95,6 +95,10 @@ fn codex_supports_no_daemon(command: &str) -> bool {
     let (bin, args) = resolve_windows_pty_command(command, &["--help".to_string()]);
     let supported = crate::util::background_command(&bin)
         .args(&args)
+        .env(
+            "PATH",
+            crate::platform::process_path(std::path::Path::new(&bin)),
+        )
         .stdin(std::process::Stdio::null())
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).contains("--no-daemon"))

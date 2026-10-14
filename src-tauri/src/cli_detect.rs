@@ -178,13 +178,34 @@ fn shell_which(command: &str) -> Option<String> {
 
 /// Source the user's shell configuration and run which, with a three-second timeout.
 #[cfg(not(windows))]
+fn shell_lookup_arguments<'a>(shell: &str, command: &'a str) -> Vec<&'a str> {
+    if std::path::Path::new(shell).file_name() == Some(std::ffi::OsStr::new("fish")) {
+        // Fish exposes operands after -c through $argv, without POSIX's $0.
+        vec![
+            "-i",
+            "-l",
+            "-c",
+            "printf 'AGENTDECK_EXECUTABLE:%s\\n' (command -v -- \"$argv[1]\" 2>/dev/null)",
+            command,
+        ]
+    } else {
+        vec![
+            "-i",
+            "-l",
+            "-c",
+            "printf 'AGENTDECK_EXECUTABLE:%s\\n' \"$(command -v -- \"$1\" 2>/dev/null)\"",
+            "agentdeck-cli",
+            command,
+        ]
+    }
+}
+
+#[cfg(not(windows))]
 fn shell_which(command: &str) -> Option<String> {
     use std::time::Duration;
 
     // Let each shell read its own startup files. The command name remains a
     // positional argument, never interpolated into shell program text.
-    let script = "printf 'AGENTDECK_EXECUTABLE:%s\\n' \"$(command -v -- \"$1\" 2>/dev/null)\"";
-
     let candidates = {
         let mut v = vec![];
         v.push(crate::platform::login_shell());
@@ -199,7 +220,7 @@ fn shell_which(command: &str) -> Option<String> {
             continue;
         }
         let mut child = match background_command(shell)
-            .args(["-i", "-l", "-c", script, "agentdeck-cli", command])
+            .args(shell_lookup_arguments(shell, command))
             .env("TERM", "dumb")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -245,6 +266,60 @@ fn shell_which(command: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(all(test, unix))]
+mod shell_lookup_tests {
+    use super::shell_lookup_arguments;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn fish_receives_literal_command_as_argv_without_posix_zero_argument() {
+        let directory =
+            std::env::temp_dir().join(format!("agentdeck-fish-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let shell = directory.join("fish");
+        // A fake shell verifies the fish invocation contract without requiring a
+        // particular shell to be installed on the native macOS test runner.
+        std::fs::write(
+            &shell,
+            b"#!/bin/sh\n[ \"$#\" -eq 5 ] && [ \"$1\" = -i ] && [ \"$2\" = -l ] && [ \"$3\" = -c ] || exit 41\ncase \"$4\" in *'\"$argv[1]\"'*) ;; *) exit 42 ;; esac\nprintf '%s' \"$5\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = "provider name; $(touch injected) 'literal'";
+        let output = std::process::Command::new(&shell)
+            .args(shell_lookup_arguments(shell.to_str().unwrap(), command))
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, command.as_bytes());
+    }
+
+    #[test]
+    fn posix_lookup_preserves_spaces_and_shell_metacharacters_in_executable_path() {
+        let directory =
+            std::env::temp_dir().join(format!("agentdeck-shell-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let executable = directory.join("provider '$literal'; name");
+        std::fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(shell_lookup_arguments(
+                "/bin/sh",
+                executable.to_str().unwrap(),
+            ))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            format!("AGENTDECK_EXECUTABLE:{}", executable.display())
+        );
+    }
 }
 
 /// Scan common nvm/fnm/volta/mise/asdf/pyenv/rbenv/cargo/go installation directories.

@@ -538,7 +538,9 @@ mod tests {
                 "-Command".into(),
                 script.into(),
             ],
-            Duration::from_secs(10),
+            // Cold Windows PowerShell startup can exceed ten seconds on a
+            // shared CI runner. Keep the drain/error assertions unchanged.
+            Duration::from_secs(20),
         );
         assert_eq!(result.unwrap_err(), "cli_disk_full:exit=17");
     }

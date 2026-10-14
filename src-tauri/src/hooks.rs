@@ -1305,11 +1305,30 @@ fn read_hook_payload(reader: impl Read) -> Result<Value, &'static str> {
     if bytes.len() as u64 > MAX_HOOK_BYTES {
         return Err("payload_too_large");
     }
-    let payload: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid_json")?;
+    parse_hook_payload(&bytes)
+}
+
+fn parse_hook_payload(bytes: &[u8]) -> Result<Value, &'static str> {
+    let payload: Value = serde_json::from_slice(bytes).map_err(|_| "invalid_json")?;
     if !payload.is_object() {
         return Err("invalid_payload");
     }
     Ok(payload)
+}
+
+#[cfg(unix)]
+pub(crate) fn read_unix_hook_payload(
+    stream: std::os::unix::net::UnixStream,
+    timeout: std::time::Duration,
+) -> Result<Value, &'static str> {
+    stream.set_nonblocking(true).map_err(|_| "read_failed")?;
+    let bytes = crate::native_bridge::read_with_deadline(stream, MAX_HOOK_BYTES as usize, timeout)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::TimedOut => "read_timeout",
+            std::io::ErrorKind::InvalidData => "payload_too_large",
+            _ => "read_failed",
+        })?;
+    parse_hook_payload(&bytes)
 }
 
 #[cfg(unix)]
@@ -1350,10 +1369,7 @@ fn start_hook_socket_server(app: tauri::AppHandle, source: HookSource) {
                 }
             };
 
-            if stream.set_read_timeout(Some(HOOK_READ_TIMEOUT)).is_err() {
-                continue;
-            }
-            let json = match read_hook_payload(stream) {
+            let json = match read_unix_hook_payload(stream, HOOK_READ_TIMEOUT) {
                 Ok(json) => json,
                 Err(e) => {
                     eprintln!("[hooks:{}] payload rejected: {e}", source.label());
@@ -1476,15 +1492,12 @@ mod namespace_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (first, _) = listener.accept().unwrap();
-            first
-                .set_read_timeout(Some(Duration::from_millis(50)))
-                .unwrap();
-            assert_eq!(read_hook_payload(first), Err("read_failed"));
+            assert_eq!(
+                read_unix_hook_payload(first, Duration::from_millis(50)),
+                Err("read_timeout")
+            );
             let (second, _) = listener.accept().unwrap();
-            second
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let _ = tx.send(read_hook_payload(second).unwrap());
+            let _ = tx.send(read_unix_hook_payload(second, Duration::from_secs(1)).unwrap());
         });
         let mut incomplete = UnixStream::connect(&path).unwrap();
         incomplete.write_all(b"{").unwrap(); // Deliberately retain this open connection.

@@ -130,8 +130,10 @@ After confirmed native completion and delivery of queued inputs, a transport
 that fails to exit is closed after ten seconds without discarding its result.
 
 An MCP OAuth refresh failure, such as a disconnected Miro login, is displayed as
-an integration warning with the connector name. It is separate from model errors
-and does not reset meaningful-activity timers or overwrite the current work state.
+an integration warning with the connector name for eight seconds after a new
+warning event. It can be dismissed immediately; duplicate events do not extend
+its lifetime, and saved history cannot restore the banner. It is separate from
+model errors and does not reset meaningful-activity timers or overwrite the current work state.
 Repair that connector's login in the native terminal. Compacting or starting a
 new chat does not repair an expired external login.
 
