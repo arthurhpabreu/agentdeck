@@ -7,11 +7,13 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useChatStore } from "../store/chatStore";
 import { usePtyRuntimeStore } from "../store/ptyRuntimeStore";
 import { appUpdateCopy, appUpdateError } from "./appUpdateCopy";
+import { getRuntimePlatform } from "../services/platform";
 import "./cliUpdates.css";
 
 export function AppUpdateIndicator() {
-  const { locale } = useAppI18n(); const c = appUpdateCopy(locale);
+  const { locale } = useAppI18n();
   const state = useAppUpdateStore();
+  const c = appUpdateCopy(locale, state.result?.installerKind === "dmg" ? "macos" : state.result?.platform ?? getRuntimePlatform().os);
   if (!state.result?.supported || !state.result.updateAvailable) return null;
   const label = state.downloaded ? c.install : state.downloading ? c.downloading : `${c.available} ${state.result.latest}`;
   return <button type="button" className="ad-cli-update-indicator ad-app-update-indicator" title={label} aria-label={label}
@@ -21,8 +23,9 @@ export function AppUpdateIndicator() {
     }}><Download size={13} /><span>{state.downloaded ? c.install : `Agent Deck ${state.result.latest}`}</span><i aria-hidden="true" /></button>;
 }
 export function AppUpdates() {
-  const { locale } = useAppI18n(); const c = appUpdateCopy(locale);
+  const { locale } = useAppI18n();
   const state = useAppUpdateStore();
+  const c = appUpdateCopy(locale, state.result?.installerKind === "dmg" ? "macos" : state.result?.platform ?? getRuntimePlatform().os);
   const panel = useRef<HTMLElement>(null);
   useEffect(() => {
     if (state.downloading || state.downloaded || state.error && state.result?.updateAvailable) panel.current?.scrollIntoView({ block: "nearest" });

@@ -188,21 +188,37 @@ pub fn position_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
 
 #[cfg(target_os = "macos")]
 pub fn setup_popup_window(win: &tauri::WebviewWindow) {
-    use cocoa::base::NO;
-    use objc::{class, msg_send, sel, sel_impl};
-    unsafe {
-        let ns_window = win.ns_window().expect("ns_window") as cocoa::base::id;
-        let _: () = msg_send![ns_window, setOpaque: NO];
-        let clear: cocoa::base::id = msg_send![class!(NSColor), clearColor];
-        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+    let native = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        use cocoa::base::NO;
+        use objc::{msg_send, sel, sel_impl};
+        let Ok(pointer) = native.ns_window() else {
+            return;
+        };
+        unsafe {
+            let ns_window = pointer as cocoa::base::id;
+            // Normal window level, retained when another app becomes active.
+            let _: () = msg_send![ns_window, setLevel: 0_i64];
+            let _: () = msg_send![ns_window, setHidesOnDeactivate: NO];
+        }
+    });
+}
 
-        // Use the normal window level so the popup does not float above other applications.
-        // NSNormalWindowLevel = 0
-        let _: () = msg_send![ns_window, setLevel: 0_i64];
-
-        // Keep the popup visible when another application becomes active.
-        let _: () = msg_send![ns_window, setHidesOnDeactivate: NO];
-    }
+#[cfg(target_os = "macos")]
+fn focus_native_window(win: &tauri::WebviewWindow) {
+    let native = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        use cocoa::base::nil;
+        use objc::{msg_send, sel, sel_impl};
+        let Ok(pointer) = native.ns_window() else {
+            return;
+        };
+        unsafe {
+            let ns_window = pointer as cocoa::base::id;
+            let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
+        }
+        let _ = native.set_focus();
+    });
 }
 
 // Native macOS window animations
@@ -213,7 +229,8 @@ pub fn setup_popup_window(win: &tauri::WebviewWindow) {
 // Coordinate systems:
 //   NSWindow/NSScreen use a bottom-left origin with the Y axis pointing upward.
 //   Tauri logical coordinates use a top-left origin with the Y axis pointing downward.
-//   Conversion: ns_y = screen_h - tauri_y - window_height.
+//   Convert using the current native frame and Tauri position, so displays above
+//   or below the primary screen do not require a guessed desktop height.
 //
 // Thread safety:
 //   NSAnimationContext must run on the main thread.
@@ -227,42 +244,25 @@ unsafe fn do_animated_set_frame(
     target_y: f64,
     target_w: f64,
     target_h: f64,
-    screen_h: f64,
+    current_tauri_x: f64,
+    current_tauri_y: f64,
     duration: f64,
 ) {
+    use cocoa::foundation::{NSPoint, NSRect, NSSize};
     use objc::{class, msg_send, sel, sel_impl};
 
     let ns_window = ns_window_ptr as cocoa::base::id;
-
-    // NSRect has the same memory layout as CoreGraphics CGRect.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct NSPoint {
-        x: f64,
-        y: f64,
-    }
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct NSSize {
-        width: f64,
-        height: f64,
-    }
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct NSRect {
-        origin: NSPoint,
-        size: NSSize,
-    }
-
-    // Convert Tauri's top-left, downward-Y coordinates to macOS's bottom-left, upward-Y coordinates.
-    let ns_x = target_x;
-    let ns_y = screen_h - target_y - target_h;
 
     // Step 1: read the current window frame.
     // Read the current width and height in macOS coordinates.
     let cur_frame: NSRect = msg_send![ns_window, frame];
     let cur_w = cur_frame.size.width;
     let cur_h = cur_frame.size.height;
+    let (ns_x, ns_y) = native_frame_origin(
+        (cur_frame.origin.x, cur_frame.origin.y, cur_h),
+        (current_tauri_x, current_tauri_y),
+        (target_x, target_y, target_h),
+    );
 
     // Step 2: align the origin immediately, keeping the current size and suppressing redraw.
     //
@@ -312,6 +312,18 @@ unsafe fn do_animated_set_frame(
     );
 }
 
+#[cfg(any(test, target_os = "macos"))]
+fn native_frame_origin(
+    native: (f64, f64, f64),
+    current: (f64, f64),
+    target: (f64, f64, f64),
+) -> (f64, f64) {
+    (
+        native.0 + target.0 - current.0,
+        native.1 - (target.1 - current.1) - (target.2 - native.2),
+    )
+}
+
 // Show, hide, and toggle the popup
 
 pub fn show_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
@@ -321,12 +333,7 @@ pub fn show_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
     let _ = win.show();
 
     #[cfg(target_os = "macos")]
-    unsafe {
-        use cocoa::base::nil;
-        use objc::{msg_send, sel, sel_impl};
-        let ns_window = win.ns_window().expect("ns_window") as cocoa::base::id;
-        let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
-    }
+    focus_native_window(win);
     #[cfg(not(target_os = "macos"))]
     {
         let _ = win.set_focus();
@@ -430,12 +437,7 @@ pub fn focus_popup(app: tauri::AppHandle, session_id: Option<String>) {
         let _ = win.show();
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            use cocoa::base::nil;
-            use objc::{msg_send, sel, sel_impl};
-            let ns_window = win.ns_window().expect("ns_window") as cocoa::base::id;
-            let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
-        }
+        focus_native_window(&win);
         #[cfg(not(target_os = "macos"))]
         {
             let _ = win.set_focus();
@@ -539,30 +541,24 @@ fn apply_window_frame(
     // macOS: use native NSAnimationContext animation.
     #[cfg(target_os = "macos")]
     {
-        let ns_window_ptr: usize = match window.ns_window() {
-            Ok(ptr) => ptr as usize,
-            Err(_) => {
-                // Fall back to immediate resizing if the native window handle is unavailable.
-                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                    x: new_x,
-                    y: new_y,
-                }));
-                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                    width: new_w,
-                    height: new_h,
-                }));
-                return;
-            }
-        };
+        let native = window.clone();
         let _ = window.run_on_main_thread(move || {
+            let Ok(pointer) = native.ns_window() else {
+                return;
+            };
+            let Ok(position) = native.outer_position() else {
+                return;
+            };
+            let scale = native.scale_factor().unwrap_or(1.0);
             unsafe {
                 do_animated_set_frame(
-                    ns_window_ptr,
+                    pointer as usize,
                     new_x,
                     new_y,
                     new_w,
                     new_h,
-                    _screen_h,
+                    position.x as f64 / scale,
+                    position.y as f64 / scale,
                     _duration,
                 )
             };
@@ -817,5 +813,25 @@ mod tests {
             height: 600.0,
         };
         assert!(normal.is_usable_size());
+    }
+
+    #[test]
+    fn macos_resize_conversion_keeps_secondary_monitor_coordinates() {
+        assert_eq!(
+            native_frame_origin(
+                (-1200.0, 200.0, 600.0),
+                (-1200.0, -300.0),
+                (-1250.0, -350.0, 800.0)
+            ),
+            (-1250.0, 50.0)
+        );
+        assert_eq!(
+            native_frame_origin(
+                (100.0, -1200.0, 600.0),
+                (100.0, 1600.0),
+                (150.0, 1650.0, 400.0)
+            ),
+            (150.0, -1050.0)
+        );
     }
 }

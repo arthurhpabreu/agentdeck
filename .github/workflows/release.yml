@@ -1,18 +1,24 @@
-name: Windows draft release
+name: Desktop release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
   windows:
+    name: Build Windows x64 installers
+    needs: validate
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -22,46 +28,163 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: npm install --global corepack --force
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: windows-x64
+      - run: npm install --global corepack --force
       - run: corepack pnpm install --frozen-lockfile
-      - run: corepack pnpm check:repo
-      - run: corepack pnpm check:i18n
-      - name: Verify tag matches application version
-        shell: pwsh
+      - run: node scripts/version.mjs check
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/version.mjs check-tag
+      - run: node scripts/build-desktop.mjs windows
+      - run: node scripts/release-assets.mjs collect windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: Build universal macOS application
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: macos-universal
+      - run: npm install --global corepack --force
+      - run: corepack pnpm install --frozen-lockfile
+      - run: node scripts/version.mjs check
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/version.mjs check-tag
+      - name: Configure optional Developer ID signing
+        id: signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag and package version differ" }
-      - run: powershell -NoProfile -File scripts/build-windows.ps1
-      - name: Prepare installers and checksums
-        shell: pwsh
+          if [[ -z "$APPLE_CERTIFICATE" ]]; then
+            if [[ "$APPLE_SIGNING_IDENTITY" != "-" ]]; then
+              echo "Developer ID signing requires the complete Apple signing and notarization secret set." >&2
+              exit 1
+            fi
+            echo "Using ad-hoc signing; this build is not Apple-notarized."
+            exit 0
+          fi
+          if [[ -z "$APPLE_CERTIFICATE_PASSWORD" || "$APPLE_SIGNING_IDENTITY" == "-" || -z "$APPLE_ID" || -z "$APPLE_PASSWORD" || -z "$APPLE_TEAM_ID" ]]; then
+            echo "Configure APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID together." >&2
+            exit 1
+          fi
+          agentdeck_keychain="$RUNNER_TEMP/agentdeck-signing.keychain-db"
+          agentdeck_certificate="$RUNNER_TEMP/agentdeck-signing.p12"
+          agentdeck_keychain_password="$(openssl rand -base64 32)"
+          echo "::add-mask::$agentdeck_keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$agentdeck_certificate"
+          security create-keychain -p "$agentdeck_keychain_password" "$agentdeck_keychain"
+          security default-keychain -d user -s "$agentdeck_keychain"
+          security unlock-keychain -p "$agentdeck_keychain_password" "$agentdeck_keychain"
+          security set-keychain-settings -lut 21600 "$agentdeck_keychain"
+          security import "$agentdeck_certificate" -k "$agentdeck_keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$agentdeck_keychain_password" "$agentdeck_keychain"
+          rm -f "$agentdeck_certificate"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - name: Build application and disk image
+        run: node scripts/build-desktop.mjs macos
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Validate bundles and run packaged GUI on Apple Silicon
+        run: node scripts/verify-macos-bundle.mjs --smoke
+      - run: node scripts/release-assets.mjs collect macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-universal
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-smoke-macos-apple-silicon
+          path: native-smoke-results/
+          retention-days: 14
+      - name: Remove temporary signing keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
         run: |
-          New-Item -ItemType Directory -Path release-assets | Out-Null
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          Copy-Item -LiteralPath "src-tauri/target/release/bundle/nsis/Agentdeck_${version}_x64-setup.exe" -Destination release-assets
-          Copy-Item -LiteralPath "src-tauri/target/release/bundle/msi/Agentdeck_${version}_x64_en-US.msi" -Destination release-assets
-          Copy-Item -LiteralPath LICENSE -Destination release-assets
-          Get-ChildItem release-assets -File | Sort-Object Name | ForEach-Object {
-            $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
-            "$($hash.Hash.ToLower())  $($_.Name)"
-          } | Set-Content release-assets/SHA256SUMS.txt -Encoding utf8NoBOM
-      - name: Create draft release
+          security default-keychain -d user -s login.keychain-db
+          security delete-keychain "$RUNNER_TEMP/agentdeck-signing.keychain-db"
+
+  macos-intel-smoke:
+    name: Run universal packaged GUI on Intel
+    needs: macos
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos-universal
+          path: release-assets
+      - name: Restore the same universal bundle
+        run: node scripts/restore-macos-bundle.mjs
+      - name: Validate bundles and run packaged GUI on Intel
+        run: node scripts/verify-macos-bundle.mjs --smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-smoke-macos-intel
+          path: native-smoke-results/
+          retention-days: 14
+
+  release:
+    name: Assemble one complete draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos-intel-smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+      - run: node scripts/version.mjs check-tag
+      - run: node scripts/release-assets.mjs checksums
+      - name: Create or update draft with all platform assets
+        run: node scripts/publish-release.mjs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $assets = Get-ChildItem release-assets -File | Select-Object -ExpandProperty FullName
-          $existing = gh release view $env:GITHUB_REF_NAME --json isDraft --jq '.isDraft' 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            if ($existing -eq 'false') {
-              Write-Output 'This release is already published; its assets are preserved.'
-              exit 0
-            }
-            gh release upload $env:GITHUB_REF_NAME @assets --clobber
-          } else {
-            gh release create $env:GITHUB_REF_NAME @assets --draft --generate-notes --title "Agent Deck $env:GITHUB_REF_NAME"
-          }
-          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the draft release' }

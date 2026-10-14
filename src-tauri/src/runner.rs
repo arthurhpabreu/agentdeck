@@ -67,6 +67,10 @@ pub async fn start_runner(
 
     let mut cmd = background_command(&bin);
     cmd.current_dir(&expanded_dir)
+        .env(
+            "PATH",
+            crate::platform::process_path(std::path::Path::new(&bin)),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

@@ -828,7 +828,10 @@ pub async fn start_chat_turn(
         .map(|(_, value)| value.as_str());
     command.env(
         "PATH",
-        crate::token_economy::enrich_path(&std::env::var("PATH").unwrap_or_default(), rtk_path),
+        crate::token_economy::enrich_path(
+            &crate::platform::process_path(Path::new(&executable)).to_string_lossy(),
+            rtk_path,
+        ),
     );
     command.envs(economy.env.iter().cloned());
     // Use the official account login, consistently with the existing native terminal transport.

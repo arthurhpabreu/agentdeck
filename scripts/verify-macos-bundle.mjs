@@ -1,0 +1,105 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { repositoryRoot, run } from "./desktop-tools.mjs";
+import { checkVersion } from "./version.mjs";
+
+if (process.platform !== "darwin") throw new Error("macOS bundle verification requires a native Mac.");
+const app = path.join(repositoryRoot, "src-tauri/target/universal-apple-darwin/release/bundle/macos/Agentdeck.app");
+const plist = path.join(app, "Contents/Info.plist");
+const reportDirectory = path.join(repositoryRoot, "native-smoke-results");
+fs.mkdirSync(reportDirectory, { recursive: true });
+
+function capture(command, args) {
+  return run(command, args, { encoding: "utf8", stdio: "pipe", timeout: 30_000 }).stdout.trim();
+}
+const config = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "src-tauri/tauri.conf.json"), "utf8"));
+const macConfig = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "src-tauri/tauri.macos.conf.json"), "utf8"));
+const version = checkVersion();
+const property = key => capture("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", plist]);
+const metadata = {
+  identifier: property("CFBundleIdentifier"),
+  version: property("CFBundleShortVersionString"),
+  minimumSystemVersion: property("LSMinimumSystemVersion"),
+  executable: property("CFBundleExecutable"),
+};
+if (metadata.identifier !== config.identifier || metadata.version !== version.replace(/-.+$/, "")) {
+  throw new Error(`Packaged application identity/version differs from manifests: ${JSON.stringify(metadata)}`);
+}
+if (metadata.minimumSystemVersion !== macConfig.bundle.macOS.minimumSystemVersion) throw new Error("Packaged minimum macOS version differs from the platform configuration.");
+const executable = path.join(app, "Contents/MacOS", metadata.executable);
+run("/usr/bin/lipo", [executable, "-verify_arch", "arm64", "x86_64"]);
+metadata.architectures = capture("/usr/bin/lipo", ["-archs", executable]).split(/\s+/).sort();
+if (metadata.architectures.join(",") !== "arm64,x86_64") throw new Error("The application must contain exactly Apple Silicon and Intel architectures.");
+metadata.minimumOSByArchitecture = {};
+for (const architecture of metadata.architectures) {
+  const commands = capture("/usr/bin/otool", ["-arch", architecture, "-l", executable]);
+  const minimum = commands.match(/cmd LC_BUILD_VERSION[\s\S]*?\bminos\s+([\d.]+)/)?.[1]
+    || commands.match(/cmd LC_VERSION_MIN_MACOSX[\s\S]*?\bversion\s+([\d.]+)/)?.[1];
+  if (!minimum || Number.parseFloat(minimum) > Number.parseFloat(metadata.minimumSystemVersion)) {
+    throw new Error(`${architecture} Mach-O deployment target ${minimum || "missing"} exceeds the declared macOS minimum ${metadata.minimumSystemVersion}.`);
+  }
+  metadata.minimumOSByArchitecture[architecture] = minimum;
+}
+const bundledLicense = fs.readFileSync(path.join(app, "Contents/Resources/LICENSE"));
+if (!bundledLicense.equals(fs.readFileSync(path.join(repositoryRoot, "LICENSE")))) throw new Error("The application bundle must contain the project license unchanged.");
+run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", app]);
+const signature = run("/usr/bin/codesign", ["-d", "--verbose=4", app], { encoding: "utf8", stdio: "pipe" });
+metadata.signing = /Signature=adhoc/.test(signature.stderr) ? "ad-hoc" : "Developer ID";
+if (metadata.signing === "Developer ID") {
+  run("/usr/bin/xcrun", ["stapler", "validate", app]);
+  run("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=2", app]);
+  metadata.notarized = true;
+} else {
+  metadata.notarized = false;
+}
+const dmgDirectory = path.join(repositoryRoot, "src-tauri/target/universal-apple-darwin/release/bundle/dmg");
+const diskImages = fs.readdirSync(dmgDirectory).filter(name => name.endsWith(".dmg"));
+if (diskImages.length !== 1) throw new Error(`Expected one release DMG, found ${diskImages.length}.`);
+run("/usr/bin/hdiutil", ["verify", path.join(dmgDirectory, diskImages[0])]);
+fs.writeFileSync(path.join(reportDirectory, "bundle-validation.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+console.log(`Verified universal macOS bundle ${version}, minimum ${metadata.minimumSystemVersion}, signing ${metadata.signing}.`);
+
+if (process.argv.includes("--smoke")) {
+  const crashDirectory = path.join(os.homedir(), "Library/Logs/DiagnosticReports");
+  const reports = () => fs.existsSync(crashDirectory) ? fs.readdirSync(crashDirectory).filter(name => /agentdeck/i.test(name)) : [];
+  const previousReports = new Set(reports());
+  const isolatedCwd = fs.mkdtempSync(path.join(os.tmpdir(), "agentdeck-native-smoke-"));
+  const log = fs.openSync(path.join(reportDirectory, "application.log"), "w");
+  const child = spawn(executable, [], {
+    cwd: isolatedCwd,
+    env: { ...process.env, RUST_BACKTRACE: "1" },
+    stdio: ["ignore", log, log],
+    shell: false,
+  });
+  let spawnError;
+  child.on("error", error => { spawnError = error; });
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  try {
+    await pause(5_000);
+    if (spawnError) throw spawnError;
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error("Packaged GUI exited before a reopen event could be sent.");
+    // Send a standard Dock/Finder reopen event to show the workbench.
+    run("/usr/bin/open", ["-a", app], { timeout: 15_000 });
+    await pause(15_000);
+    if (spawnError) throw spawnError;
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Packaged GUI exited during startup (${child.exitCode || child.signalCode}).`);
+    const output = fs.readFileSync(path.join(reportDirectory, "application.log"), "utf8");
+    if (/thread .+ panicked|fatal runtime error|dyld\[[^\]]+\]:.*(?:not loaded|not found)/i.test(output)) throw new Error("Packaged GUI logged a fatal startup error; inspect application.log.");
+    const newReports = reports().filter(name => !previousReports.has(name));
+    for (const name of newReports) fs.copyFileSync(path.join(crashDirectory, name), path.join(reportDirectory, name));
+    if (newReports.length) throw new Error(`Packaged GUI generated crash reports: ${newReports.join(", ")}`);
+    const screenshot = spawnSync("/usr/sbin/screencapture", ["-x", path.join(reportDirectory, "desktop.png")], { timeout: 10_000, encoding: "utf8" });
+    metadata.smoke = { startupSeconds: 20, runnerArchitecture: process.arch, alive: true, screenshotCaptured: screenshot.status === 0 };
+    fs.writeFileSync(path.join(reportDirectory, "bundle-validation.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+    console.log(`Packaged GUI stayed alive for 20 seconds without fatal logs/crash reports; screenshot ${metadata.smoke.screenshotCaptured ? "captured" : "unavailable on this runner"}.`);
+  } finally {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await Promise.race([new Promise(resolve => child.once("exit", resolve)), pause(5_000)]);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+    fs.closeSync(log);
+  }
+}

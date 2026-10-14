@@ -296,6 +296,15 @@ fn usage_dir() -> Option<PathBuf> {
     crate::util::home_dir().map(|p| p.join(".agentdeck").join("usage"))
 }
 
+#[cfg(target_os = "macos")]
+static NATIVE_USAGE_RUNTIME_START: OnceLock<u64> = OnceLock::new();
+
+pub(crate) fn begin_runtime() {
+    #[cfg(target_os = "macos")]
+    let _ = NATIVE_USAGE_RUNTIME_START.set(unix_seconds(SystemTime::now()));
+}
+
+#[cfg(windows)]
 const CLAUDE_STATUSLINE_PS: &str = r#"$ErrorActionPreference = 'Stop'
 try {
   $data = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -319,23 +328,71 @@ try {
 [Console]::Write('AgentDeck')
 "#;
 
-const CLAUDE_STATUSLINE_PY: &str = r#"import json, os, sys, tempfile
-try:
-    data = json.load(sys.stdin).get('rate_limits', {}) or {}
-    safe = {name: {field: value for field, value in window.items() if field in ('used_percentage', 'resets_at', 'period')}
-            for name, window in data.items() if name in ('five_hour', 'seven_day', 'spend_limit') and isinstance(window, dict)}
-    if not safe:
-        print('AgentDeck', end='')
-        sys.exit(0)
-    directory = os.path.dirname(os.path.abspath(__file__))
-    with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False, encoding='utf-8') as output:
-        json.dump({'rate_limits': safe}, output)
-        temporary = output.name
-    os.replace(temporary, os.path.join(directory, 'claude.json'))
-except Exception:
-    pass
-print('AgentDeck', end='')
-"#;
+/// Keep only provider-reported quota fields; paths, prompts and authentication
+/// data from the much larger statusline payload never reach the usage cache.
+fn sanitized_statusline(payload: &Value) -> Option<Value> {
+    let limits = payload.get("rate_limits")?.as_object()?;
+    let mut safe = serde_json::Map::new();
+    for name in ["five_hour", "seven_day", "spend_limit"] {
+        let Some(window) = limits.get(name).and_then(Value::as_object) else {
+            continue;
+        };
+        let mut fields = serde_json::Map::new();
+        if let Some(value) = window
+            .get("used_percentage")
+            .filter(|value| valid_percent(Some(value)).is_some())
+        {
+            fields.insert("used_percentage".into(), value.clone());
+        }
+        if let Some(value) = window
+            .get("resets_at")
+            .filter(|value| value.as_u64().is_some())
+        {
+            fields.insert("resets_at".into(), value.clone());
+        }
+        if let Some(value) = window.get("period").filter(|value| {
+            matches!(
+                value.as_str(),
+                Some("monthly" | "weekly" | "daily" | "five_hour" | "seven_day")
+            )
+        }) {
+            fields.insert("period".into(), value.clone());
+        }
+        if !fields.is_empty() {
+            safe.insert(name.into(), Value::Object(fields));
+        }
+    }
+    (!safe.is_empty()).then(|| serde_json::json!({"rate_limits": safe}))
+}
+
+pub(crate) fn record_native_statusline(payload: &Value) -> std::io::Result<()> {
+    let Some(safe) = sanitized_statusline(payload) else {
+        return Ok(());
+    };
+    let Some(directory) = usage_dir() else {
+        return Ok(());
+    };
+    fs::create_dir_all(&directory)?;
+    let temporary = directory.join(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let result = (|| {
+        let mut file = options.open(&temporary)?;
+        serde_json::to_writer(&mut file, &safe)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, directory.join("claude.json"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
 
 fn settings_has_statusline(path: &Path) -> bool {
     let file = match File::open(path) {
@@ -435,18 +492,17 @@ pub fn claude_statusline_settings(
     }
     let directory = usage_dir()?;
     fs::create_dir_all(&directory).ok()?;
-    let command = if cfg!(windows) {
+    #[cfg(windows)]
+    let command = {
         let script = directory.join("claude-statusline.ps1");
         write_if_changed(&script, CLAUDE_STATUSLINE_PS).ok()?;
         format!("powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\"", script.display())
-    } else {
-        let script = directory.join("claude-statusline.py");
-        write_if_changed(&script, CLAUDE_STATUSLINE_PY).ok()?;
-        format!(
-            "/usr/bin/python3 '{}'",
-            script.to_string_lossy().replace('\'', "'\\''")
-        )
     };
+    #[cfg(not(windows))]
+    let command = format!(
+        "{} --claude-statusline",
+        crate::platform::quote_posix(&std::env::current_exe().ok()?.to_string_lossy())
+    );
     let settings =
         serde_json::json!({"statusLine":{"type":"command","command":command}}).to_string();
     let path = directory.join("claude-statusline-settings.json");
@@ -474,6 +530,12 @@ fn read_claude_usage() -> ProviderUsage {
         .and_then(|m| m.modified())
         .map(unix_seconds)
         .unwrap_or(0);
+    #[cfg(target_os = "macos")]
+    if modified < *NATIVE_USAGE_RUNTIME_START.get_or_init(|| unix_seconds(SystemTime::now())) {
+        // Keychain identity is intentionally opaque. A previous desktop run's
+        // unqualified statusline cache cannot establish the current account.
+        return empty("unavailable");
+    }
     let mut data = String::new();
     if file.take(64 * 1024).read_to_string(&mut data).is_err() {
         return empty("error");
@@ -594,6 +656,25 @@ pub async fn get_provider_usage(force: Option<bool>) -> Result<Vec<ProviderUsage
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_statusline_keeps_quota_fields_and_drops_private_input() {
+        let payload = json!({"cwd":"private/path", "accessToken":"secret", "rate_limits":{
+            "five_hour":{"used_percentage":42.5,"resets_at":2000000000,"accessToken":"secret"},
+            "spend_limit":{"used_percentage":12,"period":"monthly"},
+            "unsupported":{"used_percentage":100}
+        }});
+        let safe = sanitized_statusline(&payload).unwrap();
+        assert_eq!(
+            safe,
+            json!({"rate_limits":{"five_hour":{"used_percentage":42.5,"resets_at":2000000000}, "spend_limit":{"used_percentage":12,"period":"monthly"}}})
+        );
+        assert!(sanitized_statusline(
+            &json!({"rate_limits":{"five_hour":{"used_percentage":{"secret":true}}}})
+        )
+        .is_none());
+        assert!(sanitized_statusline(&json!({})).is_none());
+    }
 
     #[test]
     fn reads_real_codex_windows_without_inventing_monthly() {

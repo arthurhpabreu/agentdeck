@@ -73,7 +73,14 @@ fn stable_versions_compare_numerically_and_never_downgrade() {
         .unwrap()
         .is_none());
     }
-    for tag in ["v0.7.0-beta", "v0.7", "../0.7.0", "v0.7.0/evil", "v0.7.-1"] {
+    for tag in [
+        "v0.7.0-beta",
+        "v0.7",
+        "../0.7.0",
+        "v0.7.0/evil",
+        "v0.7.-1",
+        "v0.07.0",
+    ] {
         assert!(select_release(
             release(tag, InstallerKind::Nsis),
             "0.6.1",
@@ -89,8 +96,8 @@ fn stable_versions_compare_numerically_and_never_downgrade() {
     }
 }
 #[test]
-fn downloads_require_exact_official_assets_and_checksums_for_both_installer_types() {
-    for kind in [InstallerKind::Nsis, InstallerKind::Msi] {
+fn downloads_require_exact_official_assets_and_checksums_for_supported_installers() {
+    for kind in [InstallerKind::Nsis, InstallerKind::Msi, InstallerKind::Dmg] {
         let selected = select_release(release("v0.7.0", kind), "0.6.1", kind)
             .unwrap()
             .unwrap();
@@ -111,6 +118,96 @@ fn downloads_require_exact_official_assets_and_checksums_for_both_installer_type
         candidate.assets[0].size = MAX_INSTALLER_BYTES + 1;
         assert!(select_release(candidate, "0.6.1", kind).is_err());
     }
+}
+
+#[test]
+fn native_platforms_select_shared_macos_artifacts_without_changing_windows_formats() {
+    for (os, arch) in [
+        ("windows", "x86_64"),
+        ("macos", "x86_64"),
+        ("macos", "aarch64"),
+    ] {
+        assert!(supported_platform(os, arch));
+    }
+    for (os, arch) in [
+        ("windows", "aarch64"),
+        ("linux", "x86_64"),
+        ("macos", "powerpc"),
+    ] {
+        assert!(!supported_platform(os, arch));
+    }
+    assert_eq!(
+        InstallerKind::Dmg.filename("0.7.0"),
+        "Agentdeck_0.7.0_universal.dmg"
+    );
+    assert_eq!(InstallerKind::Dmg.label(), "dmg");
+    assert_eq!(
+        InstallerKind::Nsis.filename("0.7.0"),
+        "Agentdeck_0.7.0_x64-setup.exe"
+    );
+    assert_eq!(
+        InstallerKind::Msi.filename("0.7.0"),
+        "Agentdeck_0.7.0_x64_en-US.msi"
+    );
+}
+
+#[test]
+fn macos_downloads_require_valid_udif_trailers_and_full_sha256() {
+    let mut image = vec![0xa5; 80_000];
+    let footer = image.len() - 512;
+    image[footer..footer + 4].copy_from_slice(b"koly");
+    image[footer + 4..footer + 8].copy_from_slice(&4u32.to_be_bytes());
+    image[footer + 8..footer + 12].copy_from_slice(&512u32.to_be_bytes());
+    let verify = |data: &[u8], digest: &str| {
+        copy_verified(
+            data,
+            std::io::sink(),
+            data.len() as u64,
+            digest,
+            InstallerKind::Dmg,
+        )
+    };
+    let digest = format!("{:x}", Sha256::digest(&image));
+    let mut output = Vec::new();
+    copy_verified(
+        image.as_slice(),
+        &mut output,
+        image.len() as u64,
+        &digest,
+        InstallerKind::Dmg,
+    )
+    .unwrap();
+    assert_eq!(output, image);
+    // Exercise network reads that split the UDIF trailer into small pieces.
+    struct SmallReads<'a>(&'a [u8]);
+    impl Read for SmallReads<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let amount = self.0.len().min(buffer.len()).min(37);
+            buffer[..amount].copy_from_slice(&self.0[..amount]);
+            self.0 = &self.0[amount..];
+            Ok(amount)
+        }
+    }
+    copy_verified(
+        SmallReads(&image),
+        std::io::sink(),
+        image.len() as u64,
+        &digest,
+        InstallerKind::Dmg,
+    )
+    .unwrap();
+    let mut tampered = image.clone();
+    tampered[1] ^= 1;
+    assert!(verify(&tampered, &digest).is_err());
+    for offset in [footer, footer + 4, footer + 8] {
+        let mut malformed = image.clone();
+        malformed[offset] ^= 1;
+        assert!(verify(&malformed, &format!("{:x}", Sha256::digest(&malformed))).is_err());
+    }
+    let prefix_only = [b"koly".as_slice(), &[0; 508]].concat();
+    assert!(verify(&prefix_only, &format!("{:x}", Sha256::digest(&prefix_only))).is_err());
+    let short = b"koly";
+    assert!(verify(short, &format!("{:x}", Sha256::digest(short))).is_err());
 }
 #[test]
 fn checksum_selection_is_exact_and_rejects_ambiguous_or_invalid_entries() {

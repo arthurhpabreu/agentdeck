@@ -7,6 +7,7 @@ import { useSessionStore } from "../../store/sessionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useWorkbenchStore } from "../../store/workbenchStore";
 import { showSessionSurface } from "../../services/workbenchCommands";
+import { getRuntimePlatform } from "../../services/platform";
 import { ProviderIcon } from "../ProviderIcon";
 import { quickSwitchCopy } from "./quickSwitchCopy";
 import "./quickSwitch.css";
@@ -64,7 +65,7 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
   const restoreFocus = useRef<HTMLElement | null>(null);
   const id = useId();
   const listId = `${id}-results`;
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const isMac = getRuntimePlatform().os === "macos";
 
   const close = useCallback((action?: () => void) => {
     dialog.current?.close();

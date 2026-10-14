@@ -28,8 +28,12 @@ struct HookCommandSpec {
 fn hook_bridge_command(source: HookSource) -> Result<String, String> {
     let source_name = source.label();
     let socket_path = source.socket_path();
+    let executable = std::env::current_exe().map_err(|_| "Native hook executable unavailable")?;
     Ok(format!(
-        "/usr/bin/python3 -c 'import json, os, socket, sys; payload=json.load(sys.stdin); sid=os.environ.get(\"AGENTDECK_SESSION_ID\"); runner=os.environ.get(\"AGENTDECK_RUNNER_TYPE\"); payload[\"agentdeck_source\"]=\"{source_name}\"; payload[\"agentdeck_session_id\"]=sid if sid else payload.get(\"agentdeck_session_id\"); payload[\"agentdeck_runner_type\"]=runner if runner else payload.get(\"agentdeck_runner_type\"); sock=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); sock.connect(\"{socket_path}\"); sock.sendall(json.dumps(payload).encode(\"utf-8\")); sock.close()' >/dev/null 2>&1 || true"
+        "{} --hook-bridge --source {} --socket {} >/dev/null 2>&1 || true",
+        crate::platform::quote_posix(&executable.to_string_lossy()),
+        crate::platform::quote_posix(source_name),
+        crate::platform::quote_posix(&socket_path),
     ))
 }
 
@@ -253,7 +257,8 @@ fn is_managed_command(command: &str, source: HookSource) -> bool {
     #[cfg(unix)]
     {
         let socket_path = source.socket_path();
-        return command.contains(&socket_path);
+        return command.contains(&socket_path)
+            || command.contains(&crate::platform::quote_posix(&socket_path));
     }
 
     #[cfg(not(unix))]

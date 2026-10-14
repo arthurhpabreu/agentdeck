@@ -103,8 +103,9 @@ pub fn run_bounded(program: &str, args: &[String], timeout: Duration) -> Result<
     {
         return Err("unsupported_installation".into());
     }
-    let mut child = crate::util::background_command(program)
+    let mut child = crate::util::background_command(&program)
         .args(args)
+        .env("PATH", crate::platform::process_path(Path::new(&program)))
         .current_dir(std::env::temp_dir())
         .env("DISABLE_AUTOUPDATER", "1")
         .stdin(Stdio::null())

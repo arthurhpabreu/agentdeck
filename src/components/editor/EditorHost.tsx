@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useAppI18n } from "../../i18n";
 import { loadFile, saveTab } from "../../services/editorCommands";
 import { editorCopy } from "../../services/editorCopy";
+import { getPrimaryModifierLabel } from "../../services/platform";
 import { useEditorBufferStore, type EditorBufferState } from "../../store/editorBufferStore";
 import { useEditorStore } from "../../store/editorStore";
 import { useScmStore } from "../../store/scmStore";
@@ -167,7 +168,7 @@ export function EditorHost({
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3, fontSize: 10, color: "var(--ci-text-dim)" }}>
             {activeBuffer.dirty ? <span style={{ color: "var(--ci-accent)" }}>{t("session.unsaved")}</span> : <span>{t("session.synced")}</span>}
-            <span>{t("session.saveShortcut")}</span>
+            <span>{t("session.saveShortcut", { modifier: getPrimaryModifierLabel() })}</span>
           </div>
         </div>
         <button

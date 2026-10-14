@@ -16,6 +16,7 @@ release-assets/
 test-results/
 playwright-report/
 playwright/.cache/
+native-smoke-results/
 
 # Machine-specific configuration, credentials and private runtime data
 .env

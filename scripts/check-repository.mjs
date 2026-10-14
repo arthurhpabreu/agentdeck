@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { checkVersion } from "./version.mjs";
 
 const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean);
 if (!files.length) throw new Error("No tracked files. Stage the intended project files before checking.");
-const required = ["package.json", "pnpm-lock.yaml", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/tauri.conf.json", "src-tauri/capabilities/default.json", "LICENSE", "README.md", ".gitignore", "src-tauri/icons/icon.ico", ".github/workflows/ci.yml"];
+const required = ["package.json", "pnpm-lock.yaml", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/tauri.conf.json", "src-tauri/tauri.windows.conf.json", "src-tauri/tauri.macos.conf.json", "src-tauri/capabilities/default.json", "LICENSE", "README.md", ".gitignore", "src-tauri/icons/icon.ico", ".github/workflows/ci.yml", ".github/workflows/release.yml", "scripts/version.mjs", "scripts/build-desktop.mjs"];
 const problems = required.filter(file => !files.includes(file)).map(file => `Required project input missing: ${file}`);
 const obsoleteNamespace = new RegExp("code[-_]?" + "bar|\\.code" + "bar", "i");
 const personalPath = new RegExp("[A-Z]:[/\\\\]Users[/\\\\]Arthur" + " Autis", "i");
@@ -21,5 +22,6 @@ const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
 const cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
 if (tauri.version !== pkg.version || cargo.match(/^version = "([^"]+)"/m)?.[1] !== pkg.version) problems.push("Frontend and native package versions differ.");
+try { checkVersion(); } catch (error) { problems.push(error.message); }
 if (problems.length) { console.error(problems.join("\n")); process.exitCode = 1; }
 else console.log(`Repository hygiene passed for ${files.length} tracked files; required inputs and versions verified.`);

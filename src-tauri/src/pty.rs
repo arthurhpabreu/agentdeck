@@ -307,22 +307,7 @@ pub async fn start_pty_session(
 
     // Extend the child process PATH with Node's directory for Claude, Codex, and other Node.js scripts.
     {
-        let base_path = std::env::var("PATH").unwrap_or_default();
-        let node_path = resolve_command_path("node");
-        let node_dir = if std::path::Path::new(&node_path).parent().is_some() {
-            std::path::Path::new(&node_path)
-                .parent()
-                .map(|d| d.to_string_lossy().to_string())
-        } else {
-            None
-        };
-        let sep = if cfg!(windows) { ';' } else { ':' };
-        let enriched_path = match node_dir {
-            Some(dir) if !base_path.split(sep).any(|s| s == dir) => {
-                format!("{dir}{sep}{base_path}")
-            }
-            _ => base_path,
-        };
+        let enriched_path = crate::platform::process_path(std::path::Path::new(&launch_command));
         let rtk_path = economy
             .env
             .iter()
@@ -330,7 +315,7 @@ pub async fn start_pty_session(
             .map(|(_, value)| value.as_str());
         cmd.env(
             "PATH",
-            crate::token_economy::enrich_path(&enriched_path, rtk_path),
+            crate::token_economy::enrich_path(&enriched_path.to_string_lossy(), rtk_path),
         );
     }
 
@@ -673,7 +658,56 @@ fn terminate_child(child: &mut PtyChildHandle) {
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
+    #[cfg(unix)]
+    if let Some(pid) = child.pid {
+        // portable-pty starts a new session. Stop its process group, including
+        // package scripts and agent tools, before closing the terminal.
+        let _ = crate::util::background_command("/bin/kill")
+            .args(["-TERM", "--", &format!("-{pid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
     let _ = child.killer.kill();
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use std::io::Read;
+    #[test]
+    fn unix_pty_preserves_utf8_exit_code_and_paths_with_spaces() {
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        let workdir =
+            std::env::temp_dir().join(format!("Agentdeck PTY café {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workdir).unwrap();
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", "printf 'AGENTDECK_PTY_OK café\\n'; exit 7"]);
+        command.cwd(&workdir);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        drop(pair.slave);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = reader.read_to_end(&mut bytes);
+            let _ = tx.send(bytes);
+        });
+        assert_eq!(child.wait().unwrap().exit_code(), 7);
+        drop(pair.master);
+        let output =
+            String::from_utf8(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap())
+                .unwrap();
+        assert!(output.contains("AGENTDECK_PTY_OK café"), "{output:?}");
+        std::fs::remove_dir(workdir).unwrap();
+    }
 }
 
 #[cfg(all(test, windows))]

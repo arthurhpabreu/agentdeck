@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
+import { desktopEnvironment, spawnTauri } from "./desktop-tools.mjs";
 
 function hashString(input) {
   let hash = 0;
@@ -56,12 +56,8 @@ async function findAvailablePortPair(startPort) {
   throw new Error(`Unable to find a free dev/HMR port pair starting from ${startPort}`);
 }
 
-function spawnPnpm(args, env) {
-  const child = spawn(process.platform === "win32" ? "corepack.cmd" : "corepack", ["pnpm", ...args], {
-    cwd: process.cwd(),
-    env,
-    stdio: "inherit",
-  });
+function runTauri(args, env) {
+  const child = spawnTauri(args, env);
 
   child.on("exit", (code, signal) => {
     if (signal) {
@@ -81,7 +77,7 @@ const inputArgs = process.argv.slice(2);
 const command = inputArgs[0] ?? "dev";
 
 if (command !== "dev") {
-  spawnPnpm(["exec", "tauri", ...inputArgs], process.env);
+  runTauri(inputArgs, desktopEnvironment());
 } else {
   const cwd = process.cwd();
   const cwdHash = hashString(cwd);
@@ -116,7 +112,7 @@ if (command !== "dev") {
     `wt-${cwdHash.toString(36)}`;
 
   const env = {
-    ...process.env,
+    ...desktopEnvironment(),
     AGENTDECK_DEV_PORT: String(devPort),
     AGENTDECK_HMR_PORT: String(hmrPort),
   };
@@ -141,13 +137,11 @@ if (command !== "dev") {
   console.log(`[worktree-dev] identifier=${overrideConfig.identifier}`);
 
   const tauriArgs = [
-    "exec",
-    "tauri",
     "dev",
     "--config",
     JSON.stringify(overrideConfig),
     ...inputArgs.slice(command === "dev" ? 1 : 0),
   ];
 
-  spawnPnpm(tauriArgs, env);
+  runTauri(tauriArgs, env);
 }

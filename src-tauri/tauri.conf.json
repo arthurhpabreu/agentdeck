@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Agentdeck",
-  "version": "0.6.8",
+  "version": "0.7.0",
   "identifier": "com.tuxao.agentdeck",
   "build": {
-    "beforeDevCommand": "corepack pnpm dev",
+    "beforeDevCommand": "node scripts/frontend.mjs dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "corepack pnpm build",
+    "beforeBuildCommand": "node scripts/frontend.mjs build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -27,8 +27,7 @@
     ],
     "security": {
       "csp": null
-    },
-    "macOSPrivateApi": true
+    }
   },
   "bundle": {
     "active": true,
@@ -43,15 +42,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "windows": {
-      "wix": {
-        "upgradeCode": "4a74fa6a-9c57-5f48-87ee-7a8ab27ee6a8"
-      }
-    },
-    "macOS": {
-      "minimumSystemVersion": "10.15",
-      "signingIdentity": "-"
-    },
     "resources": { "../LICENSE": "LICENSE" }
   }
 }

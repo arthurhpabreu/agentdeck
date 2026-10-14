@@ -101,7 +101,13 @@ fn read_login(now: u64) -> Result<Login, Failure> {
     let path = credentials_path().ok_or(Failure::new("missing-login"))?;
     let file = File::open(&path).map_err(|error| {
         Failure::new(if error.kind() == std::io::ErrorKind::NotFound {
-            "missing-login"
+            // The official macOS CLI keeps its login in Keychain. Absence of
+            // the fallback file cannot establish that the user is signed out.
+            if cfg!(target_os = "macos") {
+                "unsupported"
+            } else {
+                "missing-login"
+            }
         } else {
             "read-error"
         })
@@ -556,6 +562,34 @@ mod tests {
                 "Startup cannot restore a previous account's generic file"
             );
         }
+    }
+
+    #[test]
+    fn opaque_native_login_uses_provider_events_until_oauth_has_owned_identity() {
+        let cache = Mutex::new(Cache::default());
+        let fallback = read_cached(
+            &cache,
+            false,
+            100,
+            Err(Failure::new("unsupported")),
+            sample(100),
+            |_| panic!("no OAuth fetch without readable login"),
+        );
+        assert_eq!(fallback.windows.len(), 2);
+        assert_eq!(fallback.reason.as_deref(), Some("unsupported"));
+        read_cached(&cache, false, 101, login(1), empty(), |_| Ok(sample(101)));
+        let lost = read_cached(
+            &cache,
+            false,
+            102,
+            Err(Failure::new("unsupported")),
+            sample(100),
+            |_| panic!("no OAuth fetch without readable login"),
+        );
+        assert!(
+            lost.windows.is_empty(),
+            "Old generic readings cannot replace a known OAuth identity"
+        );
     }
 
     #[test]

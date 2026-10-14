@@ -493,6 +493,10 @@ fn native_metadata(provider: &str, cli_path: &str, workdir: &Path) -> Result<Val
     let (executable, args) = crate::util::resolve_windows_pty_command(&executable, &args);
     let mut child = crate::util::background_command(&executable)
         .args(args)
+        .env(
+            "PATH",
+            crate::platform::process_path(std::path::Path::new(&executable)),
+        )
         .current_dir(workdir)
         .env("DISABLE_AUTOUPDATER", "1")
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")

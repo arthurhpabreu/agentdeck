@@ -8,6 +8,7 @@ import { useAppI18n } from "../i18n";
 import { useSettingsStore, isGlassTheme, type ThemeMode } from "../store/settingsStore";
 import { startPtySession, stopPtySession } from "../store/ptyRuntimeStore";
 import { encodeTerminalInput } from "../services/terminalEncoding";
+import { getRuntimePlatform } from "../services/platform";
 
 interface Props {
   sessionId: string;
@@ -24,8 +25,8 @@ interface Props {
   onNotification?: (title: string, message: string, notification_type: string) => void; // CLI hook notification callback.
   // Additional environment variables passed through to start_pty_session, such as AGENTDECK_* context.
   env?: [string, string][];
-  // Enable Ctrl+C / Ctrl+V text copy and paste only for the main CLI terminal on Windows.
-  enableWindowsCtrlCv?: boolean;
+  // Use Command on macOS and Ctrl on Windows, preserving Ctrl+C as a Unix interrupt.
+  enableClipboardShortcuts?: boolean;
 }
 
 // ── xterm theme definitions ───────────────────────────────────
@@ -143,7 +144,7 @@ export function PtyTerminal({
   onError,
   onNotification,
   env,
-  enableWindowsCtrlCv = false,
+  enableClipboardShortcuts = false,
 }: Props) {
   const { t } = useAppI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -165,7 +166,7 @@ export function PtyTerminal({
 
     const { termTheme, termBg } = getTerminalLook(theme);
     const { fontSize, lineHeight } = getTerminalMetrics(ptyFontSize);
-    const isWindows = navigator.userAgent.toLowerCase().includes("windows");
+    const os = getRuntimePlatform().os;
 
     const term = new Terminal({
       theme: termTheme,
@@ -205,9 +206,10 @@ export function PtyTerminal({
 
     container.addEventListener("wheel", wheelHandler, { passive: false });
 
-    if (isWindows && enableWindowsCtrlCv) {
+    if ((os === "windows" || os === "macos") && enableClipboardShortcuts) {
       term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-        if (event.type !== "keydown" || !event.ctrlKey || event.altKey || event.metaKey) {
+        const clipboardModifier = os === "macos" ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+        if (event.type !== "keydown" || !clipboardModifier || event.altKey || event.shiftKey) {
           return true;
         }
 

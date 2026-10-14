@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Maximize, Minus, Plus } from "lucide-react";
+import { getPrimaryModifierLabel } from "../../services/platform";
 import "./graphViewport.css";
 
 export interface GraphControls { zoomIn: string; zoomOut: string; fit: string; hint: string }
@@ -74,7 +75,7 @@ export function GraphViewport({ width, height, label, controls, children, resetK
       <div className="ad-graph-world" style={{ width, height, transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})` }}>{children}</div>
     </div>
     <div className="ad-graph-toolbar" role="group" aria-label={label}>
-      <span>{controls.hint}</span><button type="button" onClick={() => zoom(1 / 1.2)} title={controls.zoomOut} aria-label={controls.zoomOut}><Minus size={15} /></button>
+      <span>{controls.hint.replace("Ctrl", getPrimaryModifierLabel())}</span><button type="button" onClick={() => zoom(1 / 1.2)} title={controls.zoomOut} aria-label={controls.zoomOut}><Minus size={15} /></button>
       <output>{Math.round(camera.scale * 100)}%</output><button type="button" onClick={() => zoom(1.2)} title={controls.zoomIn} aria-label={controls.zoomIn}><Plus size={15} /></button>
       <button type="button" onClick={fit} title={controls.fit} aria-label={controls.fit}><Maximize size={15} /></button>
     </div>

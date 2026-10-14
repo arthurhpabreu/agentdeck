@@ -117,6 +117,10 @@ fn claude_catalogue(cli_path: &str) -> Result<Vec<AgentModel>, String> {
     }
     let mut child = crate::util::background_command(&executable)
         .args(arguments)
+        .env(
+            "PATH",
+            crate::platform::process_path(std::path::Path::new(&executable)),
+        )
         .env("DISABLE_AUTOUPDATER", "1")
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(Stdio::piped())
@@ -213,6 +217,10 @@ fn codex_catalogue(cli_path: &str, workdir: &str) -> Result<Vec<AgentModel>, Str
     );
     let mut child = crate::util::background_command(&program)
         .args(args)
+        .env(
+            "PATH",
+            crate::platform::process_path(std::path::Path::new(&program)),
+        )
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

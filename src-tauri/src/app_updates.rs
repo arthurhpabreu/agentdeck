@@ -33,28 +33,50 @@ struct VerifiedInstaller {
     size: u64,
     kind: InstallerKind,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InstallerKind {
     Nsis,
     Msi,
+    Dmg,
 }
 impl InstallerKind {
     fn label(self) -> &'static str {
         match self {
             Self::Nsis => "exe",
             Self::Msi => "msi",
+            Self::Dmg => "dmg",
         }
     }
     fn filename(self, version: &str) -> String {
         match self {
             Self::Nsis => format!("Agentdeck_{version}_x64-setup.exe"),
             Self::Msi => format!("Agentdeck_{version}_x64_en-US.msi"),
+            Self::Dmg => format!("Agentdeck_{version}_universal.dmg"),
         }
     }
     fn magic(self) -> &'static [u8] {
         match self {
             Self::Nsis => b"MZ",
             Self::Msi => &[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1],
+            // Compressed UDIF images identify themselves in their final trailer.
+            Self::Dmg => b"",
+        }
+    }
+    fn minimum_size(self) -> u64 {
+        if self == Self::Dmg {
+            512
+        } else {
+            self.magic().len() as u64
+        }
+    }
+    fn valid_container(self, prefix: &[u8], tail: &[u8]) -> bool {
+        if self == Self::Dmg {
+            tail.len() == 512
+                && &tail[..4] == b"koly"
+                && tail[4..8] == 4u32.to_be_bytes()
+                && tail[8..12] == 512u32.to_be_bytes()
+        } else {
+            prefix == self.magic()
         }
     }
 }
@@ -66,6 +88,7 @@ pub struct AppUpdateInfo {
     update_available: bool,
     supported: bool,
     installer_kind: String,
+    platform: String,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,9 +118,12 @@ struct UpdateRelease {
 fn version(value: &str) -> Result<[u64; 3], String> {
     let parts = value.split('.').collect::<Vec<_>>();
     if parts.len() != 3
-        || parts
-            .iter()
-            .any(|p| p.is_empty() || p.len() > 9 || !p.bytes().all(|b| b.is_ascii_digit()))
+        || parts.iter().any(|p| {
+            p.is_empty()
+                || p.len() > 9
+                || p.len() > 1 && p.starts_with('0')
+                || !p.bytes().all(|b| b.is_ascii_digit())
+        })
     {
         return Err("release_invalid".into());
     }
@@ -217,12 +243,13 @@ fn copy_verified(
     sha256: &str,
     kind: InstallerKind,
 ) -> Result<(), String> {
-    if size < kind.magic().len() as u64 || size > MAX_INSTALLER_BYTES {
+    if size < kind.minimum_size() || size > MAX_INSTALLER_BYTES {
         return Err("installer_invalid".into());
     }
     let mut digest = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     let mut prefix: Vec<u8> = Vec::new();
+    let mut tail: Vec<u8> = Vec::new();
     let mut received = 0u64;
     loop {
         let count = source.read(&mut buffer).map_err(|_| "download_failed")?;
@@ -238,12 +265,27 @@ fn copy_verified(
                 .iter()
                 .take(kind.magic().len().saturating_sub(prefix.len())),
         );
+        if kind == InstallerKind::Dmg {
+            // Keep a bounded footer even when the response arrives in tiny chunks.
+            if count >= 512 {
+                tail.clear();
+                tail.extend_from_slice(&buffer[count - 512..count]);
+            } else {
+                tail.extend_from_slice(&buffer[..count]);
+                if tail.len() > 512 {
+                    tail.drain(..tail.len() - 512);
+                }
+            }
+        }
         digest.update(&buffer[..count]);
         destination
             .write_all(&buffer[..count])
             .map_err(|_| "download_failed")?;
     }
-    if received != size || prefix != kind.magic() || format!("{:x}", digest.finalize()) != sha256 {
+    if received != size
+        || !kind.valid_container(&prefix, &tail)
+        || format!("{:x}", digest.finalize()) != sha256
+    {
         return Err("checksum_mismatch".into());
     }
     Ok(())
@@ -251,23 +293,33 @@ fn copy_verified(
 
 // Prefer the installed package type so MSI users receive an MSI upgrade too.
 fn installer_kind() -> InstallerKind {
+    if cfg!(target_os = "macos") {
+        return InstallerKind::Dmg;
+    }
     match tauri::utils::platform::bundle_type() {
         Some(tauri::utils::config::BundleType::Msi) => InstallerKind::Msi,
         _ => InstallerKind::Nsis,
     }
+}
+fn supported_platform(os: &str, arch: &str) -> bool {
+    matches!(
+        (os, arch),
+        ("windows", "x86_64") | ("macos", "x86_64" | "aarch64")
+    )
 }
 #[tauri::command]
 pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let installed = env!("CARGO_PKG_VERSION");
         let kind = installer_kind();
-        let supported = cfg!(all(target_os = "windows", target_arch = "x86_64"));
+        let supported = supported_platform(std::env::consts::OS, std::env::consts::ARCH);
         let mut info = AppUpdateInfo {
             installed: installed.into(),
             latest: installed.into(),
             update_available: false,
             supported,
             installer_kind: kind.label().into(),
+            platform: std::env::consts::OS.into(),
         };
         if !supported {
             return Ok(info);
@@ -305,7 +357,7 @@ impl Drop for PartialDownload {
 #[tauri::command]
 pub async fn download_app_update(app: tauri::AppHandle) -> Result<DownloadedUpdate, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        if !supported_platform(std::env::consts::OS, std::env::consts::ARCH) {
             return Err("unsupported_platform".into());
         }
         let state = app.state::<AppUpdateState>();

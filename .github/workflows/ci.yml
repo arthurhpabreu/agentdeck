@@ -5,18 +5,35 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    runs-on: windows-latest
-    timeout-minutes: 40
+    name: Validate ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+            browser: chromium
+          - platform: macos-apple-silicon
+            runner: macos-15
+            browser: webkit
+          - platform: macos-intel
+            runner: macos-15-intel
+            browser: webkit
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -24,24 +41,31 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: npm install --global corepack --force
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: ${{ matrix.platform }}
+      - run: npm install --global corepack --force
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm check:repo
+      - run: corepack pnpm check:version
       - run: corepack pnpm check:i18n
       - run: corepack pnpm build
-      - run: corepack pnpm exec playwright install chromium
-      - run: corepack pnpm test:ui
+      - run: corepack pnpm exec playwright install ${{ matrix.browser }}
+      - name: Full Windows interface suite
+        if: runner.os == 'Windows'
+        run: corepack pnpm test:ui --project=chromium
         env:
           PLAYWRIGHT_CHANNEL: chromium
+      - name: macOS WebKit interface smoke
+        if: runner.os == 'macOS'
+        run: corepack pnpm test:ui --project=webkit --grep @macos
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: ui-failure-traces
+          name: ui-failure-traces-${{ matrix.platform }}
           path: test-results/
           retention-days: 7

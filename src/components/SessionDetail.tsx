@@ -21,6 +21,7 @@ import { stopPtySession, usePtyRuntimeStore } from "../store/ptyRuntimeStore";
 import { effortCopy } from "./session/effortCopy";
 import { TokenEconomyControl } from "./economy/TokenEconomyControl";
 import { SessionRenameControl } from "./session/SessionRenameControl";
+import { getShellCommand } from "../services/platform";
 
 const SPRING = {
   type: "spring" as const,
@@ -72,7 +73,6 @@ function InstallTerminal({ installId, installCmd, onFinished }: InstallTerminalP
   const fitRef = useRef<import("@xterm/addon-fit").FitAddon | null>(null);
   const onFinishedRef = useRef(onFinished);
   onFinishedRef.current = onFinished;
-  const isWindows = navigator.userAgent.toLowerCase().includes("windows");
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -136,8 +136,7 @@ function InstallTerminal({ installId, installCmd, onFinished }: InstallTerminalP
       await invoke("start_pty_session", {
         sessionId: installId,
         workdir: "~",
-        command: isWindows ? "cmd.exe" : "sh",
-        args: isWindows ? ["/d", "/c", installCmd] : ["-c", installCmd],
+        ...getShellCommand(installCmd),
         cols,
         rows,
         env: null,
@@ -161,7 +160,7 @@ function InstallTerminal({ installId, installCmd, onFinished }: InstallTerminalP
       fitRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [installCmd, installId, isWindows]);
+  }, [installCmd, installId]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -171,7 +170,7 @@ function InstallTerminal({ installId, installCmd, onFinished }: InstallTerminalP
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [isWindows]);
+  }, []);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%", background: "#0a0a0c" }} />;
 }

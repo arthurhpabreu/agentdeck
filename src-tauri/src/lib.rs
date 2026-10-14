@@ -16,7 +16,9 @@ mod memory_gemini;
 mod memory_intelligence_runtime;
 mod memory_retrieval;
 pub mod memory_runtime;
+pub mod native_bridge;
 mod notification;
+mod platform;
 mod provider_sessions;
 pub mod provider_usage;
 mod pty;
@@ -44,29 +46,12 @@ use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
-// macOS PATH configuration
-
-/// GUI app launches have a minimal PATH; add Homebrew and other common locations.
-#[cfg(target_os = "macos")]
-fn fix_path_env() {
-    use std::env;
-    let current = env::var("PATH").unwrap_or_default();
-    let extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"];
-    let mut parts: Vec<&str> = current.split(':').collect();
-    for dir in extra.iter().rev() {
-        if !parts.contains(dir) {
-            parts.insert(0, dir);
-        }
-    }
-    env::set_var("PATH", parts.join(":"));
-}
-
 // Application entry point
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "macos")]
-    fix_path_env();
+    platform::initialize_environment();
+    provider_usage::begin_runtime();
 
     let context = tauri::generate_context!();
 
@@ -142,6 +127,12 @@ pub fn run() {
             win.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
+                    #[cfg(target_os = "macos")]
+                    if let Some(window) = close_handle.get_webview_window("popup") {
+                        close_handle.state::<PopupVisible>().set(false);
+                        let _ = window.hide();
+                    }
+                    #[cfg(not(target_os = "macos"))]
                     close_handle.exit(0);
                 }
             });
@@ -257,6 +248,8 @@ pub fn run() {
             runner::start_claude_session,
             runner::stop_claude_session,
             // CLI detection
+            platform::get_runtime_platform,
+            platform::get_default_shell,
             cli_detect::check_cli,
             cli_detect::debug_env,
             // Git diff

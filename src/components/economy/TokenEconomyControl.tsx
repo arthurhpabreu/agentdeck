@@ -7,10 +7,10 @@ import { hasEconomyMeasurements, useTokenEconomy, type TokenEconomyScope } from 
 import { tokenEconomyMessages } from "./tokenEconomyMessages";
 import "./tokenEconomy.css";
 import { workflowCopy } from "../session/workflowCopy";
-
-const INSTALL_COMMAND = /Win/i.test(navigator.platform) ? "winget install rtk-ai.rtk" : "cargo install --git https://github.com/rtk-ai/rtk";
+import { getRuntimePlatform } from "../../services/platform";
 
 export function TokenEconomyControl({ disabled = false, visible = true, provider, workdir, sessionId }: { disabled?: boolean; visible?: boolean; provider?: RunnerType; workdir?: string; sessionId?: string }) {
+  const INSTALL_COMMAND = getRuntimePlatform().os === "windows" ? "winget install rtk-ai.rtk" : "cargo install --git https://github.com/rtk-ai/rtk";
   const { locale, t } = useAppI18n();
   const m = tokenEconomyMessages(locale);
   const w = workflowCopy(locale);

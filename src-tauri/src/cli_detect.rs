@@ -35,7 +35,7 @@ pub fn clear_command_cache() {
 pub fn resolve_command_path(command: &str) -> String {
     // Explicit paths bypass the cache.
     if is_direct_command_path(command) {
-        return command.to_string();
+        return crate::util::expand_path(command);
     }
 
     // Use a cached result when available.
@@ -130,21 +130,20 @@ fn windows_candidates(command: &str) -> Vec<String> {
 
 /// Search the process PATH and return the full path of an executable.
 fn scan_path_env(command: &str) -> Option<String> {
-    let path_var = std::env::var("PATH").ok()?;
-    let sep = if cfg!(windows) { ';' } else { ':' };
-    for dir in path_var.split(sep).filter(|s| !s.is_empty()) {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var).filter(|path| !path.as_os_str().is_empty()) {
         #[cfg(windows)]
         let candidates = windows_candidates(command);
         #[cfg(not(windows))]
         let candidates = vec![command.to_string()];
 
         for candidate in candidates {
-            let full = std::path::PathBuf::from(dir).join(&candidate);
+            let full = dir.join(&candidate);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = std::fs::metadata(&full) {
-                    if meta.permissions().mode() & 0o111 != 0 {
+                    if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
                         return Some(full.to_string_lossy().to_string());
                     }
                 }
@@ -182,23 +181,16 @@ fn shell_which(command: &str) -> Option<String> {
 fn shell_which(command: &str) -> Option<String> {
     use std::time::Duration;
 
-    let script = format!(
-        r#"export TERM=dumb
-[ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv" 2>/dev/null
-[ -f "$HOME/.zprofile" ] && source "$HOME/.zprofile" 2>/dev/null
-[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null
-[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null
-[ -f "$HOME/.bash_profile" ] && source "$HOME/.bash_profile" 2>/dev/null
-which {command} 2>/dev/null | head -1"#
-    );
+    // Let each shell read its own startup files. The command name remains a
+    // positional argument, never interpolated into shell program text.
+    let script = "printf 'AGENTDECK_EXECUTABLE:%s\\n' \"$(command -v -- \"$1\" 2>/dev/null)\"";
 
     let candidates = {
         let mut v = vec![];
-        if let Ok(s) = std::env::var("SHELL") {
-            v.push(s);
-        }
+        v.push(crate::platform::login_shell());
         v.push("/bin/zsh".to_string());
         v.push("/bin/bash".to_string());
+        v.dedup();
         v
     };
 
@@ -207,7 +199,8 @@ which {command} 2>/dev/null | head -1"#
             continue;
         }
         let mut child = match background_command(shell)
-            .args(["-c", &script])
+            .args(["-i", "-l", "-c", script, "agentdeck-cli", command])
+            .env("TERM", "dumb")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .stdin(std::process::Stdio::null())
@@ -240,10 +233,11 @@ which {command} 2>/dev/null | head -1"#
             if let Ok(out) = child.wait_with_output() {
                 let line = String::from_utf8_lossy(&out.stdout)
                     .lines()
-                    .find(|l| !l.trim().is_empty() && l.contains('/'))
-                    .map(|l| l.trim().to_string());
+                    .find_map(|line| line.strip_prefix("AGENTDECK_EXECUTABLE:"))
+                    .filter(|path| path.contains('/'))
+                    .map(str::to_string);
                 if let Some(p) = line {
-                    if std::path::Path::new(&p).exists() {
+                    if std::path::Path::new(&p).is_file() {
                         return Some(p);
                     }
                 }
@@ -276,7 +270,7 @@ fn static_venv_scan(command: &str) -> Option<String> {
 
     #[cfg(not(windows))]
     {
-        let home = std::path::PathBuf::from(std::env::var("HOME").ok()?);
+        let home = crate::util::home_dir()?;
 
         let mut dirs: Vec<std::path::PathBuf> = vec![
             "/usr/local/bin".into(),
@@ -311,6 +305,7 @@ fn static_venv_scan(command: &str) -> Option<String> {
         }
 
         dirs.extend([
+            home.join(".local/bin"),
             home.join(".volta/bin"),
             home.join(".local/share/mise/shims"),
             home.join(".asdf/shims"),
@@ -328,7 +323,7 @@ fn static_venv_scan(command: &str) -> Option<String> {
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = std::fs::metadata(&full) {
-                    if meta.permissions().mode() & 0o111 != 0 {
+                    if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
                         return Some(full.to_string_lossy().to_string());
                     }
                 }

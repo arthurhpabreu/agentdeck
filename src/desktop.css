@@ -63,6 +63,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .ad-window-controls button:hover { background: var(--ci-btn-ghost-hover); }
 .ad-window-controls button.ad-window-close:hover { background: #c42b1c; color: white; }
 .ad-window-error { position: absolute; right: 0; top: 44px; width: 280px; background: var(--ci-surface); padding: 12px; }
+.ad-window-controls.is-macos { align-self: center; gap: 2px; margin-right: 8px; }
+.ad-window-controls.is-macos button { width: 22px; height: 24px; position: relative; color: #352b27; }
+.ad-window-controls.is-macos button::before { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(0,0,0,.12); }
+.ad-window-controls.is-macos button svg { width: 8px; height: 8px; z-index: 1; opacity: 0; }
+.ad-window-controls.is-macos:hover button svg, .ad-window-controls.is-macos button:focus-visible svg { opacity: 1; }
+.ad-window-controls.is-macos button:hover { background: transparent; color: #352b27; }
+.ad-window-controls.is-macos .ad-window-close { order: 0; }
+.ad-window-controls.is-macos .ad-window-close::before { background: #ff5f57; }
+.ad-window-controls.is-macos .ad-window-minimize { order: 1; }
+.ad-window-controls.is-macos .ad-window-minimize::before { background: #febc2e; }
+.ad-window-controls.is-macos .ad-window-expand { order: 2; }
+.ad-window-controls.is-macos .ad-window-expand::before { background: #28c840; }
+.ad-window-controls.is-macos .ad-window-error { right: auto; left: 0; }
 .ad-icon-button { width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--ci-text-muted); display: inline-grid; place-items: center; cursor: pointer; }
 .ad-icon-button:hover { background: var(--ci-btn-ghost-hover); color: var(--ci-text); }
 .ad-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--ci-border); border-radius: 5px; background: transparent; color: var(--ci-text); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; }

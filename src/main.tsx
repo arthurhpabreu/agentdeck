@@ -10,11 +10,12 @@ import { useSettingsStore } from "./store/settingsStore";
 import { startActivityTracking } from "./store/agentActivityStore";
 import { bootstrapPersistState } from "./store/persistStorage";
 import { AppErrorBoundary, StartupError } from "./components/AppErrorBoundary";
+import { initializeRuntimePlatform } from "./services/platform";
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
 async function main() {
-  await bootstrapPersistState();
+  await Promise.all([bootstrapPersistState(), initializeRuntimePlatform()]);
   const locale = resolveEffectiveLocale(useSettingsStore.getState().settings.locale);
   await ensureI18n(locale);
   const stopTracking = await startActivityTracking();

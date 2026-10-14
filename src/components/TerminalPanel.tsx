@@ -4,6 +4,7 @@ import { useAppI18n } from "../i18n";
 import { useSettingsStore, type SplitWidgetTerminalItem } from "../store/settingsStore";
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
+import { getDefaultShell } from "../services/platform";
 import "./terminalPanel.css";
 
 const PtyTerminal = lazy(() => import("./PtyTerminal").then(module => ({ default: module.PtyTerminal })));
@@ -39,7 +40,7 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
   const contextKey = project ? JSON.stringify([project.id, currentSession?.id ?? null, workdir, activeTab?.key]) : "";
   const id = useId();
   const expandButton = useRef<HTMLButtonElement>(null);
-  const isWindows = navigator.userAgent.toLowerCase().includes("windows");
+  const shell = getDefaultShell();
 
   useEffect(() => {
     if (collapsed || !ready || !project || !activeTab) return;
@@ -125,8 +126,8 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
       <div className="ad-terminal-viewport" id={`${id}-viewport`} role="tabpanel" aria-labelledby={activeTab ? `${id}-tab-${encodeURIComponent(activeTab.key)}` : undefined}>
         {!ready && <p className="ad-terminal-empty" role="status">{project ? t("terminalPanel.preparing") : t("terminalPanel.noProject")}</p>}
         {opened.map(terminal => <div key={terminal.key} className="ad-terminal-runtime" hidden={terminal.key !== contextKey || !ready}>
-          <Suspense fallback={<p className="ad-terminal-empty">{t("terminalPanel.preparing")}</p>}><PtyTerminal sessionId={terminal.ptyId} command={isWindows ? "cmd.exe" : "sh"} args={isWindows ? ["/K"] : ["-i"]}
-            workdir={terminal.workdir} active={!collapsed && ready && terminal.key === contextKey} enableWindowsCtrlCv />
+          <Suspense fallback={<p className="ad-terminal-empty">{t("terminalPanel.preparing")}</p>}><PtyTerminal sessionId={terminal.ptyId} command={shell.command} args={shell.args}
+            workdir={terminal.workdir} active={!collapsed && ready && terminal.key === contextKey} enableClipboardShortcuts />
           </Suspense>
         </div>)}
       </div>

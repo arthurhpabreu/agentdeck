@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import type { OperatingSystem } from "../services/platform";
 
-export interface AppUpdateInfo { installed: string; latest: string; updateAvailable: boolean; supported: boolean; installerKind: "exe" | "msi" }
+export interface AppUpdateInfo { installed: string; latest: string; updateAvailable: boolean; supported: boolean; installerKind: "exe" | "msi" | "dmg"; platform: OperatingSystem }
 interface DownloadedUpdate { version: string; filename: string }
 interface AppUpdateRuntime { result?: AppUpdateInfo; checking: boolean; downloading: boolean; installing: boolean; downloaded?: DownloadedUpdate; installerOpened: boolean; error?: string }
 export const useAppUpdateStore = create<AppUpdateRuntime>(() => ({ checking: false, downloading: false, installing: false, installerOpened: false }));

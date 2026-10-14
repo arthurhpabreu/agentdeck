@@ -15,6 +15,7 @@ import {
 import { useAgentActivityStore } from "../store/agentActivityStore";
 import { getAgentAdapter } from "../services/agentAdapters";
 import { stopPtySession } from "../store/ptyRuntimeStore";
+import { getRuntimePlatform } from "../services/platform";
 
 export function useSessionRunnerController({
   sessionId,
@@ -23,7 +24,7 @@ export function useSessionRunnerController({
   sessionId: string;
   isOpen: boolean;
 }) {
-  const isWindows = navigator.userAgent.toLowerCase().includes("windows");
+  const isWindows = getRuntimePlatform().os === "windows";
   const session = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId));
   const worktreeReady = useSessionStore((s) => s.worktreeReadyIds.has(sessionId));
   const { updateSession } = useSessionStore();

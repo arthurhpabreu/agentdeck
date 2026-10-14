@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if let Some(code) = agentdeck_lib::native_bridge::stdio_entry() {
+        std::process::exit(code);
+    }
     if let Some(code) = agentdeck_lib::memory_runtime::stdio_entry() {
         std::process::exit(code);
     }
