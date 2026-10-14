@@ -19,7 +19,7 @@ Download the app from [Releases](https://github.com/arthurhpabreu/agentdeck/rele
 | Platform | Download | Installation |
 | --- | --- | --- |
 | Windows 10/11 x64 | `.exe` or `.msi` | Run the installer; `.exe` provides the usual interactive setup. |
-| macOS 11+ (Apple Silicon and Intel) | `_universal.dmg` | Open the image and drag Agentdeck into Applications. |
+| macOS 11+ (Apple Silicon and Intel), Safari/WebKit 16.4+ | `_universal.dmg` | Open the image and drag Agentdeck into Applications. |
 
 Each release includes SHA-256 checksums and the license. Windows installers are unsigned. The macOS app is ad-hoc signed and is not Apple-notarized; first launch can require **System Settings → Privacy & Security → Open Anyway**. See the [setup guide](docs/setup.md#install-on-macos) and [Apple's instructions](https://support.apple.com/en-us/102445).
 

@@ -5,6 +5,7 @@ import { useSettingsStore, type SplitWidgetTerminalItem } from "../store/setting
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { getDefaultShell } from "../services/platform";
+import { createUuid } from "../services/ids";
 import "./terminalPanel.css";
 
 const PtyTerminal = lazy(() => import("./PtyTerminal").then(module => ({ default: module.PtyTerminal })));
@@ -72,7 +73,7 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
     const target = settings.splitWidgetCanvas.items.find((item): item is SplitWidgetTerminalItem => item.type === "terminal");
     if (!target) return;
     const nextNumber = Math.max(0, ...tabs.map(tab => Number(tab.title.match(/^Terminal\s+(\d+)$/)?.[1] ?? 0))) + 1;
-    const unique = crypto.randomUUID();
+    const unique = createUuid();
     const tab = { id: `terminal-tab-${unique}`, title: `Terminal ${nextNumber}`, ptySessionKey: `terminal-pty-${unique}` };
     patchSettings({ splitWidgetCanvas: { ...settings.splitWidgetCanvas, items: settings.splitWidgetCanvas.items.map(item =>
       item.id === target.id ? { ...target, tabs: [...target.tabs, tab], activeTabId: tab.id } : item) } });

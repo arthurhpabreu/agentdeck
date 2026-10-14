@@ -1,4 +1,5 @@
 import { executionOptions } from "../services/agentExecution";
+import { createUuid } from "../services/ids";
 import { usePtyRuntimeStore } from "./ptyRuntimeStore";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
@@ -370,7 +371,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   let releaseLaunch!: () => void;
   const launching = new Promise<void>(resolve => { releaseLaunch = resolve; });
   launches.set(sessionId, launching);
-  const turnId = crypto.randomUUID();
+  const turnId = createUuid();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments };
   useChatStore.getState().patch(sessionId, { busy: true, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
   useSessionStore.getState().updateSession(sessionId, { status: "running", currentTask: prompt.trim() });
@@ -408,7 +409,7 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
     useChatStore.getState().patch(sessionId, { inputError: oversizedInputError(budget.contextWindow), draft: prompt });
     return false;
   }
-  const messageId=crypto.randomUUID();
+  const messageId=createUuid();
   const message:ChatMessage={id:`${messageId}:user`,turnId:old.turnId,role:"user",text:prompt.trim(),attachments,at:Date.now(),status:"sending"};
   useChatStore.getState().patch(sessionId,{draft:"",inputError:undefined,messages:[...old.messages,message]});
   try {

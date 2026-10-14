@@ -4,6 +4,7 @@ import { chatHistoryReady, emptyThread, persistChatHistory, useChatStore, type C
 import { usePtyRuntimeStore } from "../store/ptyRuntimeStore";
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { readCompleteChatHistory } from "./chatHistory";
+import { createUuid } from "./ids";
 
 // Native attachments are limited to 20 MiB. Large transcripts use lossless byte
 // parts plus a manifest, instead of omitting old turns or flooding the next prompt.
@@ -104,7 +105,7 @@ export async function createChatContinuation(sessionId: string, locale = getI18n
     // The original may have been removed or started while the file was saved.
     if (!useSessionStore.getState().sessions.some(value => value.id === sessionId)) throw new Error(c.missing);
     if (useChatStore.getState().threads[sessionId]?.busy || usePtyRuntimeStore.getState().sessions[sessionId]) throw new Error(c.running);
-    const id = crypto.randomUUID();
+    const id = createUuid();
     useSessionStore.getState().addSession(id, session.workspaceId, session.workdir, `${session.name} · ${c.continuation}`, { ...session.runner });
     useSessionStore.getState().updateSession(id, { runner: { ...session.runner }, worktreePath: session.worktreePath, branchName: session.branchName, baseBranch: session.baseBranch, providerSessionId: undefined });
     useSessionStore.getState().markWorktreeReady(id);

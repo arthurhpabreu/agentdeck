@@ -383,16 +383,19 @@ fn create_popup(app: &tauri::AppHandle) {
         .map(|b| (b.width, b.height))
         .unwrap_or((700.0, 600.0));
 
-    let win = WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("index.html".into()))
-        .title("")
-        .inner_size(default_w, default_h)
-        .decorations(false)
-        .transparent(!cfg!(target_os = "macos"))
-        .always_on_top(false)
-        .shadow(false)
-        .resizable(true)
-        .skip_taskbar(true)
-        .visible(false)
+    let window_builder =
+        WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("index.html".into()))
+            .title("")
+            .inner_size(default_w, default_h)
+            .decorations(false)
+            .always_on_top(false)
+            .shadow(false)
+            .resizable(true)
+            .skip_taskbar(true)
+            .visible(false);
+    #[cfg(not(target_os = "macos"))]
+    let window_builder = window_builder.transparent(true);
+    let win = window_builder
         .build()
         .expect("Failed to create popup window");
 

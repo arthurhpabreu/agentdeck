@@ -1,9 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /** Exercise native macOS facts independently of the browser used by CI. */
-async function setup(page: Page, { locale = "en-US", native = true, update = false } = {}) {
-  await page.addInitScript(({ locale, native, update }) => {
+async function setup(page: Page, { locale = "en-US", native = true, update = false, legacyCrypto = false } = {}) {
+  await page.addInitScript(({ locale, native, update, legacyCrypto }) => {
     const w = window as any;
+    if (legacyCrypto) Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
     Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
       readText: async () => "Olá macOS 👩‍💻", writeText: async (text: string) => { w.__copiedText = text; },
@@ -45,13 +46,15 @@ async function setup(page: Page, { locale = "en-US", native = true, update = fal
         if (command === "get_knowledge_config") return { sourcePath: "", mode: "markdown" };
         if (command === "memory_status") return { enabled: true, captureEnabled: true, budgetTokens: 800, recordCount: 0, storage: "local", retrieval: "fts5", estimatedTokenMethod: "bytes/4" };
         if (command === "get_token_economy_status") return { enabled: true, available: false, scope: "agentdeck", reason: "not-installed", estimationMethod: "bytes/4" };
+        if (command === "save_chat_attachment") return { name: args.name, path: "/Users/test/Library/Application Support/com.tuxao.agentdeck/chat-attachments/" + args.name, mimeType: args.mimeType, size: Math.floor(args.dataBase64.length * 3 / 4) };
+        if (command === "steer_chat_turn") return "accepted";
         if (command === "start_pty_session") { w.__emit("pty-started", { session_id: args.sessionId, pid: 9876, command: args.command, workdir: args.workdir }); return; }
         if (command === "start_chat_turn") {
           const emit = (event: unknown) => w.__emit("chat-event", { sessionId: args.request.sessionId, turnId: args.request.turnId, ...event as object });
           emit({ kind: "status", status: "started", pid: 8765 });
           emit({ kind: "session", providerSessionId: "native-mac-session" });
           emit({ kind: "text", itemId: "answer", text: "macOS conversation resumed.", delta: true });
-          emit({ kind: "done", status: "completed" });
+          if (!w.__deferCompletion) emit({ kind: "done", status: "completed" });
           return;
         }
         return null;
@@ -61,7 +64,7 @@ async function setup(page: Page, { locale = "en-US", native = true, update = fal
     localStorage.setItem("agentdeck-settings", JSON.stringify({ state: { settings: { locale, theme: "dark", splitWidgetPanelCollapsed: true, runner: { type: "codex" } } }, version: 0 }));
     localStorage.setItem("agentdeck-workspaces", JSON.stringify({ state: { workspaces: [{ id: "project", name: "Mac project", path, color: "blue", createdAt: 1, order: 0 }], activeWorkspaceId: "project" }, version: 0 }));
     localStorage.setItem("agentdeck-sessions", JSON.stringify({ state: { sessions: [{ id: "mac-session", name: "Mac conversation", workspaceId: "project", workdir: path, status: "idle", currentTask: "", createdAt: 1, diffFiles: [], output: [], runner: { type: "codex" } }], activeSessionId: "mac-session" }, version: 0 }));
-  }, { locale, native, update });
+  }, { locale, native, update, legacyCrypto });
   await page.goto("/");
   await expect(page.locator(".ad-quick-switch-trigger")).toBeVisible();
 }
@@ -164,4 +167,45 @@ test("Windows browser preview falls back to Ctrl and cmd when native platform is
   const launch = (await calls(page, "start_pty_session"))[0].args;
   expect(launch.command).toBe("cmd.exe");
   expect(launch.args).toEqual(["/K"]);
+});
+
+test("@macos missing randomUUID preserves terminal tabs, active input and chat continuation", async ({ page }) => {
+  test.setTimeout(60_000);
+  await setup(page, { legacyCrypto: true });
+  expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+  await page.getByRole("button", { name: "Expand terminal", exact: true }).click();
+  await page.getByRole("button", { name: "Create terminal tab", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Terminal 2", exact: true })).toBeVisible();
+  const terminalId = await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-settings")!).state.settings.splitWidgetCanvas.items.find((item: any) => item.type === "terminal").tabs.find((tab: any) => tab.title === "Terminal 2").id.slice("terminal-tab-".length));
+  await page.getByRole("button", { name: "Collapse terminal", exact: true }).click();
+  await page.getByText("Mac conversation", { exact: true }).first().click();
+  const open = page.getByTitle("Open conversation");
+  if (await open.count()) await open.first().click();
+  await page.evaluate(() => { (window as any).__deferCompletion = true; });
+  const input = page.locator(".ad-chat-composer textarea:visible");
+  await input.fill("Start the macOS review");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByText("macOS conversation resumed.", { exact: true })).toBeVisible();
+  await input.fill("Include the existing architectural decision");
+  await page.getByRole("button", { name: "Send additional input", exact: true }).click();
+  await expect(page.getByText("Additional input delivered", { exact: true })).toBeVisible();
+  const turn = (await calls(page, "start_chat_turn"))[0].args.request;
+  const supplement = (await calls(page, "steer_chat_turn"))[0].args;
+  expect(supplement.request.turnId).toBe(turn.turnId);
+  await page.evaluate(turnId => { (window as any).__emit("chat-event", { sessionId: "mac-session", turnId, kind: "done", status: "completed" }); }, turn.turnId);
+  const continuation = page.getByRole("button", { name: "New chat with context", exact: true }).first();
+  await expect(continuation).toBeEnabled();
+  await continuation.click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.activeSessionId)).not.toBe("mac-session");
+  const continuationId = await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.activeSessionId);
+  const ids = [terminalId, turn.turnId, supplement.messageId, continuationId];
+  for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  expect(new Set(ids).size).toBe(4);
+  await expect(input).toHaveValue(/Include the existing architectural decision/);
+  expect(await calls(page, "start_chat_turn")).toHaveLength(1);
+  expect(await calls(page, "save_chat_attachment")).toHaveLength(1);
+  const savedArchive = (await calls(page, "save_chat_attachment"))[0].args;
+  const history = JSON.parse(Buffer.from(savedArchive.dataBase64, "base64").toString("utf8"));
+  expect(history.session.workdir).toBe("/Users/test/Projects/Agentdeck");
+  expect(history.messages.some((message: any) => message.text === "Include the existing architectural decision")).toBe(true);
 });

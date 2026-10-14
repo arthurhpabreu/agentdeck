@@ -105,7 +105,7 @@ pub fn run() {
             let (popup_w, popup_h) = window::load_bounds(app.handle())
                 .map(|b| (b.width.max(1000.0), b.height.max(680.0)))
                 .unwrap_or((1360.0, 900.0));
-            let win = WebviewWindowBuilder::new(
+            let window_builder = WebviewWindowBuilder::new(
                 app.handle(),
                 "popup",
                 WebviewUrl::App("index.html".into()),
@@ -113,15 +113,17 @@ pub fn run() {
             .title("Agentdeck")
             .inner_size(popup_w, popup_h)
             .decorations(false)
-            .transparent(false)
             .always_on_top(false)
             .shadow(true)
             .min_inner_size(940.0, 640.0)
             .resizable(true)
             .skip_taskbar(false)
-            .visible(false)
-            .build()
-            .expect("Failed to pre-create popup window");
+            .visible(false);
+            #[cfg(not(target_os = "macos"))]
+            let window_builder = window_builder.transparent(false);
+            let win = window_builder
+                .build()
+                .expect("Failed to pre-create popup window");
 
             let close_handle = app.handle().clone();
             win.on_window_event(move |event| {

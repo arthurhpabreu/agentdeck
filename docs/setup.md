@@ -2,7 +2,9 @@
 
 ## Requirements
 
-Agent Deck supports Windows 10/11 x64 and macOS 11+ on Apple Silicon and Intel. Both platforms share the same source, app identity and version. macOS downloads use a universal binary. Linux desktop operation is outside the validated platform set.
+Agent Deck supports Windows 10/11 x64 and macOS 11+ on Apple Silicon and Intel with Safari/WebKit 16.4 or newer. Install the available macOS and Safari updates before running the app; its WebView uses the system WebKit. Both platforms share the same source, app identity and version. macOS downloads use a universal binary. Linux desktop operation is outside the validated platform set.
+
+The WebKit minimum follows the [Tailwind 4 browser baseline](https://tailwindcss.com/docs/compatibility). [Apple provides Safari 16.4 for Big Sur, Monterey and Ventura](https://developer.apple.com/documentation/safari-release-notes/safari-16_4-release-notes), so the native deployment target can remain macOS 11.0. Native CI and packaged startup are exercised on macOS 15; the minimum system version is verified in bundle metadata and both executable architectures.
 
 Install Git, Node.js 22.12+ with Corepack and Rust stable through rustup. The project pins pnpm 9.15.4. On Windows, also install Visual Studio Build Tools with **Desktop development with C++**, a Windows SDK and Microsoft Edge WebView2 Runtime. On macOS, install Xcode Command Line Tools with `xcode-select --install`. Reopen the terminal after installation so `cargo` and Node are on PATH.
 
