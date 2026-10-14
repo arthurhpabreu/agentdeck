@@ -69,6 +69,8 @@ async function setup(page: Page, { locale = "en-US", native = true, update = fal
 const calls = (page: Page, command: string) => page.evaluate(command => (window as any).__calls.filter((call: any) => call.command === command), command);
 
 test("@macos native platform drives Command navigation, login shell and terminal clipboard", async ({ page }) => {
+  // Intel WebKit's first xterm mount can take longer while Vite compiles the lazy module.
+  test.setTimeout(60_000);
   await setup(page);
   await expect(page.locator(".ad-quick-switch-trigger kbd")).toHaveText("⌘ K");
   await expect(page.locator(".ad-quick-switch-trigger")).toHaveAttribute("aria-keyshortcuts", "Meta+K");
@@ -78,7 +80,7 @@ test("@macos native platform drives Command navigation, login shell and terminal
   await expect(dialog.getByRole("combobox")).toBeFocused();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Expand terminal", exact: true }).click();
-  await expect.poll(async () => (await calls(page, "start_pty_session")).length).toBe(1);
+  await expect.poll(async () => (await calls(page, "start_pty_session")).length, { timeout: 15_000 }).toBe(1);
   const launch = (await calls(page, "start_pty_session"))[0].args;
   expect(launch.command).toBe("/opt/homebrew/bin/fish");
   expect(launch.args).toEqual(["-l", "-i"]);

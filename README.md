@@ -2,7 +2,7 @@
 
 A desktop workspace for running coding agents, understanding their tasks and exploring project knowledge in one place.
 
-Agent Deck brings official Codex, Claude Code and Gemini CLIs into a Windows-first Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
+Agent Deck brings official Codex, Claude Code and Gemini CLIs into a shared Windows and macOS Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
 
 Downloads and version-specific changes are available in [Releases](https://github.com/arthurhpabreu/agentdeck/releases).
 
@@ -10,13 +10,20 @@ Downloads and version-specific changes are available in [Releases](https://githu
 
 - **Expandable knowledge graph:** folder clusters, note search, folder filters and one- to three-hop connections. Pan, zoom, fit and bound visible nodes to keep dense graphs readable.
 - **Agent flow map:** floating agent/task cards organized by session and delegation, animated connectors, a detailed inspector and a task board. Pause animations or use system reduced motion.
-- **Reproducible checkout:** pinned lockfiles, English documentation, hygiene checks and Windows CI. Personal state, credentials, historical transcripts and build output stay outside version control.
+- **Reproducible checkout:** pinned lockfiles, one version across platforms, hygiene checks and native Windows/Apple Silicon/Intel CI. Personal state, credentials, historical transcripts and build output stay outside version control.
 
 ## Get started
 
-For the packaged Windows app, download the `.exe` or `.msi` from [Releases](https://github.com/arthurhpabreu/agentdeck/releases). Both install the same app; use the `.exe` for the usual interactive setup. Release assets include SHA-256 checksums. Current installers are unsigned and publicly available.
+Download the app from [Releases](https://github.com/arthurhpabreu/agentdeck/releases):
 
-To build from source, install Git, Node.js 22.12+, Rust stable, Visual Studio C++ build tools and WebView2. See the [setup guide](docs/setup.md) for prerequisites and troubleshooting.
+| Platform | Download | Installation |
+| --- | --- | --- |
+| Windows 10/11 x64 | `.exe` or `.msi` | Run the installer; `.exe` provides the usual interactive setup. |
+| macOS 11+ (Apple Silicon and Intel) | `_universal.dmg` | Open the image and drag Agentdeck into Applications. |
+
+Each release includes SHA-256 checksums and the license. Windows installers are unsigned. The macOS app is ad-hoc signed and is not Apple-notarized; first launch can require **System Settings → Privacy & Security → Open Anyway**. See the [setup guide](docs/setup.md#install-on-macos) and [Apple's instructions](https://support.apple.com/en-us/102445).
+
+To build from source, install Git, Node.js 22.12+ and Rust stable. Windows also requires Visual Studio C++ build tools and WebView2; macOS requires Xcode Command Line Tools. See the [setup guide](docs/setup.md) for prerequisites and troubleshooting.
 
 ```sh
 git clone https://github.com/arthurhpabreu/agentdeck.git
@@ -58,13 +65,13 @@ corepack pnpm dev:worktree  # Isolated desktop development
 corepack pnpm build
 corepack pnpm check:i18n
 corepack pnpm check:repo
-corepack pnpm test:ui
+corepack pnpm test:ui --project=chromium
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
 RTK is optional for output economy; development and CI do not require it. Browser tests mock native commands and never run account tasks. [Testing details](docs/testing.md).
 
-Build Windows NSIS/MSI installers with `powershell -NoProfile -File scripts/build-windows.ps1`. Artifacts go to `src-tauri/target/release/bundle/` and are not committed. Tag releases create a draft for review.
+Build installers natively with `corepack pnpm build:windows` or `corepack pnpm build:macos`. The Mac command builds one universal application and DMG for both architectures. Artifacts stay under `src-tauri/target/` and are not committed. Tag releases validate both platforms before creating one complete draft.
 
 ## Data and permissions
 

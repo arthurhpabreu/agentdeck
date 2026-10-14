@@ -1293,6 +1293,25 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
     }
 }
 
+const MAX_HOOK_BYTES: u64 = 1024 * 1024;
+const HOOK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn read_hook_payload(reader: impl Read) -> Result<Value, &'static str> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_HOOK_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "read_failed")?;
+    if bytes.len() as u64 > MAX_HOOK_BYTES {
+        return Err("payload_too_large");
+    }
+    let payload: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid_json")?;
+    if !payload.is_object() {
+        return Err("invalid_payload");
+    }
+    Ok(payload)
+}
+
 #[cfg(unix)]
 fn start_hook_socket_server(app: tauri::AppHandle, source: HookSource) {
     use std::os::unix::net::UnixListener;
@@ -1331,17 +1350,13 @@ fn start_hook_socket_server(app: tauri::AppHandle, source: HookSource) {
                 }
             };
 
-            let mut reader = std::io::BufReader::new(stream);
-            let mut payload = String::new();
-            if let Err(e) = reader.read_to_string(&mut payload) {
-                eprintln!("[hooks:{}] read failed: {e}", source.label());
+            if stream.set_read_timeout(Some(HOOK_READ_TIMEOUT)).is_err() {
                 continue;
             }
-
-            let json: Value = match serde_json::from_str(&payload) {
+            let json = match read_hook_payload(stream) {
                 Ok(json) => json,
                 Err(e) => {
-                    eprintln!("[hooks:{}] JSON parse failed: {e}", source.label());
+                    eprintln!("[hooks:{}] payload rejected: {e}", source.label());
                     continue;
                 }
             };
@@ -1376,22 +1391,13 @@ fn start_hook_socket_server(app: tauri::AppHandle, source: HookSource) {
                 }
             };
 
-            let mut reader = std::io::BufReader::new(stream);
-            let mut payload = String::new();
-            if let Err(e) = reader.read_to_string(&mut payload) {
-                eprintln!("[hooks:{}] read failed: {e}", source.label());
+            if stream.set_read_timeout(Some(HOOK_READ_TIMEOUT)).is_err() {
                 continue;
             }
-
-            let payload = payload.trim();
-            if payload.is_empty() {
-                continue;
-            }
-
-            let json: Value = match serde_json::from_str(payload) {
+            let json = match read_hook_payload(stream) {
                 Ok(json) => json,
                 Err(e) => {
-                    eprintln!("[hooks:{}] JSON parse failed: {e}", source.label());
+                    eprintln!("[hooks:{}] payload rejected: {e}", source.label());
                     continue;
                 }
             };
@@ -1430,6 +1436,68 @@ pub fn send_notification(
 #[cfg(test)]
 mod namespace_tests {
     use super::*;
+
+    #[test]
+    fn hook_receiver_bounds_payloads_and_keeps_unicode() {
+        let payload =
+            serde_json::json!({"hook_event_name":"Stop", "cwd":"/Users/O'Brien/Projeto café"});
+        assert_eq!(
+            read_hook_payload(std::io::Cursor::new(payload.to_string())).unwrap(),
+            payload
+        );
+        assert_eq!(
+            read_hook_payload(std::io::Cursor::new(vec![
+                b' ';
+                MAX_HOOK_BYTES as usize + 1
+            ])),
+            Err("payload_too_large")
+        );
+        assert_eq!(
+            read_hook_payload(std::io::Cursor::new("[]")),
+            Err("invalid_payload")
+        );
+        assert_eq!(
+            read_hook_payload(std::io::Cursor::new("{")),
+            Err("invalid_json")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incomplete_unix_callback_does_not_block_the_next_valid_payload() {
+        use std::{
+            io::Write,
+            os::unix::net::{UnixListener, UnixStream},
+            time::Duration,
+        };
+        let name = uuid::Uuid::new_v4().to_string();
+        let path = std::env::temp_dir().join(format!("ah-{}.sock", &name[..8]));
+        let listener = UnixListener::bind(&path).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            first
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            assert_eq!(read_hook_payload(first), Err("read_failed"));
+            let (second, _) = listener.accept().unwrap();
+            second
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let _ = tx.send(read_hook_payload(second).unwrap());
+        });
+        let mut incomplete = UnixStream::connect(&path).unwrap();
+        incomplete.write_all(b"{").unwrap(); // Deliberately retain this open connection.
+        let mut valid = UnixStream::connect(&path).unwrap();
+        valid.write_all(br#"{"hook_event_name":"Stop"}"#).unwrap();
+        drop(valid);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap()["hook_event_name"],
+            "Stop"
+        );
+        drop(incomplete);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn completion_hooks_exclude_intermediate_child_failed_and_compaction_events() {

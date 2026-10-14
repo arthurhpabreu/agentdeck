@@ -12,23 +12,25 @@ Build runs TypeScript checking before bundling. Translation checks validate EN/P
 
 ## Browser tests
 
-Playwright defaults to installed Microsoft Edge locally and Chromium in CI. Tests run the real React application against mocked native commands/events and never start coding agent tasks.
+Playwright provides Chromium and WebKit projects. Chromium defaults to installed Microsoft Edge locally and the Playwright browser in CI. Tests run the real React application against mocked native commands/events and never start coding agent tasks.
 
 To use Chromium locally:
 
 ```powershell
 corepack pnpm exec playwright install chromium
 $env:PLAYWRIGHT_CHANNEL = 'chromium'
-corepack pnpm test:ui
+corepack pnpm test:ui --project=chromium
 ```
 
-Focused checks: `corepack pnpm test:ui tests/e2e/knowledge.spec.ts tests/e2e/agents.spec.ts`.
+Focused checks: `corepack pnpm test:ui --project=chromium tests/e2e/knowledge.spec.ts tests/e2e/agents.spec.ts`.
+
+For the macOS interface smoke, install WebKit and run `corepack pnpm test:ui --project=webkit --grep @macos`. `platform.spec.ts` covers native OS precedence over browser user-agent, POSIX resume commands, native login-shell arguments, Command clipboard shortcuts with Ctrl+C interruption, Mac window controls and manual DMG updates in all three languages. Browser checks do not substitute for native process or packaged-app checks.
 
 Coverage includes a synthetic 1,600-note vault, complete-index lookup, folder drilldown, connection depth, zoom, modal focus restoration, agent/task selection, filters, active versus historical state and reduced motion. Other suites cover chat, permissions, memory, editor/workspace behavior, provider usage and economy. Telegram notification tests mock the native API to exercise private pairing, protected token input, explicit test sends, notification preferences, disconnect and recoverable errors without contacting Telegram or using real bot credentials. Traces and failure screenshots stay in ignored directories.
 
 ## Native tests
 
-The Rust suite covers protocol parsing, provider boundaries, graph completeness, knowledge indexing, scoped memory, persistence and a real Windows PTY. Tests marked `ignored` require installed tools, accounts or explicit network/install diagnostics; do not enable all ignored tests indiscriminately.
+The Rust suite covers protocol parsing, provider boundaries, graph completeness, knowledge indexing, scoped memory, persistence and real native PTYs. Target-specific tests cover Unix socket hooks/statusline, UTF-8 shell output, Cocoa monitor coordinate conversion, Windows compatibility and verified DMG trailers/checksums. Tests marked `ignored` require installed tools, accounts or explicit network/install diagnostics; do not enable all ignored tests indiscriminately.
 
 Optional `scripts/check-*.cjs` and `check-cli-controls.mjs` include installed-provider diagnostics. Read each script before use; some validate live authenticated features. They are not fresh-checkout prerequisites and are not invoked in CI.
 
@@ -40,6 +42,8 @@ Codex hook or claim that a live model invoked one.
 
 ## CI and releases
 
-Windows CI installs pinned pnpm, Node.js 22 and Rust stable, and runs frontend, translation, repository, browser and Rust checks without provider credentials.
+CI installs pinned pnpm, Node.js 22 and Rust stable on Windows x64, macOS Apple Silicon (`macos-15`) and macOS Intel (`macos-15-intel`). Every target runs frontend, translation, repository/version and native Rust/fmt checks. Windows runs the full Chromium suite; both Macs run the tagged WebKit platform smoke without provider credentials.
 
-A `v*` tag builds Windows installers and creates a **draft** GitHub release. Review artifacts, checksums and metadata before publishing it. Do not tag unvalidated commits just to test CI.
+Use the **Desktop release** workflow's manual dispatch for a packaging preview from a branch. It runs the complete validation matrix, builds Windows installers and a universal Mac application/DMG, validates architectures, deployment targets, metadata, bundled license and signing, then launches the same packaged application on Apple Silicon and Intel. Smoke reports/logs and available desktop screenshots are retained as workflow artifacts.
+
+A validated `v*` tag produces one **draft** GitHub release after both platform builds and packaged Mac smoke jobs succeed. The final assembly requires all four installers/application packages, LICENSE and a shared checksum manifest. Review those artifacts before publishing. Do not tag unvalidated commits just to test CI.

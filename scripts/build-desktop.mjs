@@ -27,4 +27,5 @@ if (hostPlatform === "macos") {
   }
 }
 console.log(`Building Agentdeck ${version} for ${hostPlatform}${hostPlatform === "macos" ? " (Apple Silicon + Intel)" : " (x64)"}.`);
+if (hostPlatform === "macos") run("rustup", ["target", "add", "aarch64-apple-darwin", "x86_64-apple-darwin"], { env });
 run(process.execPath, [nodeBin("@tauri-apps/cli", "tauri"), ...args], { env });

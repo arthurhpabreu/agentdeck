@@ -40,7 +40,6 @@ time = { version = "0.3", features = ["parsing"] }
 httpdate = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc = "0.2"
 cocoa = "0.26"

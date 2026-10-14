@@ -387,7 +387,7 @@ fn create_popup(app: &tauri::AppHandle) {
         .title("")
         .inner_size(default_w, default_h)
         .decorations(false)
-        .transparent(true)
+        .transparent(!cfg!(target_os = "macos"))
         .always_on_top(false)
         .shadow(false)
         .resizable(true)

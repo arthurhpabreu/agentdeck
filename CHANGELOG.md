@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0 — 2026-10-14
+
+### Added
+
+- Universal macOS application and DMG for Apple Silicon and Intel, targeting macOS 11+ and published alongside Windows installers in one release.
+- Native platform and shell adapters, Command shortcuts, Mac window controls and multi-monitor positioning.
+- macOS CLI environment initialization and shared executable-aware PATH for native processes.
+- Native Unix hook/statusline helpers without a Python dependency; Claude Keychain-aware usage fallback.
+- Verified DMG updates with localized manual-install instructions and active-task guards.
+- Native CI for Windows, Apple Silicon and Intel; packaged universal-app launch checks on both Mac architectures.
+
+### Changed
+
+- Shared Tauri configuration now uses platform overlays and target-specific Rust features.
+- Portable Node build/dev wrappers replace shell-dependent command invocation.
+- SemVer synchronization, tag validation and aggregate release checksums ensure one consistent version across platforms.
+
 ## 0.6.8 — 2026-10-14
 
 ### Added

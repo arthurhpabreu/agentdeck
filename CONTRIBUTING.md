@@ -7,12 +7,14 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm build
 corepack pnpm check:i18n
 corepack pnpm check:repo
-corepack pnpm test:ui
+corepack pnpm test:ui --project=chromium
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 ```
 
 Use Node.js 22.12+ and the pnpm version pinned in `package.json`. Commit both lockfiles when dependencies change. Desktop development also needs Rust and Tauri's platform prerequisites.
+
+Keep OS behavior behind the shared platform adapters and Tauri overlays. Windows and macOS share one SemVer: use `corepack pnpm version:set <version>` and `corepack pnpm check:version` instead of changing individual manifests. Test native changes on both macOS architectures in CI; use a manual Desktop release preview before creating a release tag.
 
 UI tests mock the native Tauri boundary and never submit model tasks. On a machine without Edge, set `PLAYWRIGHT_CHANNEL=chromium` and install Chromium through Playwright first. See [testing](docs/testing.md).
 

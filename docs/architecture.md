@@ -35,3 +35,26 @@ Native subagent states are labeled as recorded evidence. Active connector animat
 Native commands own filesystem access, process spawning and credential use. Projects, histories, knowledge paths and memory belong to the local machine. Provider authentication stays with the official CLI. UI fixtures contain synthetic paths and tasks.
 
 Keep persisted app identity stable when changing publisher metadata. Optional worktree development deliberately uses an isolated identifier.
+
+## Platform adapters and packaging
+
+The React workspace and Rust domain logic are shared across platforms. OS differences live at explicit boundaries:
+
+| Boundary | Implementation |
+| --- | --- |
+| Runtime OS, architecture, shell and process PATH | `src-tauri/src/platform.rs`; typed frontend adapter `src/services/platform.ts`. Native facts load before the first UI render. |
+| Window lifecycle and monitor coordinates | `src-tauri/src/window.rs`, target-gated Cocoa/Windows APIs and platform-aware window controls. macOS close hides the window; quitting ends the app. |
+| CLI processes and terminals | Shared chat/runner/PTY services with native shell arguments and executable-aware PATH. macOS uses a login shell; Command shortcuts preserve terminal Ctrl+C. |
+| Provider hook/statusline transport | `native_bridge.rs` provides bounded stdio helpers and Unix sockets on macOS; existing Windows bridges remain platform-gated. No Python runtime is required on the Mac. |
+| Installer discovery and verification | One update service selects EXE/MSI on Windows or universal DMG on macOS, checks SHA-256 and package structure, and opens the OS installer. DMG installation is manual. |
+| Build configuration | `tauri.conf.json` carries shared identity/version; `tauri.windows.conf.json` and `tauri.macos.conf.json` contain target-specific packaging settings. macOS-only Rust features are target dependencies. |
+
+The application identifier is stable across releases. Preferences and histories are per-user, outside the repository; CLI credentials remain with the official provider. Custom shell startup scripts are not sourced during desktop environment discovery.
+
+## Versioning and releases
+
+Windows and macOS ship under one SemVer and one `v<version>` tag. `package.json` is the version source, synchronized with the Tauri configuration and Rust manifest/lockfile by `corepack pnpm version:set <version>`. `check:version` and tag checks reject mismatches. A platform feature advances the minor version; corrective changes advance the patch version.
+
+CI tests native Windows x64, macOS Apple Silicon and macOS Intel. Release previews can run from a branch without creating a release. Tagged builds gate packaging on those checks, build the Mac app for both architectures, verify signatures/metadata/deployment targets, and run the same packaged universal GUI on both Mac architectures. Only successful platform jobs feed a single draft with Windows installers, universal DMG/application archive, LICENSE and one aggregate SHA-256 manifest. Build artifacts are never source commits.
+
+The release supports ad-hoc signing when Apple credentials are absent. Developer ID distribution requires a complete signing/notarization configuration; the verifier then also checks the notarization ticket and Gatekeeper assessment. An ad-hoc build is explicitly reported as unnotarized.
