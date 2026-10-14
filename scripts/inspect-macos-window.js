@@ -3,6 +3,10 @@
 function run(inputArguments) {
   ObjC.import("AppKit");
   ObjC.import("CoreGraphics");
+  // The SDK metadata returns CFArrayRef as an opaque Ref in JXA. CFArray
+  // is toll-free bridged with NSArray; declare the public function's object
+  // return explicitly so deepUnwrap receives the actual native collection.
+  ObjC.bindFunction("CGWindowListCopyWindowInfo", ["id", ["unsigned int", "unsigned int"]]);
   const ownerPid = Number(inputArguments[0]);
   if (!Number.isInteger(ownerPid) || ownerPid <= 0) throw new Error("Expected the owned application PID.");
   const nativeScreens = $.NSScreen.screens;
@@ -22,6 +26,7 @@ function run(inputArguments) {
   }
   // 1 = kCGWindowListOptionOnScreenOnly; 0 = kCGNullWindowID.
   const nativeWindows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0));
+  if (!Array.isArray(nativeWindows)) throw new Error("Core Graphics did not return a bridged window array.");
   const windows = nativeWindows.filter(info => Number(info.kCGWindowOwnerPID) === ownerPid && Number(info.kCGWindowLayer) === 0)
     .map(info => ({ id: info.kCGWindowNumber, bounds: { x: info.kCGWindowBounds.X, y: info.kCGWindowBounds.Y, width: info.kCGWindowBounds.Width, height: info.kCGWindowBounds.Height } }))
     .filter(window => window.bounds.width >= 500 && window.bounds.height >= 300);
