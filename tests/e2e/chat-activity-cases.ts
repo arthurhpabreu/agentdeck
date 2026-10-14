@@ -47,7 +47,7 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await expect(tool).toContainText("Código de saída: 0");
     await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; await (await import(/* @vite-ignore */ path)).persistChatHistory(); });
     await page.reload();
-    await page.getByText("Show the terminal activity", { exact: true }).first().click();
+    await page.locator(".ad-session-card").getByRole("button", { name: "Show the terminal activity Claude Code", exact: true }).click();
     const open = page.getByTitle("Abrir conversa");
     if (await open.count()) await open.first().click();
     const restored = page.locator(".ad-tool-card").filter({ hasText: "pnpm build" });
@@ -100,6 +100,8 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await expect(page.locator(".ad-chat-stall")).toHaveCount(0);
     await expect(page.getByText("Atividade do agente", { exact: true })).toHaveCount(0);
     await page.clock.runFor(2000);
+    await expect(page.locator(".ad-chat-stall")).toHaveCount(0);
+    await page.clock.runFor(120_000);
     await expect(page.locator(".ad-chat-stall")).toContainText("Sem nova atividade há");
     await expect(page.getByRole("button", { name: "Verificar processo", exact: true })).toBeVisible();
     await expect(page.locator(".ad-chat-stall").getByRole("button", { name: "Parar resposta", exact: true })).toBeVisible();

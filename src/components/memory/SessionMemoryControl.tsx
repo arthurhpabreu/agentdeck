@@ -10,6 +10,8 @@ import "./sharedMemory.css";
 import "./contextSources.css";
 import { contextCopy } from "./contextCopy";
 import { KnowledgeWarnings } from "./KnowledgeWarnings";
+import { SourcePolicyControls } from "./SourcePolicyControls";
+import { useSourceDeliveryStore } from "../../store/sourceDeliveryStore";
 
 export function SessionMemoryControl({ sessionId, provider, projectPath, onOpen }: { sessionId: string; provider: RunnerType; projectPath: string; onOpen: () => void }) {
   useMemoryRuntimeEvents();
@@ -22,6 +24,7 @@ export function SessionMemoryControl({ sessionId, provider, projectPath, onOpen 
   useEffect(() => { setOpen(false); }, [sessionId]);
   const close = () => { dialog.current?.close(); setOpen(false); trigger.current?.focus(); };
   const runtime = useMemoryRuntimeStore(state => state.sessions[sessionId]);
+  const deliveredPolicyRevisions = useSourceDeliveryStore(state => state.revisionsBySession[sessionId]);
   const context = runtime?.context;
   const details = runtime?.error ? `${m.contextError}: ${runtime.error}` : context
     ? `${m.retrieved}: ${context.recordCount} · ≈ ${context.estimatedTokens} ${m.tokens} · ${m.duplicates}: ${context.duplicateCount}`
@@ -33,10 +36,11 @@ export function SessionMemoryControl({ sessionId, provider, projectPath, onOpen 
       <header><h2>{c.sources}</h2><button type="button" className="ad-button" onClick={close}>{c.close}</button></header>
       <p>{context?.phase === "delivered" ? c.delivered : context?.phase === "prepared" ? c.prepared : c.legacy}</p>
       <p className="ad-context-hint">{c.hint}</p>
+      <SourcePolicyControls projectPath={projectPath} sessionId={sessionId} deliveredRevision={context?.phase === "delivered" ? context.policyRevision : undefined} deliveredRevisions={deliveredPolicyRevisions ?? runtime?.deliveredPolicyRevisions} onCorrectSources={close} />
       {runtime?.error && <div role="alert"><p>{c.historical}</p><p>{runtime.error}</p></div>}
       <KnowledgeWarnings warnings={context?.warnings ?? []} />
       {!context?.sources?.length && <p>{context?.recordCount ? c.unavailableDetails : c.empty}</p>}
-      {context?.sources?.map(source => <article key={`${source.scope}:${source.id}`}><strong>{source.title}</strong><p>{source.scope === "global" ? c.global : c.project} · {source.source === "document" ? c.document : c.memory}</p><code>{source.path ?? source.id}</code><pre>{source.excerpt}</pre></article>)}
+      {context?.sources?.map(source => <article key={`${source.scope}:${source.id}`}><strong>{source.title}</strong><p>{source.sourceName ?? (source.scope === "global" ? c.global : c.project)} · {source.source === "document" ? c.document : c.memory}</p><code>{source.path ?? source.id}</code><pre>{source.excerpt}</pre></article>)}
     </dialog>, document.body)}
   </div>;
 }

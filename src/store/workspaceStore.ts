@@ -105,15 +105,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
       bringToFront: (id) =>
         set((state) => {
-          const sorted = [...state.workspaces].sort((a, b) => a.order - b.order);
-          const target = sorted.find((w) => w.id === id);
-          if (!target) return {};
-          const rest = sorted.filter((w) => w.id !== id);
-          const reordered = [
-            { ...target, order: 0 },
-            ...rest.map((w, i) => ({ ...w, order: i + 1 })),
-          ];
-          return { workspaces: reordered, activeWorkspaceId: id };
+          // Focus is independent from navigation order. Retain the legacy action
+          // name for callers and persisted workspaces without moving any item.
+          return state.workspaces.some(workspace => workspace.id === id) && state.activeWorkspaceId !== id
+            ? { activeWorkspaceId: id } : state;
         }),
 
       updateWorkspace: (id, patch) =>

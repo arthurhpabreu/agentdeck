@@ -1,4 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { useAttentionStore } from "./store/attentionStore";
+import { useNavigationStore } from "./store/navigationStore";
+import { forgetChatViewState } from "./services/chatViewState";
+import { useSourceDeliveryStore } from "./store/sourceDeliveryStore";
 import { checkCliUpdatesOnStartup } from "./store/cliUpdateStore";
 import { checkAppUpdateOnStartup } from "./store/appUpdateStore";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,7 +12,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { consumeSuppressedEditorReveal, filterVisibleExplorerDirectories, reloadExplorerDirectories, reloadVisibleDirectories, revealExplorerPath } from "./services/editorCommands";
 import { TitleBar } from "./components/TitleBar";
 import { QuickSwitch } from "./components/navigation/QuickSwitch";
-import { AgentObservatory } from "./components/agents/AgentObservatory";
+const AgentObservatory = lazy(() => import("./components/agents/AgentObservatory").then(module => ({ default: module.AgentObservatory })));
 import { ProviderUsageBar } from "./components/ProviderUsageBar";
 import { showSessionSurface } from "./services/workbenchCommands";
 import { motion } from "framer-motion";
@@ -19,7 +24,7 @@ const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((modu
 const WorkbenchCenter = lazy(() => import("./workbench/WorkbenchCenter").then((module) => ({ default: module.WorkbenchCenter })));
 const Settings = lazy(() => import("./components/Settings"));
 import { ensureI18n, getLocaleDirection, resolveEffectiveLocale, useAppI18n } from "./i18n";
-import { useSessionStore, type DiffFile, type ClaudeSession } from "./store/sessionStore";
+import { selectSessionNavigation, useSessionStore, type DiffFile, type ClaudeSession } from "./store/sessionStore";
 import {
   useSettingsStore,
   isGlassTheme,
@@ -71,18 +76,18 @@ export default function App() {
     setDiffFiles,
     setActiveSession,
     setExpandedSession,
-  } = useSessionStore();
+  } = useSessionStore(useShallow(state => ({ sessions: selectSessionNavigation(state), activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, appendOutput: state.appendOutput, updateSession: state.updateSession, setDiffFiles: state.setDiffFiles, setActiveSession: state.setActiveSession, setExpandedSession: state.setExpandedSession })));
   const setScmSnapshot = useScmStore((s) => s.setSnapshot);
   const setScmStatus = useScmStore((s) => s.setStatus);
   const setScmDiffOverride = useScmStore((s) => s.setDiffOverride);
 
-  const { settings, patchSettings } = useSettingsStore();
+  const { settings, patchSettings } = useSettingsStore(useShallow(state => ({ settings: state.settings, patchSettings: state.patchSettings })));
   useEffect(() => { checkCliUpdatesOnStartup(); checkAppUpdateOnStartup(); }, []);
   const effectiveLocale = resolveEffectiveLocale(settings.locale);
   const direction = getLocaleDirection(effectiveLocale);
   const settingsOpen = useSettingsStore((s) => s.settingsOpen);
   const closeSettings = useSettingsStore((s) => s.closeSettings);
-  const { activeWorkspaceId } = useWorkspaceStore();
+  const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
   const sidebarSection = useWorkbenchStore((s) => s.sidebarSection);
   const focusSession = useWorkbenchStore((s) => s.focusSession);
   const focusedSessionId = useWorkbenchStore((s) => s.focusedSessionId);
@@ -95,6 +100,8 @@ export default function App() {
   const watchedWorkdirBySessionRef = useRef<Record<string, string>>({});
   const [frontendErrorLogs, setFrontendErrorLogs] = useState<FrontendErrorLog[]>([]);
   const [showAgents, setShowAgents] = useState(false);
+  useEffect(() => { if (activeSessionId) { useNavigationStore.getState().visit(`session:${activeSessionId}`); useAttentionStore.getState().readSession(activeSessionId); } }, [activeSessionId]);
+  useEffect(() => useSessionStore.subscribe((state, previous) => { const remaining = new Set(state.sessions.map(session => session.id)); previous.sessions.forEach(session => { if (!remaining.has(session.id)) { forgetChatViewState(session.id); useAttentionStore.getState().clearSession(session.id); useSourceDeliveryStore.getState().remove(session.id); } }); }), []);
   const frontendErrorIdRef = useRef(1);
 
   const pushFrontendErrorLog = useCallback((log: Omit<FrontendErrorLog, "id">) => {
@@ -480,6 +487,8 @@ export default function App() {
       backfilled.forEach(({ sessionId, providerSessionId }) => {
         const current = useSessionStore.getState().sessions.find((session) => session.id === sessionId);
         if (!current || current.providerSessionId?.trim()) return;
+        useSourceDeliveryStore.getState().markUnknown(sessionId);
+        useSourceDeliveryStore.getState().bindProvider(sessionId, providerSessionId);
         updateSession(sessionId, { providerSessionId });
       });
     })();
@@ -500,20 +509,33 @@ export default function App() {
       ({ payload }) => appendOutput(payload.session_id, payload.line)
     );
 
-    // Current interface: runner-output from the unified runner.
-    const u2 = listen<{ session_id: string; line: string }>(
+    const runnerGenerations = new Map<string, string>();
+    const currentRunner = (payload: { session_id: string; run_id?: string }) => !payload.run_id || !runnerGenerations.has(payload.session_id) || runnerGenerations.get(payload.session_id) === payload.run_id;
+    const u2a = listen<{ session_id: string; run_id: string }>("runner-starting", ({ payload }) => {
+      runnerGenerations.set(payload.session_id, payload.run_id);
+      useAttentionStore.getState().resolveActions(payload.session_id);
+      updateSession(payload.session_id, { status: "running", pid: undefined });
+    });
+    const u2b = listen<{ session_id: string; run_id: string; pid: number }>("runner-started", ({ payload }) => {
+      if (currentRunner(payload)) updateSession(payload.session_id, { status: "running", pid: payload.pid });
+    });
+    // Events queued by an earlier process cannot modify its replacement.
+    const u2 = listen<{ session_id: string; line: string; run_id?: string }>(
       "runner-output",
-      ({ payload }) => appendOutput(payload.session_id, payload.line)
+      ({ payload }) => { if (currentRunner(payload)) appendOutput(payload.session_id, payload.line); }
     );
 
     // Runner completed.
-    const u3 = listen<{ session_id: string; error?: string }>(
+    const u3 = listen<{ session_id: string; error?: string; status?: string; run_id?: string }>(
       "runner-done",
       ({ payload }) => {
-        if (payload.error) {
-          updateSession(payload.session_id, { status: "error", currentTask: payload.error });
+        if (!currentRunner(payload)) return;
+        const error = payload.error || (payload.status === "error" ? t("status.error") : undefined);
+        if (error || payload.status === "completed") useAttentionStore.getState().record({ id: `runner:${payload.session_id}:${payload.run_id ?? Date.now()}:${error ? "error" : "completed"}`, sessionId: payload.session_id, kind: error ? "error" : "completed", text: error ?? "", source: "runner", at: Date.now() });
+        if (error) {
+          updateSession(payload.session_id, { status: "error", currentTask: error, pid: undefined });
         } else {
-          updateSession(payload.session_id, { status: "done" });
+          updateSession(payload.session_id, { status: payload.status === "completed" ? "done" : "suspended", pid: undefined });
         }
         refreshSessionDiff(payload.session_id);
       }
@@ -531,9 +553,10 @@ export default function App() {
     );
 
     // Git diff updates.
-    const u5 = listen<{ session_id: string; files: DiffFile[] }>(
+    const u5 = listen<{ session_id: string; files: DiffFile[]; run_id?: string }>(
       "diff-update",
       ({ payload }) => {
+        if (!currentRunner(payload)) return;
         setDiffFiles(payload.session_id, payload.files);
         setScmSnapshot(payload.session_id, payload.files);
       }
@@ -597,8 +620,10 @@ export default function App() {
         const existing = session?.providerSessionId?.trim();
         // Do not overwrite an existing resumable session ID with a newly created empty provider session.
         if (existing && existing !== payload.provider_session_id) {
+          useSourceDeliveryStore.getState().markUnknown(payload.session_id);
           return;
         }
+        useSourceDeliveryStore.getState().bindProvider(payload.session_id, payload.provider_session_id);
         updateSession(payload.session_id, {
           providerSessionId: payload.provider_session_id,
         });
@@ -613,8 +638,17 @@ export default function App() {
       }
     );
 
+    const u8 = listen<{ session_id: string; turn_id?: string; source?: string }>("pty-waiting", ({ payload }) => {
+      if (payload.source !== "codex" && payload.source !== "claude-code") return;
+      const activity = useSessionStore.getState().sessions.find(s => s.id === payload.session_id);
+      if (!activity) return;
+      useAttentionStore.getState().record({ id: `terminal:${payload.session_id}:${payload.turn_id ?? activity.currentTask}`, sessionId: payload.session_id, kind: "completed", text: "", source: payload.source, at: Date.now() });
+    });
+    const u9 = listen<{ session_id: string; error: string }>("pty-error", ({ payload }) => {
+      useAttentionStore.getState().record({ id: `terminal-error:${payload.session_id}:${payload.error}`, sessionId: payload.session_id, kind: "error", text: payload.error.slice(0, 1200), source: "provider-hook", at: Date.now() });
+    });
     return () => {
-      [u1, u2, u3, u4, u5, u5b, u5c, u5d, u6, u7].forEach((p) => p.then((f) => f()).catch(() => {}));
+      [u1, u2a, u2b, u2, u3, u4, u5, u5b, u5c, u5d, u6, u7, u8, u9].forEach((p) => p.then((f) => f()).catch(() => {}));
     };
   }, [appendOutput, updateSession, setDiffFiles, setScmSnapshot, setScmStatus, setScmDiffOverride, refreshSessionDiff]);
 
@@ -780,7 +814,7 @@ export default function App() {
           <TitleBar onAgents={() => setShowAgents(true)} navigation={<QuickSwitch disabled={settingsOpen || showAgents}
             onAgents={() => setShowAgents(true)} onKnowledge={() => useWorkbenchStore.getState().setSidebarSection("memory")}
             onSettings={() => useSettingsStore.getState().openSettings()} />} />
-          {showAgents && <AgentObservatory onClose={() => setShowAgents(false)} onOpenSession={id => { showSessionSurface(id); setShowAgents(false); }} />}
+          {showAgents && <Suspense fallback={null}><AgentObservatory onClose={() => setShowAgents(false)} onOpenSession={id => { showSessionSurface(id); setShowAgents(false); }} /></Suspense>}
           <div style={{
             position: "relative",
             display: "flex",

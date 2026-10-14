@@ -97,50 +97,9 @@ impl Engine {
         self.connection()?.query_row(&format!("SELECT {COLUMNS} FROM memory_records m LEFT JOIN memory_metadata x ON x.memory_id=m.id WHERE m.project_key=?1 AND m.source_session_id=?2 AND m.provider=?3 AND m.source='capture' AND m.kind='handoff' AND m.pinned=0 AND coalesce(x.state,'active')='active' AND coalesce(x.feedback,'')<>'wrong' ORDER BY m.updated_at DESC,m.rowid DESC LIMIT 1"),params![project,session,provider],record_from_row).optional().map_err(db_error)
     }
     pub fn curate_profiles(&self) -> Result<usize> {
-        if !self.curation_enabled(GLOBAL_MEMORY_KEY)? || !self.config(GLOBAL_MEMORY_KEY)?.enabled {
-            return Ok(0);
-        }
-        let mut selected = 0;
-        for candidate in self
-            .profile_candidates()?
-            .into_iter()
-            .filter(|c| c.status == "candidate" && c.eligible)
-        {
-            let lower = candidate.statement.to_lowercase();
-            // Temporary instructions, addresses, credentials and conflicting preferences stay available for optional review.
-            if [
-                "neste projeto",
-                "nesse projeto",
-                "nesta tarefa",
-                "por enquanto",
-                "this project",
-                "this task",
-                "for now",
-                "@",
-                "http",
-                "[redacted",
-                "[secret",
-            ]
-            .iter()
-            .any(|s| lower.contains(s))
-            {
-                continue;
-            }
-            if automatic_profile_conflict(
-                &*self.connection()?,
-                &candidate.topic,
-                &candidate.statement,
-            )? {
-                continue;
-            }
-            if self
-                .review_profile_impl(&candidate.id, true, true)?
-                .is_some()
-            {
-                selected += 1;
-            }
-        }
-        Ok(selected)
+        // Recurrence and general wording are suggestions, never permission to share.
+        // Candidates stay pending until the user explicitly accepts universal scope.
+        Ok(0)
     }
 }
 

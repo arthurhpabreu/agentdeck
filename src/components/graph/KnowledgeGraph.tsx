@@ -6,10 +6,12 @@ import { knowledgeCommands, type KnowledgeGraph as Graph, type KnowledgeResult }
 import { knowledgeCopy } from "../knowledgeCopy";
 import { graphCopy } from "./graphCopy";
 import { GraphViewport } from "./GraphViewport";
-import { layoutNotes, noteFolder, noteNeighborhood } from "./knowledgeLayout";
+import { layoutNotes, noteFolder, noteNeighborhood, notePathLabel } from "./knowledgeLayout";
+import { SortableCollection } from "../ordering/SortableCollection";
+import { usePresentationOrder } from "../../store/presentationStore";
 import "./knowledgeGraph.css";
 
-export function NoteGraph({ projectPath }: { projectPath?: string }) {
+export function NoteGraph({ projectPath, sessionId, sourceId }: { projectPath?: string; sessionId?: string; sourceId?: string }) {
   const { locale } = useAppI18n(); const copy = knowledgeCopy(locale); const g = graphCopy(locale);
   const [graph, setGraph] = useState<Graph | null>(null);
   const [selected, setSelected] = useState("");
@@ -19,6 +21,7 @@ export function NoteGraph({ projectPath }: { projectPath?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<"folders" | "notes" | "connections">("folders");
   const [query, setQuery] = useState(""); const [folder, setFolder] = useState("*");
+  const [noteListOpen, setNoteListOpen] = useState(false), [noteOffset, setNoteOffset] = useState(0);
   const [depth, setDepth] = useState(1); const [budget, setBudget] = useState(350); const [labels, setLabels] = useState(false);
   const mounted = useRef(false); const request = useRef(0); const graphRequest = useRef(0);
   const modal = useRef<HTMLDialogElement>(null); const expandButton = useRef<HTMLButtonElement>(null);
@@ -27,7 +30,7 @@ export function NoteGraph({ projectPath }: { projectPath?: string }) {
   const refresh = async (force = false) => {
     const sequence = ++graphRequest.current; setLoading(true); setError("");
     try {
-      const value = await knowledgeCommands.graph(projectPath, force);
+      const value = await knowledgeCommands.graph(projectPath, force, sessionId, sourceId);
       if (mounted.current && sequence === graphRequest.current) {
         setGraph(value); setSelected(""); setPreview(null); setReadError(""); request.current++;
       }
@@ -40,7 +43,7 @@ export function NoteGraph({ projectPath }: { projectPath?: string }) {
     restoreFocus.current = true;
     modal.current?.showModal();
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); setExpanded(false); }
+      if (event.key === "Escape" && !document.querySelector('[data-dragging="true"]')) { event.preventDefault(); event.stopImmediatePropagation(); setExpanded(false); }
     };
     document.addEventListener("keydown", escape, true);
     return () => document.removeEventListener("keydown", escape, true);
@@ -50,7 +53,7 @@ export function NoteGraph({ projectPath }: { projectPath?: string }) {
     if (!path) { setReading(false); return; }
     setReading(true);
     try {
-      const note = await knowledgeCommands.read(path, projectPath);
+      const note = await knowledgeCommands.read(path, projectPath, sessionId, sourceId);
       if (mounted.current && sequence === request.current) setPreview(note);
     } catch (cause) { if (mounted.current && sequence === request.current) setReadError(String(cause)); }
     finally { if (mounted.current && sequence === request.current) setReading(false); }
@@ -74,6 +77,11 @@ export function NoteGraph({ projectPath }: { projectPath?: string }) {
   const layout = useMemo(() => layoutNotes(overview ? filtered : shown, overview), [filtered, shown, overview]);
   const positions = new Map(layout.nodes.map(node => [node.path, node]));
   const byPath = new Map(graph?.nodes.map(node => [node.path, node]));
+  const orderContext = JSON.stringify([projectPath ?? "catalog", sessionId ?? "project", sourceId ?? "selected"]);
+  const orderedNotes = usePresentationOrder("knowledge-note-list", orderContext, graph?.nodes ?? [], node => node.path);
+  const includedNotes = new Set(filtered.map(node => node.path));
+  const orderedVisibleNotes = orderedNotes.filter(node => includedNotes.has(node.path));
+  const noteStart = Math.min(noteOffset, Math.max(0, orderedVisibleNotes.length - 1));
   const folderEdges = useMemo(() => {
     const included = new Set(filtered.map(node => node.path)); const edges = new Map<string, { source: string; target: string; weight: number }>();
     for (const edge of graph?.edges ?? []) {
@@ -87,12 +95,13 @@ export function NoteGraph({ projectPath }: { projectPath?: string }) {
   }, [graph, filtered]);
   const inspector = <div className="ad-knowledge-inspector">
     <label htmlFor={selectId}>{copy.chooseNote}</label>
-    <select id={selectId} value={selected} disabled={loading} onChange={event => void select(event.target.value)}><option value="">{copy.chooseNote}</option>{graph?.nodes.map(node => <option key={node.path} value={node.path}>{node.title} · {node.path}</option>)}</select>
+    <select id={selectId} value={selected} disabled={loading} onChange={event => void select(event.target.value)}><option value="">{copy.chooseNote}</option>{orderedNotes.map(node => <option key={node.path} value={node.path}>{node.title} · {notePathLabel(node.path)}</option>)}</select>
+    <details onToggle={event => setNoteListOpen(event.currentTarget.open)}><summary>{g.notes}</summary>{noteListOpen && <><SortableCollection surface="knowledge-note-list" context={orderContext} items={orderedVisibleNotes.slice(noteStart,noteStart+80)} allIds={orderedNotes.map(node => node.path)} getId={node => node.path} getLabel={node => node.title} render={(node, handle) => <div>{handle}<button type="button" className="ad-button" onClick={() => void select(node.path)}>{node.title}</button></div>} />{orderedVisibleNotes.length>80&&<div><button type="button" className="ad-button" disabled={noteStart===0} aria-label={`${g.notes}: ${Math.max(1,noteStart-79)}–${noteStart}`} onClick={()=>setNoteOffset(Math.max(0,noteStart-80))}>←</button><span>{noteStart+1}–{Math.min(noteStart+80,orderedVisibleNotes.length)} / {orderedVisibleNotes.length}</span><button type="button" className="ad-button" disabled={noteStart+80>=orderedVisibleNotes.length} aria-label={`${g.notes}: ${noteStart+81}–${Math.min(noteStart+160,orderedVisibleNotes.length)}`} onClick={()=>setNoteOffset(noteStart+80)}>→</button></div>}</>}</details>
     {expanded && selected && <button type="button" className="ad-button" onClick={() => { setQuery(""); setFolder("*"); setMode("connections"); }}>{g.neighborhood}</button>}
     {reading && <p role="status">{copy.preview}…</p>}
     {readError && <div role="alert" className="ad-documents-error"><p>{readError}</p><button type="button" className="ad-button" disabled={reading} onClick={() => void select(selected)}>{copy.retry}</button></div>}
-    {preview && <article className="ad-note-preview"><h4>{preview.title}</h4><code>{preview.path}</code><p aria-label={copy.preview}>{preview.excerpt}</p>
-      <h4>{copy.connections} · {connections.size}</h4>{connections.size ? <div className="ad-note-connections">{[...connections].map(path => <button key={path} type="button" className="ad-button ad-button-ghost" onClick={() => void select(path)}>{byPath.get(path)?.title ?? path}</button>)}</div> : <p>{copy.noConnections}</p>}
+    {preview && <article className="ad-note-preview"><h4>{preview.title}</h4><code>{notePathLabel(preview.path)}</code><p aria-label={copy.preview}>{preview.excerpt}</p>
+      <h4>{copy.connections} · {connections.size}</h4>{connections.size ? <SortableCollection surface="knowledge-note-connections" context={`${orderContext}:${selected}`} items={[...connections]} getId={path => path} getLabel={path => byPath.get(path)?.title ?? notePathLabel(path)} render={(path, handle) => <div>{handle}<button type="button" className="ad-button ad-button-ghost" onClick={() => void select(path)}>{byPath.get(path)?.title ?? notePathLabel(path)}</button></div>} /> : <p>{copy.noConnections}</p>}
     </article>}
   </div>;
   const canvas = <div className="ad-knowledge-visual">

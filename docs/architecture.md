@@ -16,6 +16,7 @@ Agent Deck is a Tauri 2 application with a React 19 / TypeScript UI and a Rust b
 
 ## Knowledge graph
 
+
 Rust incrementally reads the selected Markdown source, resolves wikilinks and Markdown links inside that source, and caches unchanged notes. The backend returns the complete bounded index and its edges. It never bulk-uploads a vault.
 
 The compact view renders up to 120 notes. The expanded overview aggregates notes into folder nodes with weighted cross-folder edges. Selecting a folder opens its notes. Notes and Connections views bound rendering to 150, 350 or 700 ranked matches; search and the selector cover the whole index. Connection traversal uses an adjacency map and visited set for one to three hops.
@@ -53,8 +54,11 @@ The application identifier is stable across releases. Preferences and histories 
 
 ## Versioning and releases
 
+
 Windows and macOS ship under one SemVer and one `v<version>` tag. `package.json` is the version source, synchronized with the Tauri configuration and Rust manifest/lockfile by `corepack pnpm version:set <version>`. `check:version` and tag checks reject mismatches. A platform feature advances the minor version; corrective changes advance the patch version.
 
 CI tests native Windows x64, macOS Apple Silicon and macOS Intel. Release previews can run from a branch without creating a release. Tagged builds gate packaging on those checks, build the Mac app for both architectures, verify signatures/metadata/deployment targets, and run the same packaged universal GUI on both Mac architectures. Only successful platform jobs feed a single draft with Windows installers, universal DMG/application archive, LICENSE and one aggregate SHA-256 manifest. Build artifacts are never source commits.
 
 The release supports ad-hoc signing when Apple credentials are absent. Developer ID distribution requires a complete signing/notarization configuration; the verifier then also checks the notarization ticket and Gatekeeper assessment. An ad-hoc build is explicitly reported as unnotarized.
+The [source policy](source-policy.md) registry separates global availability from project/conversation grants. Source-scoped IDs, current eligibility checks and effective revision tokens protect automatic retrieval and active memory tools. [Visual organization](presentation-order.md) uses an independent presentation store, preserving execution identity and source associations.
+Version 0.8 also separates PTY process lifetime from its renderer. A private byte archive backs bounded output batches and consumption acknowledgements; inactive views replay the current run without resending prompts. Durable session projections skip volatile output before serialization, and per-key native write queues preserve snapshot order. Conversation checkpoints preserve local history while reviewed handoff drafts start a new provider identity.

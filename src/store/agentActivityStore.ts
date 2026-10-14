@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { usePtyRuntimeStore } from "./ptyRuntimeStore";
+import { ensurePtyRouter, observePtyOutput } from "../services/ptyOutputRouter";
 
 export type ActivityPhase = "idle" | "starting" | "connected" | "running" | "waiting" | "done" | "stopped" | "error";
 export interface AgentActivity {
@@ -49,12 +50,12 @@ export async function startActivityTracking() {
     listen<{ session_id: string; pid?: number; command: string }>("pty-started", ({ payload: p }) => {
       record(p.session_id, { phase: "connected", pid: p.pid, command: p.command, startedAt: Date.now(), endedAt: undefined, error: undefined, exitCode: undefined, bytes: 0, lastOutputAt: undefined }, "activity.connected");
     }),
-    listen<{ session_id: string; data: string }>("pty-data", ({ payload: p }) => {
+    ensurePtyRouter().then(() => observePtyOutput(p => {
       const length = Math.floor(p.data.length * 3 / 4) - (p.data.endsWith("==") ? 2 : p.data.endsWith("=") ? 1 : 0);
       const old = pending.get(p.session_id);
       pending.set(p.session_id, { bytes: (old?.bytes ?? 0) + length, at: Date.now() });
       if (!timer) timer = setTimeout(flush, 250);
-    }),
+    })),
     listen<{ session_id: string }>("pty-running", ({ payload: p }) => record(p.session_id, { phase: "running" }, "activity.running")),
     listen<{ session_id: string }>("pty-waiting", ({ payload: p }) => record(p.session_id, { phase: "waiting" }, "activity.waiting")),
     listen<{ session_id: string; error: string }>("pty-error", ({ payload: p }) => record(p.session_id, { phase: "error", error: p.error }, "activity.error", p.error)),

@@ -1,7 +1,7 @@
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import { persist } from "zustand/middleware";
 import { getI18n } from "../i18n";
-import { mirroredPersistStorage } from "./persistStorage";
+import { createDurableJSONStorage } from "./persistStorage";
 import { useSettingsStore, type RunnerConfig } from "./settingsStore";
 
 // ── Type definitions ─────────────────────────────────────────
@@ -207,6 +207,59 @@ function makeSession(
 
 // ── Store ─────────────────────────────────────────────────────
 
+const EMPTY_VOLATILE: never[] = [];
+const navigationSessions = new Map<string, ClaudeSession>();
+const navigationByInstance = new WeakMap<ClaudeSession, ClaudeSession>();
+const metadataByInstance = new WeakMap<ClaudeSession, ClaudeSession>();
+const metadataSessions = new Map<string, ClaudeSession>();
+let navigationProjection: ClaudeSession[] = [];
+/** Navigation subscribes to session identity/status, while heavy output and diff payloads stay local. */
+export function selectSessionNavigation(state: Pick<SessionStore, "sessions">): ClaudeSession[] {
+  const next = state.sessions.map(session => {
+    const cached = navigationByInstance.get(session); if (cached) return cached;
+    const { output: _output, diffFiles: _diffFiles, ...metadata } = session;
+    const projected = { ...metadata, output: EMPTY_VOLATILE, diffFiles: EMPTY_VOLATILE };
+    const previous = navigationSessions.get(session.id);
+    if (previous && Object.keys(projected).length === Object.keys(previous).length && Object.entries(projected).every(([key, value]) => previous[key as keyof ClaudeSession] === value)) { navigationByInstance.set(session, previous); return previous; }
+    navigationSessions.set(session.id, projected);
+    navigationByInstance.set(session, projected);
+    return projected;
+  });
+  const valid = new Set(next.map(session => session.id));
+  for (const id of navigationSessions.keys()) if (!valid.has(id)) navigationSessions.delete(id);
+  if (next.length === navigationProjection.length && next.every((session, index) => session === navigationProjection[index])) return navigationProjection;
+  navigationProjection = next;
+  return next;
+}
+export function selectSessionMetadata(state: Pick<SessionStore, "sessions">, id: string): ClaudeSession | undefined {
+  const session = state.sessions.find(item => item.id === id); if (!session) { metadataSessions.delete(id); return undefined; }
+  const cached = metadataByInstance.get(session); if (cached) return cached;
+  const projected = { ...session, output: EMPTY_VOLATILE };
+  const previous = metadataSessions.get(id);
+  const next = previous && Object.keys(previous).length === Object.keys(projected).length && Object.entries(projected).every(([key, value]) => previous[key as keyof ClaudeSession] === value) ? previous : projected;
+  metadataByInstance.set(session, next); metadataSessions.set(id, next); return next;
+}
+const durableSessions = new Map<string, ClaudeSession>();
+const durableByInstance = new WeakMap<ClaudeSession, ClaudeSession>();
+let durableProjection: { sessions: ClaudeSession[]; activeSessionId: string | null; sessionOrderByWorkspace: Record<string, string[]> } | undefined;
+function projectDurableState(state: SessionStore) {
+  const projected = state.sessions.map(session => {
+    const cached = durableByInstance.get(session); if (cached) return cached;
+    const { output: _output, diffFiles: _diffFiles, pid: _pid, ...metadata } = session;
+    const next: ClaudeSession = { ...metadata, status: session.status === "running" || session.status === "waiting" ? "idle" : session.status, diffFiles: EMPTY_VOLATILE, output: EMPTY_VOLATILE };
+    const previous = durableSessions.get(session.id);
+    if (previous && Object.keys(next).length === Object.keys(previous).length && Object.entries(next).every(([key, value]) => previous[key as keyof ClaudeSession] === value)) { durableByInstance.set(session, previous); return previous; }
+    durableSessions.set(session.id, next);
+    durableByInstance.set(session, next);
+    return next;
+  });
+  const valid = new Set(state.sessions.map(session => session.id));
+  for (const id of durableSessions.keys()) if (!valid.has(id)) durableSessions.delete(id);
+  if (durableProjection && durableProjection.activeSessionId === state.activeSessionId && durableProjection.sessionOrderByWorkspace === state.sessionOrderByWorkspace && projected.length === durableProjection.sessions.length && projected.every((session, i) => session === durableProjection!.sessions[i])) return durableProjection;
+  durableProjection = { sessions: projected, activeSessionId: state.activeSessionId, sessionOrderByWorkspace: state.sessionOrderByWorkspace };
+  return durableProjection;
+}
+
 export const useSessionStore = create<SessionStore>()(
   persist(
     (set, get) => ({
@@ -281,11 +334,11 @@ export const useSessionStore = create<SessionStore>()(
         set({ expandedSessionId: id }),
 
       updateSession: (id, patch) =>
-        set((state) => ({
-          sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, ...patch } : s
-          ),
-        })),
+        set((state) => {
+          const existing = state.sessions.find(session => session.id === id);
+          if (!existing || Object.entries(patch).every(([key, value]) => existing[key as keyof ClaudeSession] === value)) return state;
+          return { sessions: state.sessions.map(s => s.id === id ? { ...s, ...patch } : s) };
+        }),
 
       renameSession: (id, name) => {
         const normalized = name.replace(/\s+/g, " ").trim();
@@ -526,22 +579,9 @@ export const useSessionStore = create<SessionStore>()(
     }),
     {
       name: "agentdeck-sessions",
-      storage: createJSONStorage(() => mirroredPersistStorage),
+      storage: createDurableJSONStorage<ReturnType<typeof projectDurableState>>(),
       // expandedSessionId and worktreeReadyIds are not persisted.
-      partialize: (state) => ({
-        sessions: state.sessions.map((s) => ({
-          ...s,
-          // The PTY no longer exists after restart; reset running/waiting sessions to idle.
-          status: (s.status === "running" || s.status === "waiting") ? "idle" : s.status,
-          // Do not persist diffFiles: keep large diff payloads out of localStorage / WAL.
-          diffFiles: [],
-          // Do not persist output: save space, since the restarted PTY will produce new output.
-          output: [],
-          pid: undefined,
-        })),
-        activeSessionId: state.activeSessionId,
-        sessionOrderByWorkspace: state.sessionOrderByWorkspace,
-      }),
+      partialize: projectDurableState,
       // On restore, mark sessions with an existing worktreePath as worktreeReady.
       // Their worktrees may exist or have been orphan-cleaned; reuse the persisted path without creating another.
       onRehydrateStorage: () => (state) => {

@@ -14,6 +14,7 @@ import {
 import { resetWorkbenchMode } from "../../services/workbenchCommands";
 import { EMPTY_SCM_GROUPS, type ScmEntryGroup, type ScmStatusEntry, useScmStore } from "../../store/scmStore";
 import { WorkbenchTooltip } from "../ui/WorkbenchTooltip";
+import { SortableCollection } from "../ordering/SortableCollection";
 
 function mapDiffFileToStatusEntry(file: DiffFile): ScmStatusEntry {
   return {
@@ -76,17 +77,18 @@ function Section({
   count,
   defaultExpanded = true,
   actions,
+  handle,
   children,
 }: {
   title: string;
   count?: number;
   defaultExpanded?: boolean;
   actions?: React.ReactNode;
+  handle?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  if (count === 0) return null;
-
   const [expanded, setExpanded] = useState(defaultExpanded);
+  if (count === 0) return null;
 
   return (
     <div style={{ marginBottom: 6 }}>
@@ -100,6 +102,7 @@ function Section({
           color: "var(--ci-text-dim)",
         }}
       >
+        {handle}
         <button
           onClick={() => setExpanded((value) => !value)}
           style={{
@@ -146,8 +149,7 @@ function GroupSection({
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
 
   return (
-    <>
-      {files.map((file) => {
+    <SortableCollection surface="scm-files" context={JSON.stringify([sessionId, group])} items={files} getId={file => file.path} getLabel={file => file.path} render={(file, handle) => {
         const isSelected = selectedPath === file.path;
         const isHovered = hoveredPath === file.path;
         return (
@@ -167,6 +169,7 @@ function GroupSection({
               borderInlineStart: isSelected ? "1px solid var(--ci-accent)" : "1px solid transparent",
             }}
           >
+            {handle}
             <button
               onClick={() => selectScmFile(sessionId, group, file.path)}
               style={{
@@ -209,8 +212,7 @@ function GroupSection({
             </div>
           </div>
         );
-      })}
-    </>
+      }} />
   );
 }
 
@@ -360,45 +362,21 @@ export function ScmSidebar({ session }: { session: ClaudeSession | null }) {
             {t("scm.noChanges")}
           </div>
         ) : (
-          <>
-            <Section title={t("scm.committedInSession")} count={committedEntries.length} defaultExpanded={committedEntries.length > 0}>
-              <GroupSection group="committed" files={committedEntries} sessionId={session.id} selectedPath={selectedEntry?.group === "committed" ? selectedEntry.path : null} busy={busy} />
-            </Section>
-            {hasGroupedStatus && (
-              <Section title={t("scm.workingTree")} count={groups.conflicts.length + groups.staged.length + groups.unstaged.length + groups.untracked.length}>
-                <Section title={t("scm.conflicts")} count={groups.conflicts.length} defaultExpanded={groups.conflicts.length > 0}>
-                  <GroupSection group="conflicts" files={groups.conflicts} sessionId={session.id} selectedPath={selectedEntry?.group === "conflicts" ? selectedEntry.path : null} busy={busy} />
-                </Section>
-                <Section
-                  title={t("scm.stagedChanges")}
-                  count={groups.staged.length}
-                  defaultExpanded={groups.staged.length > 0}
-                  actions={groups.staged.length > 0 ? (
-                    <ActionButton label={t("scm.unstageAll")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => unstageAllScm(session.id)} disabled={busy} />
-                  ) : undefined}
-                >
-                  <GroupSection group="staged" files={groups.staged} sessionId={session.id} selectedPath={selectedEntry?.group === "staged" ? selectedEntry.path : null} busy={busy} />
-                </Section>
-                <Section
-                  title={t("scm.changes")}
-                  count={groups.unstaged.length}
-                  defaultExpanded={groups.unstaged.length > 0}
-                  actions={groups.unstaged.length > 0 ? (
-                    <ActionButton label={t("scm.stageAllChanges")} icon={<Plus size={12} strokeWidth={1.8} />} onClick={() => stageAllScm(session.id, groups.unstaged.map((file) => file.path))} disabled={busy} />
-                  ) : undefined}
-                >
-                  <GroupSection group="unstaged" files={groups.unstaged} sessionId={session.id} selectedPath={selectedEntry?.group === "unstaged" ? selectedEntry.path : null} busy={busy} />
-                </Section>
-                <Section
-                  title={t("scm.untracked")}
-                  count={groups.untracked.length}
-                  defaultExpanded={groups.untracked.length > 0}
-                >
-                  <GroupSection group="untracked" files={groups.untracked} sessionId={session.id} selectedPath={selectedEntry?.group === "untracked" ? selectedEntry.path : null} busy={busy} />
-                </Section>
-              </Section>
-            )}
-          </>
+          <SortableCollection surface="scm-sections" context={session.id} items={[
+            { id: "committed", title: t("scm.committedInSession"), count: committedEntries.length },
+            { id: "working", title: t("scm.workingTree"), count: groups.conflicts.length + groups.staged.length + groups.unstaged.length + groups.untracked.length },
+          ].filter(group => group.count > 0)} allIds={["committed", "working"]} getId={group => group.id} getLabel={group => group.title} render={(section, handle) => <Section title={section.title} count={section.count} handle={handle}>
+            {section.id === "committed" ? <GroupSection group="committed" files={committedEntries} sessionId={session.id} selectedPath={selectedEntry?.group === "committed" ? selectedEntry.path : null} busy={busy} /> :
+              <SortableCollection surface="scm-status-groups" context={session.id} allIds={["conflicts", "staged", "unstaged", "untracked"]} items={[
+                { id: "conflicts" as ScmEntryGroup, title: t("scm.conflicts"), files: groups.conflicts },
+                { id: "staged" as ScmEntryGroup, title: t("scm.stagedChanges"), files: groups.staged },
+                { id: "unstaged" as ScmEntryGroup, title: t("scm.changes"), files: groups.unstaged },
+                { id: "untracked" as ScmEntryGroup, title: t("scm.untracked"), files: groups.untracked },
+              ].filter(group => group.files.length > 0)} getId={group => group.id} getLabel={group => group.title} render={(group, groupHandle) => <Section title={group.title} count={group.files.length} handle={groupHandle} actions={
+                group.id === "staged" ? <ActionButton label={t("scm.unstageAll")} icon={<Minus size={12} strokeWidth={1.8} />} onClick={() => unstageAllScm(session.id)} disabled={busy} /> :
+                group.id === "unstaged" ? <ActionButton label={t("scm.stageAllChanges")} icon={<Plus size={12} strokeWidth={1.8} />} onClick={() => stageAllScm(session.id, groups.unstaged.map(file => file.path))} disabled={busy} /> : undefined
+              }><GroupSection group={group.id} files={group.files} sessionId={session.id} selectedPath={selectedEntry?.group === group.id ? selectedEntry.path : null} busy={busy} /></Section>} />}
+          </Section>} />
         )}
       </div>
     </div>

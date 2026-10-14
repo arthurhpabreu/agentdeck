@@ -1,0 +1,36 @@
+{
+  "browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+  "measurements": [
+    {
+      "sessions": 5,
+      "streams": 5,
+      "events": 1000,
+      "elapsedMs": 56.099999994039536,
+      "p50Ms": 0,
+      "p95Ms": 0.19999999552965164,
+      "localWrites": 1000,
+      "nativeWrites": 1000,
+      "lastLine": "UTF-8 café 👩‍💻 ANSI \u001b[32m999\u001b[0m"
+    },
+    {
+      "sessions": 20,
+      "streams": 8,
+      "events": 1000,
+      "elapsedMs": 46.400000005960464,
+      "p50Ms": 0,
+      "p95Ms": 0.10000000149011612,
+      "localWrites": 1000,
+      "nativeWrites": 1000
+    },
+    {
+      "sessions": 50,
+      "streams": 8,
+      "events": 1000,
+      "elapsedMs": 67.70000000298023,
+      "p50Ms": 0.09999999403953552,
+      "p95Ms": 0.19999999552965164,
+      "localWrites": 1000,
+      "nativeWrites": 1000
+    }
+  ]
+}

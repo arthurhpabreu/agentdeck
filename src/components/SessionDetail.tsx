@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { useAppI18n } from "../i18n";
-import { useSessionStore } from "../store/sessionStore";
+import { selectSessionMetadata, useSessionStore } from "../store/sessionStore";
 import { useSettingsStore, isGlassTheme } from "../store/settingsStore";
 import { SessionPromptComposer } from "./session/SessionPromptComposer";
 import { SessionRunnerSurface } from "./session/SessionRunnerSurface";
@@ -22,6 +22,7 @@ import { effortCopy } from "./session/effortCopy";
 import { TokenEconomyControl } from "./economy/TokenEconomyControl";
 import { SessionRenameControl } from "./session/SessionRenameControl";
 import { getShellCommand } from "../services/platform";
+import { useShallow } from "zustand/react/shallow";
 
 const SPRING = {
   type: "spring" as const,
@@ -441,10 +442,11 @@ function NativeSessionPanel({ sessionId, isOpen, onClose, presentation, showHead
   );
 }
 
+const sessionSurfaceState = new Map<string, boolean>();
 function SessionPanel(props: PanelProps) {
   const { locale } = useAppI18n(); const c = chatCopy(locale);
-  const session = useSessionStore(s => s.sessions.find(item => item.id === props.sessionId));
-  const [native, setNative] = useState(session?.runner.type === "gemini");
+  const session = useSessionStore(s => selectSessionMetadata(s, props.sessionId));
+  const [native, setNative] = useState(() => (sessionSurfaceState.get(props.sessionId) ?? !!usePtyRuntimeStore.getState().sessions[props.sessionId]) || session?.runner.type === "gemini");
   const [nativeMounted, setNativeMounted] = useState(native);
   const [autoLaunch, setAutoLaunch] = useState(false);
   const [handoff, setHandoff] = useState({ revision: 0, query: "" });
@@ -452,6 +454,7 @@ function SessionPanel(props: PanelProps) {
   const runtime = usePtyRuntimeStore(s => s.sessions[props.sessionId]);
   const nativeLive = !!runtime;
   const [switchError, setSwitchError] = useState("");
+  useEffect(() => { sessionSurfaceState.set(props.sessionId, native); }, [props.sessionId, native]);
   const ec = effortCopy(locale);
   const stopNative = async () => { setSwitchError(""); try { await stopPtySession(props.sessionId); } catch (error) { setSwitchError(String(error)); } };
   if (!session) return null;
@@ -492,22 +495,23 @@ export function SessionDetail({
   showPanelHeader?: boolean;
 }) {
   const { t } = useAppI18n();
-  const { expandedSessionId, setExpandedSession, sessions } = useSessionStore();
+  const expandedSessionId = useSessionStore(state => state.expandedSessionId);
+  const setExpandedSession = useSessionStore(state => state.setExpandedSession);
+  const sessionIds = useSessionStore(useShallow(state => state.sessions.map(session => session.id)));
   const visibleSessionId = openSessionId === undefined ? expandedSessionId : openSessionId;
 
   const [mountedIds, setMountedIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!visibleSessionId) return;
-    setMountedIds((prev) =>
-      prev.includes(visibleSessionId) ? prev : [...prev, visibleSessionId]
-    );
+    setMountedIds(prev => [...prev.filter(id => id !== visibleSessionId), visibleSessionId].slice(-4));
   }, [visibleSessionId]);
 
   useEffect(() => {
-    const sessionIds = new Set(sessions.map((s) => s.id));
-    setMountedIds((prev) => prev.filter((id) => sessionIds.has(id)));
-  }, [sessions]);
+    const valid = new Set(sessionIds);
+    setMountedIds(prev => { const next = prev.filter(id => valid.has(id)); return next.length === prev.length ? prev : next; });
+    for (const id of sessionSurfaceState.keys()) if (!valid.has(id)) sessionSurfaceState.delete(id);
+  }, [sessionIds]);
 
   useEffect(() => {
     if (mode !== "overlay" || !visibleSessionId) return;

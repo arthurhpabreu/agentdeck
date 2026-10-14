@@ -19,6 +19,8 @@ const hmrPort = parsePort(envHmrPort, devPort + 1);
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+  // Separate caches when worktrees share node_modules through a junction/symlink.
+  cacheDir: ".local/vite-cache",
   plugins: [react(), tailwindcss()],
   // Match the desktop webviews and Tailwind 4's supported browser baseline.
   build: { target: ["safari16.4", "chrome111", "edge111"] },

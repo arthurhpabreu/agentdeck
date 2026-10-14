@@ -32,6 +32,8 @@ pub struct RetrievalHit {
     pub id: String,
     pub source: String,
     pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
     pub title: String,
     pub excerpt: String,
     pub revision: u64,
@@ -63,6 +65,25 @@ pub fn search_report(
     config_path: Option<&Path>,
     query: &str,
 ) -> Result<RetrievalSearch, String> {
+    search_report_scoped(
+        engine,
+        project,
+        project_path,
+        config_path,
+        None,
+        query,
+        false,
+    )
+}
+pub fn search_report_scoped(
+    engine: &Engine,
+    project: &str,
+    project_path: Option<&str>,
+    config_path: Option<&Path>,
+    session_id: Option<&str>,
+    query: &str,
+    automatic: bool,
+) -> Result<RetrievalSearch, String> {
     if query.len() > MAX_QUERY_BYTES {
         return Err("Query exceeds limit".into());
     }
@@ -71,11 +92,47 @@ pub fn search_report(
     }
     let mut hits = Vec::new();
     let mut warnings = Vec::new();
-    for (rank, record) in engine
-        .search_context(project, query, 30)?
-        .into_iter()
-        .enumerate()
-    {
+    // Configuration errors deny every shared source while retaining healthy project memory.
+    // Document retrieval supplies the detailed configuration warning below.
+    let policy = config_path.and_then(|config| {
+        crate::knowledge::policy::resolve(config, project_path, session_id).ok()
+    });
+    let mut records = engine.search(project, query, 30)?;
+    let has_shared_sources = policy.as_ref().is_some_and(|policy| {
+        policy.selection.personal_preferences
+            || policy.memory_collections.iter().any(|collection| {
+                policy
+                    .selection
+                    .memory_collection_ids
+                    .contains(&collection.id)
+                    && !collection.record_ids.is_empty()
+            })
+    });
+    if has_shared_sources && engine.config(GLOBAL_MEMORY_KEY)?.enabled {
+        let mut selected = 0;
+        for record in engine.search(GLOBAL_MEMORY_KEY, query, 1000)? {
+            if policy.as_ref().unwrap().allows_memory(engine, &record)? {
+                records.push(record);
+                selected += 1;
+            }
+            if selected >= 30 {
+                break;
+            }
+        }
+    }
+    for (rank, record) in records.into_iter().enumerate() {
+        if record.scope == "global" {
+            if !policy
+                .as_ref()
+                .map(|policy| policy.allows_memory(engine, &record))
+                .transpose()?
+                .unwrap_or(false)
+            {
+                continue;
+            }
+        } else if !engine.applies(project, &record)? {
+            continue;
+        }
         let owner = if record.scope == "global" {
             GLOBAL_MEMORY_KEY
         } else {
@@ -91,7 +148,7 @@ pub fn search_report(
             } else {
                 0.0
             };
-        hits.push(RetrievalHit{id:record.id,source:"memory".into(),scope:record.scope,title:record.title,excerpt:record.content,revision:record.revision,score:weight/(60.0+rank as f64+1.0),reason:"FTS5 lexical match; title weight 6; pin and user feedback boosts; applicability checked".into(),path:None});
+        hits.push(RetrievalHit{id:record.id,source:"memory".into(),scope:record.scope,source_name:None,title:record.title,excerpt:record.content,revision:record.revision,score:weight/(60.0+rank as f64+1.0),reason:"FTS5 lexical match; title weight 6; pin and user feedback boosts; applicability checked".into(),path:None});
     }
     // Explicit memory links are one-hop evidence, bounded and below lexical seeds.
     let seeds = hits
@@ -111,10 +168,20 @@ pub fn search_report(
                     continue;
                 }
                 if let Some(record) = engine.get_context(project, &id)? {
+                    if record.scope == "global"
+                        && !policy
+                            .as_ref()
+                            .map(|policy| policy.allows_memory(engine, &record))
+                            .transpose()?
+                            .unwrap_or(false)
+                    {
+                        continue;
+                    }
                     hits.push(RetrievalHit {
                         id: record.id,
                         source: "memory".into(),
                         scope: record.scope,
+                        source_name: None,
                         title: record.title,
                         excerpt: record.content,
                         revision: record.revision,
@@ -137,11 +204,12 @@ pub fn search_report(
         }
     }
     if let Some(config) = config_path {
-        let documents = crate::knowledge::search_documents_report(
+        let documents = crate::knowledge::search_documents_policy(
             config,
             project_path,
+            session_id,
             query,
-            engine.config(GLOBAL_MEMORY_KEY)?.enabled,
+            automatic,
         )?;
         warnings = documents.warnings;
         for (rank, document) in documents.hits.into_iter().enumerate() {
@@ -149,6 +217,7 @@ pub fn search_report(
                 id: document.id,
                 source: "document".into(),
                 scope: document.scope,
+                source_name: Some(document.source_name),
                 title: document.title,
                 excerpt: crate::shared_memory::redact_secrets(&document.excerpt),
                 revision: 1,
@@ -166,6 +235,13 @@ pub fn search_report(
     });
     let mut seen = HashSet::new();
     hits.retain(|hit| seen.insert(hit.excerpt.trim().to_owned()));
+    if let (Some(config), Some(policy)) = (config_path, &policy) {
+        if crate::knowledge::policy::resolve(config, project_path, session_id)?.revision
+            != policy.revision
+        {
+            return Err("Context source selection changed; retry retrieval".into());
+        }
+    }
     hits.truncate(40);
     Ok(RetrievalSearch { hits, warnings })
 }
@@ -174,6 +250,7 @@ pub struct RetrievalContext {
     pub references: Vec<String>,
     pub hits: Vec<RetrievalHit>,
     pub warnings: Vec<crate::knowledge::KnowledgeWarning>,
+    pub policy_revision: u64,
 }
 pub fn reference(hit: &RetrievalHit) -> String {
     format!(
@@ -195,26 +272,42 @@ pub fn prepare(
         references: vec![],
         hits: vec![],
         warnings: vec![],
+        policy_revision: crate::knowledge::policy::resolve(config, Some(path), Some(conversation))?
+            .revision,
     };
     let settings = engine.config(project)?;
     if !settings.enabled || query.trim_start().starts_with('/') {
         return Ok(output);
     }
     let query = automatic_query(query);
-    let result = search_report(engine, project, Some(path), Some(config), &query)?;
+    let policy = crate::knowledge::policy::resolve(config, Some(path), Some(conversation))?;
+    output.policy_revision = policy.revision;
+    let result = search_report_scoped(
+        engine,
+        project,
+        Some(path),
+        Some(config),
+        Some(conversation),
+        &query,
+        true,
+    )?;
     output.warnings = result.warnings;
     let mut hits = result.hits;
     // Existing baseline/continuation selection supplies pinned preferences and recent handoffs.
-    let baseline = engine.prepare_context(project, conversation, &query)?;
+    let baseline = engine.prepare_project_context(project, conversation, &query)?;
     for note in baseline.records {
         if !hits.iter().any(|hit| hit.id == note.id) {
             if let Some(record) = engine.get_context(project, &note.id)? {
+                if !policy.allows_memory(engine, &record)? {
+                    continue;
+                }
                 hits.insert(
                     0,
                     RetrievalHit {
                         id: record.id,
                         source: "memory".into(),
                         scope: record.scope,
+                        source_name: None,
                         title: record.title,
                         excerpt: record.content,
                         revision: record.revision,
@@ -223,6 +316,44 @@ pub fn prepare(
                         path: None,
                     },
                 );
+            }
+        }
+    }
+    // Explicit source policy supersedes the former consume-global heuristic.
+    if engine.config(GLOBAL_MEMORY_KEY)?.enabled
+        && (policy.selection.personal_preferences
+            || policy.memory_collections.iter().any(|collection| {
+                policy
+                    .selection
+                    .memory_collection_ids
+                    .contains(&collection.id)
+                    && !collection.record_ids.is_empty()
+            }))
+    {
+        let mut admitted = 0;
+        for record in engine
+            .list(GLOBAL_MEMORY_KEY, "")?
+            .into_iter()
+            .filter(|record| record.pinned)
+        {
+            if policy.allows_memory(engine, &record)? && !hits.iter().any(|hit| hit.id == record.id)
+            {
+                hits.push(RetrievalHit {
+                    id: record.id,
+                    source: "memory".into(),
+                    scope: record.scope,
+                    source_name: None,
+                    title: record.title,
+                    excerpt: record.content,
+                    revision: record.revision,
+                    score: 1.0 / 61.0,
+                    reason: "explicitly selected shared or universal pinned baseline".into(),
+                    path: None,
+                });
+                admitted += 1;
+                if admitted >= 30 {
+                    break;
+                }
             }
         }
     }
@@ -261,6 +392,9 @@ pub fn prepare(
             continue;
         }
         let mut value = serde_json::json!({"id":hit.id,"source":hit.source,"scope":hit.scope,"title":hit.title,"revision":hit.revision,"reason":hit.reason,"excerpt":"","partial":true});
+        if let Some(name) = &hit.source_name {
+            value["sourceName"] = serde_json::json!(name);
+        }
         let fixed = value.to_string().len() + 1;
         if fixed + 60 > allowance {
             continue;
@@ -306,6 +440,11 @@ pub fn prepare(
         // The UI shows exactly the evidence admitted into the outgoing context.
         hit.excerpt = value["excerpt"].as_str().unwrap_or_default().to_owned();
         output.hits.push(hit);
+    }
+    if crate::knowledge::policy::resolve(config, Some(path), Some(conversation))?.revision
+        != policy.revision
+    {
+        return Err("Context source selection changed before preparation completed".into());
     }
     if !output.hits.is_empty() {
         text.push_str(suffix);

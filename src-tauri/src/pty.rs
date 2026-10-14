@@ -1,6 +1,166 @@
-use std::io::{Read, Write};
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 static NEXT_PTY_RUN: AtomicU64 = AtomicU64::new(1);
+const PTY_BATCH_BYTES: usize = 64 * 1024;
+const PTY_IN_FLIGHT_BYTES: u64 = 256 * 1024;
+static PTY_OUTPUTS: OnceLock<Mutex<HashMap<String, Arc<PtyOutput>>>> = OnceLock::new();
+
+struct PtyOutputState {
+    written: u64,
+    emitted: u64,
+    acknowledged: u64,
+    closed: bool,
+    cancelled: bool,
+    archive_only: bool,
+}
+struct PtyOutput {
+    run_id: u64,
+    path: PathBuf,
+    state: Mutex<PtyOutputState>,
+    file: Mutex<std::fs::File>,
+    consumed: Condvar,
+}
+impl PtyOutput {
+    fn new(run_id: u64) -> std::io::Result<Self> {
+        let directory = crate::util::agentdeck_tmp_dir().join("pty-output");
+        Self::new_in(run_id, &directory)
+    }
+    fn new_in(run_id: u64, directory: &std::path::Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(&directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let path = directory.join(format!("{}-{run_id}.bin", uuid::Uuid::new_v4()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        Ok(Self {
+            run_id,
+            path,
+            file: Mutex::new(file),
+            state: Mutex::new(PtyOutputState {
+                written: 0,
+                emitted: 0,
+                acknowledged: 0,
+                closed: false,
+                cancelled: false,
+                archive_only: false,
+            }),
+            consumed: Condvar::new(),
+        })
+    }
+    fn append(&self, bytes: &[u8]) -> std::io::Result<u64> {
+        let mut file = self.file.lock().unwrap();
+        file.write_all(bytes)?;
+        let mut state = self.state.lock().unwrap();
+        let offset = state.written;
+        state.written += bytes.len() as u64;
+        Ok(offset)
+    }
+    fn reserve(&self, end: u64) -> Option<bool> {
+        let mut state = self.state.lock().unwrap();
+        while !state.cancelled
+            && !state.archive_only
+            && end.saturating_sub(state.acknowledged) > PTY_IN_FLIGHT_BYTES
+        {
+            state = self.consumed.wait(state).unwrap();
+        }
+        if state.cancelled {
+            return None;
+        }
+        state.emitted = end;
+        Some(!state.archive_only)
+    }
+    fn acknowledge(&self, end: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.acknowledged = state.acknowledged.max(end.min(state.emitted));
+        self.consumed.notify_all();
+    }
+    fn finish(&self, cancelled: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+        state.cancelled |= cancelled;
+        self.consumed.notify_all();
+    }
+    fn drain_to_archive(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.archive_only = true;
+        self.consumed.notify_all();
+    }
+}
+fn outputs() -> &'static Mutex<HashMap<String, Arc<PtyOutput>>> {
+    PTY_OUTPUTS.get_or_init(Default::default)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyOutputPage {
+    run_id: u64,
+    data: String,
+    next_offset: u64,
+    end_offset: u64,
+    closed: bool,
+}
+/// ACKs are tied to a process generation, so a late renderer cannot unblock a replacement run.
+#[tauri::command]
+pub fn ack_pty_output(session_id: String, run_id: u64, end_offset: u64) {
+    if let Some(output) = outputs().lock().unwrap().get(&session_id).cloned() {
+        if output.run_id == run_id {
+            output.acknowledge(end_offset);
+        }
+    }
+}
+/// Replay consumes bounded chunks from the lossless archive rather than retaining hidden WebViews.
+#[tauri::command]
+pub async fn read_pty_output(
+    session_id: String,
+    offset: u64,
+    max_bytes: Option<usize>,
+) -> Result<Option<PtyOutputPage>, String> {
+    let output = outputs().lock().unwrap().get(&session_id).cloned();
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine;
+        let state = output.state.lock().unwrap();
+        let end_offset = state.written;
+        let closed = state.closed;
+        drop(state);
+        let offset = offset.min(end_offset);
+        let count = (end_offset - offset).min(
+            max_bytes
+                .unwrap_or(PTY_BATCH_BYTES)
+                .clamp(1, PTY_BATCH_BYTES) as u64,
+        ) as usize;
+        let mut file = std::fs::File::open(&output.path).map_err(|error| error.to_string())?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; count];
+        file.read_exact(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(Some(PtyOutputPage {
+            run_id: output.run_id,
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            next_offset: offset + count as u64,
+            end_offset,
+            closed,
+        }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 
 use tauri::{Emitter, Manager};
 
@@ -122,7 +282,6 @@ pub async fn start_pty_session(
     rows: u16,
     env: Option<Vec<(String, String)>>,
 ) -> Result<(), String> {
-    use base64::Engine;
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     let _launch_guard = crate::cli_updates::launch_guard()?;
     let notification_prompt = initial_prompt.clone();
@@ -238,9 +397,8 @@ pub async fn start_pty_session(
 
     // Stop any existing PTY for this session first.
     {
-        let km = pty_killer_map(&app);
-        let mut km = km.lock().unwrap();
-        if let Some(mut old) = km.remove(&session_id) {
+        let old = pty_killer_map(&app).lock().unwrap().remove(&session_id);
+        if let Some(mut old) = old {
             terminate_child(&mut old);
         }
     }
@@ -346,6 +504,13 @@ pub async fn start_pty_session(
         .take_writer()
         .map_err(|e| crate::i18n::interface_text(&app, "native.ptyWrite", &e.to_string()))?;
 
+    let run_id = NEXT_PTY_RUN.fetch_add(1, Ordering::Relaxed);
+    let output = Arc::new(PtyOutput::new(run_id).map_err(|error| {
+        crate::i18n::interface_text(&app, "native.ptyWrite", &error.to_string())
+    })?);
+    if let Some(memory) = &turn_memory {
+        crate::memory_runtime::validate_turn(&app, memory)?;
+    }
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -358,13 +523,19 @@ pub async fn start_pty_session(
     if let Some(memory) = &turn_memory {
         crate::memory_runtime::mark_delivered(&app, memory);
     }
-    let run_id = NEXT_PTY_RUN.fetch_add(1, Ordering::Relaxed);
+    if let Some(previous) = outputs()
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), output.clone())
+    {
+        previous.finish(true);
+    }
 
     // Save the writer, child, and master handles.
     {
         let wm = pty_writer_map(&app);
         let mut wm = wm.lock().unwrap();
-        wm.insert(session_id.clone(), master_writer);
+        wm.insert(session_id.clone(), Arc::new(Mutex::new(master_writer)));
     }
     {
         let km = pty_killer_map(&app);
@@ -398,13 +569,51 @@ pub async fn start_pty_session(
 
     crate::notification::completion::reset_terminal(&session_id, notification_prompt.as_deref());
     // Reader thread: forward PTY output and detect state transitions.
-    let _ = app.emit("pty-started", serde_json::json!({ "session_id": session_id, "pid": pid, "command": resolved_command, "workdir": expanded }));
+    let _ = app.emit("pty-started", serde_json::json!({ "session_id": session_id, "run_id": run_id, "pid": pid, "command": resolved_command, "workdir": expanded }));
     let app_r = app.clone();
     let sid_r = session_id.clone();
     let killer_map_r = pty_killer_map(&app);
     let (output_finished, output_drained) = std::sync::mpsc::channel();
+    // A small bounded channel and a credit window keep a noisy PTY from growing IPC queues.
+    let (batches, incoming) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(4);
+    let app_emit = app.clone();
+    let sid_emit = session_id.clone();
+    let output_emit = output.clone();
     std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
+        use base64::Engine;
+        let mut deferred: Option<(u64, Vec<u8>)> = None;
+        while let Some((offset, mut bytes)) = deferred.take().or_else(|| incoming.recv().ok()) {
+            let deadline = Instant::now() + Duration::from_millis(8);
+            while bytes.len() < PTY_BATCH_BYTES {
+                let Some(wait) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                match incoming.recv_timeout(wait) {
+                    Ok(piece) if bytes.len() + piece.1.len() <= PTY_BATCH_BYTES => {
+                        bytes.extend(piece.1)
+                    }
+                    Ok(piece) => {
+                        deferred = Some(piece);
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+            let end_offset = offset + bytes.len() as u64;
+            match output_emit.reserve(end_offset) {
+                None => break,
+                Some(false) => continue,
+                Some(true) => {}
+            }
+            if app_emit.emit("pty-data", serde_json::json!({ "session_id": sid_emit, "run_id": run_id, "offset": offset, "end_offset": end_offset, "data": base64::engine::general_purpose::STANDARD.encode(bytes) })).is_err() {
+                // The archive remains authoritative even when a window has closed.
+                output_emit.acknowledge(end_offset);
+            }
+        }
+    });
+    let output_read = output.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 32768];
         let mut stripper = AnsiStripper::new();
         // 0 = unknown, 1 = running, 2 = waiting
         let mut last_status: u8 = 0;
@@ -421,12 +630,17 @@ pub async fn start_pty_session(
                     {
                         continue;
                     }
-                    // Forward the raw data encoded as base64.
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app_r.emit(
-                        "pty-data",
-                        serde_json::json!({ "session_id": sid_r, "data": b64 }),
-                    );
+                    // Save raw bytes before dispatch. Hidden renderers can ACK without losing output.
+                    let offset = match output_read.append(&buf[..n]) {
+                        Ok(offset) => offset,
+                        Err(error) => {
+                            let _ = app_r.emit("pty-error", serde_json::json!({ "session_id": sid_r, "error": format!("Terminal output archive: {error}") }));
+                            break;
+                        }
+                    };
+                    if batches.send((offset, buf[..n].to_vec())).is_err() {
+                        break;
+                    }
 
                     // Detect CLI state transitions.
                     stripper.feed(&buf[..n]);
@@ -447,19 +661,23 @@ pub async fn start_pty_session(
                         } else {
                             "pty-running"
                         };
-                        let _ = app_r.emit(event, serde_json::json!({ "session_id": sid_r }));
+                        let _ = app_r.emit(event, serde_json::json!({ "session_id": sid_r, "run_id": run_id, "source": "screen-heuristic" }));
                     }
                 }
             }
         }
 
+        output_read.finish(false);
         let _ = output_finished.send(());
     });
 
     // Wait independently of the output pipe: Windows ConPTY keeps that pipe open until its master closes.
     let app_wait = app.clone();
+    let output_wait = output.clone();
     std::thread::spawn(move || {
         let exit_code = child.wait().ok().map(|status| status.exit_code());
+        // A exited process must drain even when its renderer has gone away, before ConPTY closes.
+        output_wait.drain_to_archive();
         let killers = pty_killer_map(&app_wait);
         let mut killers = killers.lock().unwrap();
         if !killers
@@ -500,21 +718,32 @@ pub async fn start_pty_session(
 
 /// Write keyboard input to the PTY from base64-encoded data.
 #[tauri::command]
-pub fn write_pty(app: tauri::AppHandle, session_id: String, data: String) -> Result<(), String> {
+pub async fn write_pty(
+    app: tauri::AppHandle,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
     use base64::Engine;
-    let wm = pty_writer_map(&app);
-    let mut wm = wm.lock().unwrap();
-    if let Some(writer) = wm.get_mut(&session_id) {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&data)
-            .map_err(|e| crate::i18n::interface_text(&app, "native.ptyDecode", &e.to_string()))?;
-        writer
-            .write_all(&bytes)
-            .map_err(|e| crate::i18n::interface_text(&app, "native.ptyWrite", &e.to_string()))?;
-    } else {
+    let writer = pty_writer_map(&app)
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .cloned();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data)
+        .map_err(|e| crate::i18n::interface_text(&app, "native.ptyDecode", &e.to_string()))?;
+    let Some(writer) = writer else {
         return Err(crate::i18n::interface_text(&app, "native.ptyMissing", ""));
-    }
-    Ok(())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        writer
+            .lock()
+            .unwrap()
+            .write_all(&bytes)
+            .map_err(|e| crate::i18n::interface_text(&app, "native.ptyWrite", &e.to_string()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Write a text line to the PTY, appending a newline to execute it.
@@ -555,9 +784,12 @@ pub async fn send_pty_query(
     let guidance = crate::token_economy::followup_guidance(&app, &provider, &session_id);
     let delivered_guidance = !guidance.is_empty() && !query.trim_start().starts_with('/');
     crate::token_economy::append_guidance(&mut query, &guidance);
-    let wm = pty_writer_map(&app);
-    let mut wm = wm.lock().unwrap();
-    if let Some(writer) = wm.get_mut(&session_id) {
+    let writer = pty_writer_map(&app)
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .cloned();
+    if let Some(writer) = writer {
         // Bracketed paste preserves multiline prompts without executing each line.
         let text = format!("{query}{context}");
         let mut data = if text.contains('\n') {
@@ -566,12 +798,22 @@ pub async fn send_pty_query(
             text.into_bytes()
         };
         data.push(if cfg!(windows) { b'\r' } else { b'\n' });
-        writer
-            .write_all(&data)
-            .map_err(|e| crate::i18n::interface_text(&app, "native.ptyWrite", &e.to_string()))?;
-        writer
-            .flush()
-            .map_err(|e| crate::i18n::interface_text(&app, "native.ptyWrite", &e.to_string()))?;
+        let writer_app = app.clone();
+        let writer_memory = memory.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut writer = writer.lock().unwrap();
+            if let Some(memory) = &writer_memory {
+                crate::memory_runtime::validate_turn(&writer_app, memory)?;
+            }
+            writer
+                .write_all(&data)
+                .and_then(|_| writer.flush())
+                .map_err(|e| {
+                    crate::i18n::interface_text(&writer_app, "native.ptyWrite", &e.to_string())
+                })
+        })
+        .await
+        .map_err(|error| error.to_string())??;
         crate::notification::completion::begin_terminal(&session_id, Some(&notification_prompt));
         if delivered_guidance {
             crate::token_economy::mark_guidance_delivered(&provider, &session_id);
@@ -613,30 +855,40 @@ pub fn resize_pty(
 
 /// Stop a PTY session.
 #[tauri::command]
-pub fn stop_pty_session(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+pub async fn stop_pty_session(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || stop_pty_session_inner(app, session_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+pub(crate) fn stop_pty_session_inner(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
     crate::notification::completion::stop_terminal(&session_id);
+    if let Some(output) = outputs().lock().unwrap().get(&session_id).cloned() {
+        output.finish(true);
+    }
     let mut had_session = false;
     {
-        let km = pty_killer_map(&app);
-        let mut km = km.lock().unwrap();
-        if let Some(mut child) = km.remove(&session_id) {
+        let child = pty_killer_map(&app).lock().unwrap().remove(&session_id);
+        if let Some(mut child) = child {
             had_session = true;
             terminate_child(&mut child);
         }
     }
     {
-        let wm = pty_writer_map(&app);
-        let mut wm = wm.lock().unwrap();
-        if wm.remove(&session_id).is_some() {
+        let writer = pty_writer_map(&app).lock().unwrap().remove(&session_id);
+        if writer.is_some() {
             had_session = true;
         }
+        drop(writer);
     }
     {
-        let mm = pty_master_map(&app);
-        let mut mm = mm.lock().unwrap();
-        if mm.remove(&session_id).is_some() {
+        let master = pty_master_map(&app).lock().unwrap().remove(&session_id);
+        if master.is_some() {
             had_session = true;
         }
+        drop(master);
     }
     {
         let meta_map = pty_session_meta_map(&app);
@@ -673,6 +925,60 @@ fn terminate_child(child: &mut PtyChildHandle) {
             .status();
     }
     let _ = child.killer.kill();
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    #[test]
+    fn output_archive_keeps_split_utf8_ansi_bytes_and_bounds_credit() {
+        let directory =
+            std::env::temp_dir().join(format!("agentdeck-pty-flow-{}", uuid::Uuid::new_v4()));
+        let output = Arc::new(PtyOutput::new_in(77, &directory).unwrap());
+        let text = "\x1b[32mcafé 👩‍💻\x1b[0m\r\n".repeat(600_000);
+        let bytes = text.as_bytes();
+        for (i, chunk) in bytes.chunks(4093).enumerate() {
+            assert_eq!(output.append(chunk).unwrap(), (i * 4093) as u64);
+        }
+        assert_eq!(std::fs::read(&output.path).unwrap(), bytes);
+        assert_eq!(output.reserve(PTY_IN_FLIGHT_BYTES), Some(true));
+        let (done, finished) = std::sync::mpsc::channel();
+        let worker = output.clone();
+        let thread = std::thread::spawn(move || {
+            done.send(worker.reserve(PTY_IN_FLIGHT_BYTES + PTY_BATCH_BYTES as u64))
+                .unwrap()
+        });
+        assert!(finished.recv_timeout(Duration::from_millis(30)).is_err());
+        output.acknowledge(PTY_BATCH_BYTES as u64);
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Some(true)
+        );
+        thread.join().unwrap();
+        output.finish(true);
+        assert_eq!(output.reserve(999_999), None);
+        drop(output);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn process_exit_wakes_backpressure_and_drains_without_more_ipc() {
+        let directory =
+            std::env::temp_dir().join(format!("agentdeck-pty-drain-{}", uuid::Uuid::new_v4()));
+        let output = Arc::new(PtyOutput::new_in(88, &directory).unwrap());
+        let (done, finished) = std::sync::mpsc::channel();
+        let worker = output.clone();
+        let thread =
+            std::thread::spawn(move || done.send(worker.reserve(PTY_IN_FLIGHT_BYTES + 1)).unwrap());
+        assert!(finished.recv_timeout(Duration::from_millis(30)).is_err());
+        output.drain_to_archive();
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Some(false)
+        );
+        thread.join().unwrap();
+        drop(output);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[cfg(all(test, unix))]

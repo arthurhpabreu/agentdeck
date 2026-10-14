@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -8,6 +8,9 @@ use std::{
     time::{Duration, Instant, UNIX_EPOCH},
 };
 use tauri::Manager;
+#[path = "source_policy.rs"]
+pub mod policy;
+use policy::StoredConfig;
 
 const MAX_NOTE_BYTES: u64 = 1024 * 1024;
 const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
@@ -25,16 +28,6 @@ pub struct KnowledgeConfig {
     pub storage_path: String,
 }
 
-#[derive(Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StoredConfig {
-    // Preserve the former single source as the global source during migration.
-    #[serde(default)]
-    source_path: String,
-    #[serde(default)]
-    projects: HashMap<String, String>,
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KnowledgeResult {
@@ -42,6 +35,149 @@ pub struct KnowledgeResult {
     pub title: String,
     pub excerpt: String,
     pub score: usize,
+}
+
+#[tauri::command]
+pub fn get_source_policy(
+    app: tauri::AppHandle,
+    project_path: Option<String>,
+    session_id: Option<String>,
+) -> Result<policy::Policy, String> {
+    policy::resolve(
+        &app_config(&app)?,
+        project_path.as_deref(),
+        session_id.as_deref(),
+    )
+}
+fn policy_changed(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let _ = app.emit("knowledge-policy-changed", ());
+}
+#[tauri::command]
+pub fn save_knowledge_vault(
+    app: tauri::AppHandle,
+    mut vault: policy::Vault,
+) -> Result<policy::Vault, String> {
+    policy::validate_vault(&mut vault)?;
+    policy::update(&app_config(&app)?, |stored| {
+        if let Some(existing) = stored
+            .vaults
+            .iter_mut()
+            .find(|existing| existing.id == vault.id)
+        {
+            *existing = vault.clone();
+        } else {
+            stored.vaults.push(vault.clone());
+        }
+        Ok(())
+    })?;
+    policy_changed(&app);
+    Ok(vault)
+}
+#[tauri::command]
+pub fn remove_knowledge_vault(app: tauri::AppHandle, source_id: String) -> Result<(), String> {
+    policy::update(&app_config(&app)?, |stored| {
+        stored.vaults.retain(|vault| vault.id != source_id);
+        // Keep missing IDs in associations as visible diagnostics; never silently choose a replacement.
+        Ok(())
+    })?;
+    policy_changed(&app);
+    Ok(())
+}
+#[tauri::command]
+pub fn set_project_source_policy(
+    app: tauri::AppHandle,
+    project_path: String,
+    mut selection: policy::Selection,
+) -> Result<policy::Policy, String> {
+    let project = project_key(Some(&project_path))?.ok_or("No current project")?;
+    let config = app_config(&app)?;
+    policy::update(&config, |stored| {
+        policy::validate_selection(stored, &mut selection)?;
+        stored.project_selections.insert(project, selection);
+        Ok(())
+    })?;
+    policy_changed(&app);
+    policy::resolve(&config, Some(&project_path), None)
+}
+#[tauri::command]
+pub fn set_conversation_source_policy(
+    app: tauri::AppHandle,
+    project_path: String,
+    session_id: String,
+    mut selection: Option<policy::Selection>,
+) -> Result<policy::Policy, String> {
+    let project = project_key(Some(&project_path))?.ok_or("No current project")?;
+    let config = app_config(&app)?;
+    policy::update(&config, |stored| {
+        let key = policy::conversation_key(&project, &session_id);
+        if let Some(selection) = &mut selection {
+            policy::validate_selection(stored, selection)?;
+            stored
+                .conversation_selections
+                .insert(key, selection.clone());
+        } else {
+            stored.conversation_selections.remove(&key);
+        }
+        Ok(())
+    })?;
+    policy_changed(&app);
+    policy::resolve(&config, Some(&project_path), Some(&session_id))
+}
+#[tauri::command]
+pub fn save_memory_collection(
+    app: tauri::AppHandle,
+    mut collection: policy::MemoryCollection,
+) -> Result<policy::MemoryCollection, String> {
+    if collection.id.is_empty() {
+        collection.id = uuid::Uuid::new_v4().to_string();
+    }
+    if collection.name.trim().is_empty()
+        || collection.name.len() > 200
+        || collection.id.len() > 150
+        || collection.record_ids.len() > 1000
+    {
+        return Err("Invalid memory collection".into());
+    }
+    let engine = crate::shared_memory::Engine::open(&crate::memory_runtime::data_dir(&app)?)?;
+    for id in &collection.record_ids {
+        if engine
+            .get(crate::shared_memory::GLOBAL_MEMORY_KEY, id)?
+            .is_none()
+        {
+            return Err("Collection may only contain existing shared memory records".into());
+        }
+    }
+    policy::update(&app_config(&app)?, |stored| {
+        if let Some(existing) = stored
+            .memory_collections
+            .iter_mut()
+            .find(|value| value.id == collection.id)
+        {
+            *existing = collection.clone();
+        } else {
+            stored.memory_collections.push(collection.clone());
+        }
+        Ok(())
+    })?;
+    policy_changed(&app);
+    Ok(collection)
+}
+#[tauri::command]
+pub fn rollback_source_policy_migration(app: tauri::AppHandle) -> Result<(), String> {
+    let config = app_config(&app)?;
+    let _guard = policy::WRITE.lock().map_err(|e| e.to_string())?;
+    let backup = config.with_extension("v1.backup.json");
+    let bytes = fs::read(&backup).map_err(|e| format!("Cannot restore migration backup: {e}"))?;
+    let _: policy::StoredConfig = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    // Archive current associations before restoring, so rollback itself is recoverable.
+    policy::write_bytes(
+        &config.with_extension("v2.rollback.json"),
+        &fs::read(&config).map_err(|e| e.to_string())?,
+    )?;
+    policy::write_bytes(&config, &bytes)?;
+    policy_changed(&app);
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -83,8 +219,12 @@ struct VaultIndex {
     limited: bool,
     diagnostics: KnowledgeDiagnostics,
 }
-static INDEX: OnceLock<Mutex<HashMap<PathBuf, Arc<VaultIndex>>>> = OnceLock::new();
-static CONFIG_WRITE: Mutex<()> = Mutex::new(());
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct IndexKey {
+    root: PathBuf,
+    allowed_paths: Vec<String>,
+}
+static INDEX: OnceLock<Mutex<HashMap<IndexKey, Arc<VaultIndex>>>> = OnceLock::new();
 
 pub(crate) fn app_config(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
@@ -99,6 +239,7 @@ pub(crate) fn app_config(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 pub struct DocumentHit {
     pub id: String,
     pub scope: String,
+    pub source_name: String,
     pub path: String,
     pub title: String,
     pub excerpt: String,
@@ -187,9 +328,18 @@ pub fn search_documents_report(
     config_path: &Path,
     project_path: Option<&str>,
     query: &str,
-    global: bool,
+    _global: bool,
 ) -> Result<DocumentSearch, String> {
-    let stored = match read_stored(config_path) {
+    search_documents_policy(config_path, project_path, None, query, false)
+}
+pub fn search_documents_policy(
+    config_path: &Path,
+    project_path: Option<&str>,
+    session_id: Option<&str>,
+    query: &str,
+    automatic: bool,
+) -> Result<DocumentSearch, String> {
+    let resolved = match policy::resolve(config_path, project_path, session_id) {
         Ok(value) => value,
         Err(message) => {
             return Ok(DocumentSearch {
@@ -204,24 +354,12 @@ pub fn search_documents_report(
             })
         }
     };
-    let project = project_key(project_path)?;
-    let mut sources = Vec::new();
-    if let Some(project) = project.as_deref() {
-        let source = scoped_source(&stored, Some(project));
-        if !source.is_empty() {
-            sources.push(("project", source));
-        }
-    }
-    if global
-        && !stored.source_path.is_empty()
-        && !sources.iter().any(|(_, s)| s == &stored.source_path)
-    {
-        sources.push(("global", stored.source_path));
-    }
     let mut hits = Vec::new();
     let mut warnings = Vec::new();
-    for (scope, source) in sources {
-        let index = match index_source(&source, false) {
+    for vault in resolved.sources(automatic) {
+        let scope = vault.id.as_str();
+        let source = vault.path.clone();
+        let index = match index_vault(vault, false) {
             Ok(index) => index,
             Err(message) => {
                 warnings.push(KnowledgeWarning {
@@ -243,13 +381,14 @@ pub fn search_documents_report(
                 diagnostics: Some(index.diagnostics.clone()),
             });
         }
-        let direct = search_index(&index, query);
+        let direct = search_index_allowed(&index, query, |path| vault.allows(path));
         let mut paths = HashSet::new();
         for result in &direct {
             paths.insert(result.path.clone());
             hits.push(DocumentHit {
                 id: document_id(scope, &result.path),
                 scope: scope.into(),
+                source_name: vault.name.clone(),
                 path: result.path.clone(),
                 title: result.title.clone(),
                 excerpt: result.excerpt.clone(),
@@ -273,10 +412,11 @@ pub fn search_documents_report(
                 continue;
             };
             let note = &index.notes[neighbor];
-            if paths.insert(note.path.clone()) {
+            if vault.allows(&note.path) && paths.insert(note.path.clone()) {
                 hits.push(DocumentHit {
                     id: document_id(scope, &note.path),
                     scope: scope.into(),
+                    source_name: vault.name.clone(),
                     path: note.path.clone(),
                     title: note.title.clone(),
                     excerpt: excerpt(&note.text, &tokens(query), 1000),
@@ -291,6 +431,10 @@ pub fn search_documents_report(
         }
     }
     hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.id.cmp(&b.id)));
+    // A slow index scan cannot return grants from a superseded selection.
+    if policy::resolve(config_path, project_path, session_id)?.revision != resolved.revision {
+        return Err("Knowledge source selection changed; retry the query".into());
+    }
     Ok(DocumentSearch { hits, warnings })
 }
 
@@ -309,6 +453,18 @@ pub struct KnowledgeHealth {
 }
 
 fn source_health(source: &str, refresh: bool) -> KnowledgeHealth {
+    indexed_health(
+        source,
+        (!source.is_empty()).then(|| index_source(source, refresh)),
+    )
+}
+fn vault_health(vault: &policy::Vault, refresh: bool) -> KnowledgeHealth {
+    indexed_health(&vault.path, Some(index_vault(vault, refresh)))
+}
+fn indexed_health(
+    source: &str,
+    result: Option<Result<Arc<VaultIndex>, String>>,
+) -> KnowledgeHealth {
     let mut health = KnowledgeHealth {
         source_path: source.into(),
         status: "none".into(),
@@ -323,8 +479,8 @@ fn source_health(source: &str, refresh: bool) -> KnowledgeHealth {
         message: None,
         diagnostics: None,
     };
-    if !source.is_empty() {
-        match index_source(source, refresh) {
+    if let Some(result) = result {
+        match result {
             Ok(index) => {
                 health.status = if index.limited { "limited" } else { "ready" }.into();
                 health.note_count = index.notes.len();
@@ -344,10 +500,28 @@ pub async fn get_knowledge_health(
     app: tauri::AppHandle,
     project_path: Option<String>,
     refresh: Option<bool>,
+    session_id: Option<String>,
+    source_id: Option<String>,
 ) -> Result<KnowledgeHealth, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let config = read_config(&app, project_path.as_deref())?;
-        Ok(source_health(&config.source_path, refresh.unwrap_or(false)))
+        let path = app_config(&app)?;
+        let (policy, sources) = ui_sources(
+            &path,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            source_id.as_deref(),
+        )?;
+        let health = sources
+            .first()
+            .map(|source| vault_health(source, refresh.unwrap_or(false)))
+            .unwrap_or_else(|| source_health("", false));
+        ensure_current(
+            &path,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            policy.revision,
+        )?;
+        Ok(health)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -356,27 +530,34 @@ pub fn read_document(
     config_path: &Path,
     project_path: Option<&str>,
     id: &str,
-    allow_global: bool,
+    _allow_global: bool,
+    offset: usize,
+    budget: usize,
+) -> Result<String, String> {
+    read_document_policy(config_path, project_path, None, id, offset, budget)
+}
+pub fn read_document_policy(
+    config_path: &Path,
+    project_path: Option<&str>,
+    session_id: Option<&str>,
+    id: &str,
     offset: usize,
     budget: usize,
 ) -> Result<String, String> {
     let (scope, path): (String, String) =
         serde_json::from_str(id.strip_prefix("doc:").ok_or("Invalid document ID")?)
             .map_err(|_| "Invalid document ID")?;
-    let stored = read_stored(config_path)?;
-    let project = project_key(project_path)?;
-    let source = match scope.as_str() {
-        "project" => scoped_source(
-            &stored,
-            Some(project.as_deref().ok_or("No current project")?),
-        ),
-        "global" if allow_global => stored.source_path,
-        _ => return Err("Document scope is unavailable".into()),
-    };
-    if source.is_empty() {
-        return Err("Document source is unavailable".into());
+    let resolved = policy::resolve(config_path, project_path, session_id)?;
+    let vault = resolved
+        .sources(false)
+        .into_iter()
+        .find(|vault| vault.id == scope)
+        .ok_or("Document source is not selected for this conversation")?;
+    if !vault.allows(&path) {
+        return Err("Document is outside the selected note restrictions".into());
     }
-    let index = index_source(&source, false)?;
+    let source = vault.path.clone();
+    let index = index_vault(vault, false)?;
     let note = index
         .notes
         .iter()
@@ -384,6 +565,9 @@ pub fn read_document(
         .ok_or("Document not found in configured source")?;
     // Recheck existence/containment on read instead of returning a deleted cached note.
     let text = crate::shared_memory::redact_secrets(&read_scoped_text(&source, &path)?);
+    if policy::resolve(config_path, project_path, session_id)?.revision != resolved.revision {
+        return Err("Knowledge source selection changed; retry the read".into());
+    }
     let mut offset = offset.min(text.len());
     while !text.is_char_boundary(offset) {
         offset += 1;
@@ -403,13 +587,32 @@ pub fn read_document(
         budget,
     ))
 }
-fn read_stored(path: &Path) -> Result<StoredConfig, String> {
-    match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|e| format!("Cannot read knowledge configuration: {e}")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(StoredConfig::default()),
-        Err(error) => Err(error.to_string()),
+pub fn validate_document_policy(
+    config_path: &Path,
+    project_path: Option<&str>,
+    session_id: Option<&str>,
+    id: &str,
+) -> Result<(), String> {
+    let (source_id, path): (String, String) =
+        serde_json::from_str(id.strip_prefix("doc:").ok_or("Invalid document ID")?)
+            .map_err(|_| "Invalid document ID")?;
+    let policy = policy::resolve(config_path, project_path, session_id)?;
+    let source = policy
+        .sources(false)
+        .into_iter()
+        .find(|source| source.id == source_id && source.allows(&path))
+        .ok_or("Document source is no longer authorized")?;
+    let root =
+        fs::canonicalize(&source.path).map_err(|_| "Selected document source is unavailable")?;
+    let target =
+        fs::canonicalize(root.join(path)).map_err(|_| "Selected document is unavailable")?;
+    if !target.starts_with(&root) || !target.is_file() {
+        return Err("Document is outside the selected source".into());
     }
+    Ok(())
+}
+fn read_stored(path: &Path) -> Result<StoredConfig, String> {
+    policy::load(path)
 }
 fn project_key(project: Option<&str>) -> Result<Option<String>, String> {
     project
@@ -425,7 +628,28 @@ fn scoped_source(config: &StoredConfig, project: Option<&str>) -> String {
 fn read_config(app: &tauri::AppHandle, project: Option<&str>) -> Result<KnowledgeConfig, String> {
     let path = app_config(app)?;
     let project = project_key(project)?;
-    let source = scoped_source(&read_stored(&path)?, project.as_deref());
+    let stored = read_stored(&path)?;
+    let source = if let Some(project) = project.as_deref() {
+        stored
+            .project_selections
+            .get(project)
+            .and_then(|selection| {
+                selection
+                    .source_ids
+                    .iter()
+                    .filter_map(|id| {
+                        stored
+                            .vaults
+                            .iter()
+                            .find(|vault| vault.id == *id && vault.mode != "disabled")
+                    })
+                    .next()
+            })
+            .map(|vault| vault.path.clone())
+            .unwrap_or_default()
+    } else {
+        stored.source_path.clone()
+    };
     Ok(KnowledgeConfig {
         mode: source_mode(&source).into(),
         source_path: source,
@@ -479,25 +703,38 @@ pub fn set_knowledge_source(
     };
     let project = project_key(project_path.as_deref())?;
     let path = app_config(&app)?;
-    let _guard = CONFIG_WRITE.lock().map_err(|e| e.to_string())?;
-    let mut stored = read_stored(&path)?;
-    if let Some(key) = project.as_ref() {
-        if source.is_empty() {
-            stored.projects.remove(key);
-        } else {
-            stored.projects.insert(key.clone(), source);
+    policy::update(&path, |stored| {
+        let id = stored
+            .vaults
+            .iter()
+            .find(|vault| vault.path == source)
+            .map(|vault| vault.id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if !source.is_empty() && !stored.vaults.iter().any(|vault| vault.id == id) {
+            stored.vaults.push(policy::Vault {
+                id: id.clone(),
+                name: Path::new(&source)
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("Vault")
+                    .into(),
+                path: source.clone(),
+                mode: "automatic".into(),
+                allowed_paths: vec![],
+            });
         }
-    } else {
-        stored.source_path = source;
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+        if let Some(key) = project.as_ref() {
+            stored.projects.insert(key.clone(), source.clone());
+            stored
+                .project_selections
+                .entry(key.clone())
+                .or_default()
+                .source_ids = if source.is_empty() { vec![] } else { vec![id] };
+        } else {
+            stored.source_path = source.clone();
+        }
+        Ok(())
+    })?;
     read_config(&app, project_path.as_deref())
 }
 
@@ -679,8 +916,16 @@ fn read_scoped_text(source: &str, path: &str) -> Result<String, String> {
     read_note(&target).map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 fn selected_note(source: &str, path: &str) -> Result<KnowledgeResult, String> {
     let index = index_source(source, false)?;
+    selected_index_note(source, path, &index)
+}
+fn selected_index_note(
+    source: &str,
+    path: &str,
+    index: &VaultIndex,
+) -> Result<KnowledgeResult, String> {
     let note = index
         .notes
         .iter()
@@ -837,21 +1082,65 @@ fn build_edges(notes: &[Arc<Note>]) -> Vec<(usize, usize)> {
     edges.sort_unstable();
     edges
 }
+#[cfg(test)]
 fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex, String> {
+    build_index_allowed(root, previous, &[])
+}
+fn build_index_allowed(
+    root: &Path,
+    previous: Option<&VaultIndex>,
+    allowed_paths: &[String],
+) -> Result<VaultIndex, String> {
     if !root.is_dir() {
         return Err("Knowledge source folder is unavailable. Choose its current location.".into());
     }
     fs::read_dir(root).map_err(|e| format!("Knowledge folder cannot be read: {e}"))?;
     let mut paths = Vec::new();
     let mut diagnostics = KnowledgeDiagnostics::default();
-    collect_markdown(
-        root,
-        root,
-        &mut paths,
-        &mut HashSet::new(),
-        &mut diagnostics,
-        0,
-    );
+    let mut visited = HashSet::new();
+    if allowed_paths.is_empty() {
+        collect_markdown(root, root, &mut paths, &mut visited, &mut diagnostics, 0);
+    } else {
+        // Restrictions narrow enumeration itself. Unselected notes cannot consume
+        // the note/byte quotas or appear in links and cached graph diagnostics.
+        for relative in allowed_paths {
+            if paths.len() > MAX_NOTES {
+                break;
+            }
+            let relative = Path::new(relative);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            {
+                continue;
+            }
+            let target = root.join(relative);
+            let Ok(canonical) = fs::canonicalize(&target) else {
+                diagnostics.unreadable_file_count += 1;
+                continue;
+            };
+            if !canonical.starts_with(root) {
+                continue;
+            }
+            if canonical.is_dir() {
+                collect_markdown(
+                    root,
+                    &target,
+                    &mut paths,
+                    &mut visited,
+                    &mut diagnostics,
+                    relative.components().count(),
+                );
+            } else if target.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown")
+            }) {
+                paths.push(target);
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
     diagnostics.note_limit_reached = paths.len() > MAX_NOTES;
     paths.truncate(MAX_NOTES);
     let previous = previous
@@ -937,19 +1226,52 @@ fn build_index(root: &Path, previous: Option<&VaultIndex>) -> Result<VaultIndex,
     })
 }
 fn index_source(source: &str, refresh: bool) -> Result<Arc<VaultIndex>, String> {
+    index_paths(source, &[], refresh)
+}
+fn index_vault(vault: &policy::Vault, refresh: bool) -> Result<Arc<VaultIndex>, String> {
+    index_paths(&vault.path, &vault.allowed_paths, refresh)
+}
+fn index_paths(
+    source: &str,
+    allowed_paths: &[String],
+    refresh: bool,
+) -> Result<Arc<VaultIndex>, String> {
     let root = fs::canonicalize(source)
         .map_err(|error| format!("Knowledge folder unavailable: {error}"))?;
+    let mut normalized = allowed_paths
+        .iter()
+        .map(|path| path.replace('\\', "/").trim_matches('/').to_owned())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    let mut minimal = Vec::<String>::new();
+    for path in normalized {
+        if !minimal
+            .iter()
+            .any(|parent| path.starts_with(&format!("{parent}/")))
+        {
+            minimal.push(path);
+        }
+    }
+    let key = IndexKey {
+        root: root.clone(),
+        allowed_paths: minimal,
+    };
     let mut cache = INDEX
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|e| e.to_string())?;
-    if let Some(index) = cache.get(&root) {
+    if let Some(index) = cache.get(&key) {
         if !refresh && index.scanned.elapsed() < INDEX_TTL {
             return Ok(Arc::clone(index));
         }
     }
-    let next = Arc::new(build_index(&root, cache.get(&root).map(Arc::as_ref))?);
-    if cache.len() >= 4 && !cache.contains_key(&root) {
+    let next = Arc::new(build_index_allowed(
+        &root,
+        cache.get(&key).map(Arc::as_ref),
+        &key.allowed_paths,
+    )?);
+    if cache.len() >= 4 && !cache.contains_key(&key) {
         if let Some(oldest) = cache
             .iter()
             .min_by_key(|(_, index)| index.scanned)
@@ -958,7 +1280,7 @@ fn index_source(source: &str, refresh: bool) -> Result<Arc<VaultIndex>, String> 
             cache.remove(&oldest);
         }
     }
-    cache.insert(root, Arc::clone(&next));
+    cache.insert(key, Arc::clone(&next));
     Ok(next)
 }
 fn excerpt(text: &str, query: &[String], limit: usize) -> String {
@@ -991,6 +1313,13 @@ fn excerpt(text: &str, query: &[String], limit: usize) -> String {
     out
 }
 fn search_index(index: &VaultIndex, query: &str) -> Vec<KnowledgeResult> {
+    search_index_allowed(index, query, |_| true)
+}
+fn search_index_allowed(
+    index: &VaultIndex,
+    query: &str,
+    allowed: impl Fn(&str) -> bool,
+) -> Vec<KnowledgeResult> {
     let mut seen = HashSet::new();
     let terms = tokens(query)
         .into_iter()
@@ -1004,6 +1333,7 @@ fn search_index(index: &VaultIndex, query: &str) -> Vec<KnowledgeResult> {
         .notes
         .iter()
         .enumerate()
+        .filter(|(_, note)| allowed(&note.path))
         .filter_map(|(id, note)| {
             let mut matched = 0;
             let score = terms
@@ -1043,17 +1373,83 @@ pub async fn search_knowledge(
     app: tauri::AppHandle,
     query: String,
     project_path: Option<String>,
+    session_id: Option<String>,
+    source_id: Option<String>,
 ) -> Result<Vec<KnowledgeResult>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let config = read_config(&app, project_path.as_deref())?;
-        if config.source_path.is_empty() {
-            return Ok(Vec::new());
+        let config = app_config(&app)?;
+        let (policy, sources) = ui_sources(
+            &config,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            source_id.as_deref(),
+        )?;
+        let mut results = vec![];
+        for source in sources {
+            let index = index_vault(&source, false)?;
+            for mut result in search_index_allowed(&index, &query, |path| source.allows(path)) {
+                result.path = document_id(&source.id, &result.path);
+                results.push(result);
+            }
         }
-        let index = index_source(&config.source_path, false)?;
-        Ok(search_index(&index, &query))
+        ensure_current(
+            &config,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            policy.revision,
+        )?;
+        results.sort_by(|a, b| b.score.cmp(&a.score).then(a.path.cmp(&b.path)));
+        results.truncate(100);
+        Ok(results)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+fn ensure_current(
+    config: &Path,
+    project: Option<&str>,
+    session: Option<&str>,
+    revision: u64,
+) -> Result<(), String> {
+    if policy::resolve(config, project, session)?.revision != revision {
+        return Err("Knowledge source selection changed; retry".into());
+    }
+    Ok(())
+}
+fn ui_sources(
+    config: &Path,
+    project: Option<&str>,
+    session: Option<&str>,
+    source_id: Option<&str>,
+) -> Result<(policy::Policy, Vec<policy::Vault>), String> {
+    let policy = policy::resolve(config, project, session)?;
+    // Explicit catalog administration is distinct from a scoped agent query.
+    let sources = if project.is_none() {
+        source_id
+            .map(|id| {
+                policy
+                    .vaults
+                    .iter()
+                    .find(|vault| vault.id == id)
+                    .cloned()
+                    .ok_or("Vault no longer exists".to_owned())
+            })
+            .transpose()?
+            .into_iter()
+            .collect()
+    } else {
+        let sources = policy
+            .sources(false)
+            .into_iter()
+            .filter(|vault| source_id.is_none_or(|id| vault.id == id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if source_id.is_some() && sources.is_empty() {
+            return Err("Vault is not selected for this conversation".into());
+        }
+        sources
+    };
+    Ok((policy, sources))
 }
 fn graph(index: &VaultIndex) -> KnowledgeGraph {
     let mut degree = vec![0; index.notes.len()];
@@ -1098,21 +1494,52 @@ pub async fn get_knowledge_graph(
     app: tauri::AppHandle,
     project_path: Option<String>,
     refresh: Option<bool>,
+    session_id: Option<String>,
+    source_id: Option<String>,
 ) -> Result<KnowledgeGraph, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let config = read_config(&app, project_path.as_deref())?;
-        if config.source_path.is_empty() {
-            return Ok(KnowledgeGraph {
-                nodes: vec![],
-                edges: vec![],
-                note_count: 0,
-                link_count: 0,
-                truncated: false,
-                index_limited: false,
-            });
+        let config = app_config(&app)?;
+        let (policy, sources) = ui_sources(
+            &config,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            source_id.as_deref(),
+        )?;
+        let mut output = KnowledgeGraph {
+            nodes: vec![],
+            edges: vec![],
+            note_count: 0,
+            link_count: 0,
+            truncated: false,
+            index_limited: false,
+        };
+        for source in sources {
+            let index = index_vault(&source, refresh.unwrap_or(false))?;
+            let mut current = graph(&index);
+            current.nodes.retain(|node| source.allows(&node.path));
+            current
+                .edges
+                .retain(|edge| source.allows(&edge.source) && source.allows(&edge.target));
+            for node in &mut current.nodes {
+                node.path = document_id(&source.id, &node.path);
+            }
+            for edge in &mut current.edges {
+                edge.source = document_id(&source.id, &edge.source);
+                edge.target = document_id(&source.id, &edge.target);
+            }
+            output.nodes.extend(current.nodes);
+            output.edges.extend(current.edges);
+            output.index_limited |= current.index_limited;
         }
-        let index = index_source(&config.source_path, refresh.unwrap_or(false))?;
-        Ok(graph(&index))
+        output.note_count = output.nodes.len();
+        output.link_count = output.edges.len();
+        ensure_current(
+            &config,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            policy.revision,
+        )?;
+        Ok(output)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1122,13 +1549,43 @@ pub async fn read_knowledge_note(
     app: tauri::AppHandle,
     project_path: Option<String>,
     path: String,
+    session_id: Option<String>,
+    source_id: Option<String>,
 ) -> Result<KnowledgeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let config = read_config(&app, project_path.as_deref())?;
-        if config.source_path.is_empty() {
-            return Err("Choose a knowledge source first".into());
-        }
-        selected_note(&config.source_path, &path)
+        let config = app_config(&app)?;
+        let (policy, sources) = ui_sources(
+            &config,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            source_id.as_deref(),
+        )?;
+        let (id, relative) = if let Some(encoded) = path.strip_prefix("doc:") {
+            serde_json::from_str::<(String, String)>(encoded).map_err(|_| "Invalid document ID")?
+        } else {
+            (
+                sources
+                    .first()
+                    .ok_or("Choose a knowledge source first")?
+                    .id
+                    .clone(),
+                path.clone(),
+            )
+        };
+        let source = sources
+            .iter()
+            .find(|source| source.id == id && source.allows(&relative))
+            .ok_or("Note is outside the selected sources or restrictions")?;
+        let index = index_vault(source, false)?;
+        let mut result = selected_index_note(&source.path, &relative, &index)?;
+        result.path = document_id(&id, &relative);
+        ensure_current(
+            &config,
+            project_path.as_deref(),
+            session_id.as_deref(),
+            policy.revision,
+        )?;
+        Ok(result)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1137,6 +1594,59 @@ pub async fn read_knowledge_note(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_subroots_are_indexed_before_note_and_byte_quotas_and_cache_by_restriction() {
+        let root = test_dir();
+        fs::create_dir(root.join("a-unselected")).unwrap();
+        fs::create_dir(root.join("z-selected")).unwrap();
+        for number in 0..=MAX_NOTES {
+            fs::write(
+                root.join(format!("a-unselected/{number:04}.md")),
+                "# Private\nconfidential common",
+            )
+            .unwrap();
+        }
+        fs::write(
+            root.join("a-unselected/oversized.md"),
+            "x".repeat(MAX_INDEX_BYTES + 1),
+        )
+        .unwrap();
+        fs::write(
+            root.join("z-selected/target.md"),
+            "# Target\ncommon chosen [[0000]]",
+        )
+        .unwrap();
+        let mut vault = policy::Vault {
+            id: "chosen".into(),
+            name: "Chosen".into(),
+            path: root.to_string_lossy().into_owned(),
+            mode: "automatic".into(),
+            allowed_paths: vec!["z-selected".into(), "z-selected/target.md".into()],
+        };
+        let index = index_vault(&vault, true).unwrap();
+        assert_eq!(index.notes.len(), 1);
+        assert_eq!(index.notes[0].path, "z-selected/target.md");
+        assert!(!index.limited);
+        assert_eq!(graph(&index).note_count, 1);
+        assert!(graph(&index).edges.is_empty());
+        assert_eq!(vault_health(&vault, false).status, "ready");
+        assert_eq!(
+            search_index_allowed(&index, "common", |path| vault.allows(path))[0].path,
+            "z-selected/target.md"
+        );
+        assert!(
+            selected_index_note(&vault.path, "z-selected/target.md", &index)
+                .unwrap()
+                .excerpt
+                .contains("chosen")
+        );
+        vault.allowed_paths = vec!["a-unselected/0000.md".into()];
+        let narrowed = index_vault(&vault, false).unwrap();
+        assert_eq!(narrowed.notes.len(), 1);
+        assert_eq!(narrowed.notes[0].path, "a-unselected/0000.md");
+        assert!(!Arc::ptr_eq(&index, &narrowed));
+        fs::remove_dir_all(root).unwrap();
+    }
     fn test_dir() -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("agentdeck-knowledge-{}", uuid::Uuid::new_v4()));
@@ -1301,7 +1811,21 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let report = search_documents_report(&config, None, "Searchable", true).unwrap();
+        let key = project_key(Some(root.to_str().unwrap())).unwrap().unwrap();
+        policy::update(&config, |stored| {
+            stored.project_selections.insert(
+                key,
+                policy::Selection {
+                    source_ids: stored.vaults.iter().map(|vault| vault.id.clone()).collect(),
+                    ..Default::default()
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+        let report =
+            search_documents_report(&config, Some(root.to_str().unwrap()), "Searchable", true)
+                .unwrap();
         assert_eq!(report.hits.len(), 1);
         assert_eq!(report.warnings.len(), 1);
         assert_eq!(report.warnings[0].code, "index_limited");

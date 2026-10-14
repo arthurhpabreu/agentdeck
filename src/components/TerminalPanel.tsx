@@ -6,12 +6,16 @@ import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { getDefaultShell } from "../services/platform";
 import { createUuid } from "../services/ids";
+import { stopPtySession } from "../store/ptyRuntimeStore";
+import { SortableCollection, ArrangementControls } from "./ordering/SortableCollection";
+import { usePresentationOrder } from "../store/presentationStore";
 import "./terminalPanel.css";
 
 const PtyTerminal = lazy(() => import("./PtyTerminal").then(module => ({ default: module.PtyTerminal })));
 interface OpenTerminal {
   key: string; tabKey: string; workspaceId: string; sessionId?: string; workdir: string; ptyId: string;
 }
+const registeredTerminals = new Map<string, OpenTerminal>();
 const safeId = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
 function pathHash(value: string) {
   let hash = 2166136261;
@@ -33,8 +37,10 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
   const workdir = currentSession?.worktreePath || currentSession?.workdir || project?.path || "";
   const ready = !!project && !!workdir && (!currentSession || readyIds.has(currentSession.id));
   // Preserve every tab from the former draggable cards, including hidden cards.
-  const tabs = useMemo(() => items.flatMap(item => item.type === "terminal"
+  const automaticTabs = useMemo(() => items.flatMap(item => item.type === "terminal"
     ? item.tabs.map(tab => ({ ...tab, widgetId: item.id, key: `${item.id}/${tab.id}`, selected: tab.id === item.activeTabId })) : []), [items]);
+  const tabContext = project?.id ?? "no-project";
+  const tabs = usePresentationOrder("terminal-tabs", tabContext, automaticTabs, tab => tab.key);
   const [selection, setSelection] = useState("");
   const activeTab = tabs.find(tab => tab.key === selection) ?? tabs.find(tab => tab.selected) ?? tabs[0];
   const [opened, setOpened] = useState<OpenTerminal[]>([]);
@@ -45,13 +51,22 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
 
   useEffect(() => {
     if (collapsed || !ready || !project || !activeTab) return;
-    setOpened(current => current.some(terminal => terminal.key === contextKey) ? current : [...current, {
+    const terminal: OpenTerminal = {
       key: contextKey, tabKey: activeTab.key, workspaceId: project.id, sessionId: currentSession?.id, workdir,
       ptyId: `widget-${safeId(currentSession?.id ?? `workspace-${project.id}`)}-${safeId(activeTab.ptySessionKey)}-${pathHash(workdir + activeTab.key)}`,
-    }]);
+    };
+    registeredTerminals.set(contextKey, terminal);
+    setOpened(current => [...current.filter(item => item.key !== contextKey), terminal].slice(-4));
   }, [collapsed, ready, contextKey, activeTab, project, currentSession?.id, workdir]);
 
   useEffect(() => {
+    for (const [key, terminal] of registeredTerminals) {
+      if (!tabs.some(tab => tab.key === terminal.tabKey) || !workspaces.some(workspace => workspace.id === terminal.workspaceId)
+        || (terminal.sessionId && !sessions.some(item => item.id === terminal.sessionId && item.workspaceId === terminal.workspaceId))) {
+        registeredTerminals.delete(key);
+        void stopPtySession(terminal.ptyId).catch(() => {});
+      }
+    }
     setOpened(current => {
       const next = current.filter(terminal => tabs.some(tab => tab.key === terminal.tabKey)
         && workspaces.some(workspace => workspace.id === terminal.workspaceId)
@@ -109,6 +124,7 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
         <button type="button" className="ad-icon-button" aria-label={t("terminalPanel.collapse")} title={t("terminalPanel.collapse")} onClick={collapse}><PanelRightClose size={17} /></button>
       </header>
       <p className="ad-terminal-path" title={workdir}>{workdir || t("terminalPanel.noProject")}</p>
+      <ArrangementControls surface="terminal-tabs" context={tabContext} />
       <div className="ad-terminal-tabs-row">
         <div role="tablist" aria-label={t("terminalPanel.tabs")} className="ad-terminal-tabs" onKeyDown={event => {
           if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || !(event.target as HTMLElement).matches('[role="tab"]')) return;
@@ -117,10 +133,11 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
           const next = tabs[event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
           if (next) { selectTab(next.key); document.getElementById(`${id}-tab-${encodeURIComponent(next.key)}`)?.focus(); }
         }}>
-          {tabs.map(tab => <div className="ad-terminal-tab" key={tab.key} data-active={tab.key === activeTab?.key}>
+          <SortableCollection surface="terminal-tabs" context={tabContext} items={automaticTabs} getId={tab => tab.key} getLabel={tab => tab.title} horizontal toolbar={false} render={(tab, handle) => <div className="ad-terminal-tab" data-active={tab.key === activeTab?.key}>
+            {handle}
             <button type="button" role="tab" id={`${id}-tab-${encodeURIComponent(tab.key)}`} aria-controls={`${id}-viewport`} aria-selected={tab.key === activeTab?.key} tabIndex={tab.key === activeTab?.key ? 0 : -1} onClick={() => selectTab(tab.key)}>{tab.title}</button>
             {tabs.length > 1 && <button type="button" className="ad-terminal-tab-close" aria-label={t("editor.closeTab", { title: tab.title })} title={t("editor.closeTab", { title: tab.title })} onClick={() => closeTab(tab.key)}><X size={12} /></button>}
-          </div>)}
+          </div>} />
         </div>
         <button type="button" className="ad-icon-button" aria-label={t("split.newTerminalTab")} title={t("split.newTerminalTab")} disabled={!ready} onClick={addTab}><Plus size={17} /></button>
       </div>

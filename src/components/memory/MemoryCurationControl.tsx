@@ -7,10 +7,10 @@ export function curationCopy(locale:string) {
   const index=locale.startsWith("pt")?0:locale.startsWith("es")?2:1;
   const strings={
     title:["Seleção automática da memória","Automatic memory selection","Selección automática de memoria"],
-    hint:["Regras locais selecionam preferências duráveis e mantêm um contexto por conversa. Capturas repetidas ficam no Arquivo; você não precisa revisar cada resposta.","Local rules select durable preferences and keep one context per conversation. Repeated captures remain in Archive; you do not need to review every response.","Reglas locales seleccionan preferencias duraderas y mantienen un contexto por conversación. Las capturas repetidas quedan en Archivo; no necesitas revisar cada respuesta."],
+    hint:["Regras locais mantêm a continuidade no projeto de origem. Preferências sugeridas aguardam aprovação explícita para alcance universal; nunca são compartilhadas automaticamente.","Local rules maintain continuity in the originating project. Suggested preferences await explicit universal approval; they are never shared automatically.","Las reglas locales mantienen la continuidad en el proyecto de origen. Las preferencias sugeridas requieren aprobación universal explícita y nunca se comparten automáticamente."],
     selected:["Selecionadas automaticamente","Automatically selected","Seleccionadas automáticamente"],
     archived:["Capturas arquivadas","Archived captures","Capturas archivadas"],
-    conflicts:["Preferências conflitantes ficam disponíveis para revisão opcional. Notas manuais e fixadas são preservadas.","Conflicting preferences remain available for optional review. Manual and pinned notes are preserved.","Las preferencias en conflicto quedan disponibles para revisión opcional. Las notas manuales y fijadas se conservan."],
+    conflicts:["Compartilhamento depende das preferências pessoais e coleções escolhidas nas fontes do projeto ou conversa. Notas manuais e fixadas são preservadas.","Sharing depends on personal preferences and collections explicitly selected for the project or conversation. Manual and pinned notes are preserved.","El uso compartido depende de las preferencias personales y colecciones elegidas para el proyecto o conversación. Se conservan las notas manuales y fijadas."],
     history:["Mostrar preferências já processadas","Show processed preferences","Mostrar preferencias ya procesadas"],
     automatic:["Selecionada automaticamente","Automatically selected","Seleccionada automáticamente"],
   };

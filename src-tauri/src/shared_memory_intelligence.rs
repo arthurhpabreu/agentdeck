@@ -66,6 +66,26 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
         PRAGMA user_version=3;
         COMMIT;").map_err(db_error)
 }
+pub(super) fn migrate_universal_scope(connection: &Connection) -> Result<()> {
+    let version: u32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(db_error)?;
+    if version >= 5 {
+        return Ok(());
+    }
+    // Additive scope confirmation; every legacy record starts unconfirmed.
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+        CREATE TABLE IF NOT EXISTS memory_universal_preferences(
+            memory_id TEXT PRIMARY KEY REFERENCES memory_records(id) ON DELETE CASCADE,
+            confirmed_at INTEGER NOT NULL
+        );
+        PRAGMA user_version=5;
+        COMMIT;",
+        )
+        .map_err(db_error)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +131,7 @@ pub struct MemoryMetadata {
     pub access_count: u64,
     pub last_accessed_at: u64,
     pub feedback: String,
+    pub universal_approved: bool,
 }
 impl Default for MemoryMetadata {
     fn default() -> Self {
@@ -123,6 +144,7 @@ impl Default for MemoryMetadata {
             access_count: 0,
             last_accessed_at: 0,
             feedback: String::new(),
+            universal_approved: false,
         }
     }
 }
@@ -263,6 +285,15 @@ pub fn stack_for(root: &Path) -> Vec<String> {
 }
 
 impl Engine {
+    pub fn universal_preference_confirmed(&self, id: &str) -> Result<bool> {
+        self.connection()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_universal_preferences WHERE memory_id=?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(db_error)
+    }
     pub fn capture_forgotten(
         &self,
         project: &str,
@@ -489,7 +520,7 @@ impl Engine {
         if self.get(project, id)?.is_none() {
             return Err("Memory not found in this scope.".into());
         }
-        self.connection()?.query_row("SELECT category,applies_to,state,superseded_by,relations,access_count,last_accessed_at,feedback FROM memory_metadata WHERE memory_id=?1",[id],|r|Ok(MemoryMetadata{category:r.get(0)?,applies_to:json_list(&r.get::<_,String>(1)?),state:r.get(2)?,superseded_by:r.get(3)?,relations:serde_json::from_str(&r.get::<_,String>(4)?).unwrap_or_default(),access_count:row_u64(r,5)?,last_accessed_at:row_u64(r,6)?,feedback:r.get(7)?})).optional().map(|v|v.unwrap_or_default()).map_err(db_error)
+        self.connection()?.query_row("SELECT category,applies_to,state,superseded_by,relations,access_count,last_accessed_at,feedback,EXISTS(SELECT 1 FROM memory_universal_preferences u WHERE u.memory_id=memory_metadata.memory_id) FROM memory_metadata WHERE memory_id=?1",[id],|r|Ok(MemoryMetadata{category:r.get(0)?,applies_to:json_list(&r.get::<_,String>(1)?),state:r.get(2)?,superseded_by:r.get(3)?,relations:serde_json::from_str(&r.get::<_,String>(4)?).unwrap_or_default(),access_count:row_u64(r,5)?,last_accessed_at:row_u64(r,6)?,feedback:r.get(7)?,universal_approved:r.get(8)?})).optional().map(|v|v.unwrap_or_default()).map_err(db_error)
     }
     pub fn set_metadata(&self, project: &str, id: &str, metadata: &MemoryMetadata) -> Result<()> {
         if !matches!(
@@ -533,6 +564,29 @@ impl Engine {
         };
         if !exists(id)? {
             return Err("Memory not found in this scope.".into());
+        }
+        if metadata.universal_approved {
+            let reviewed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM memory_records WHERE id=?1 AND project_key=?2 AND kind='fact')",params![id,GLOBAL_MEMORY_KEY],|row|row.get(0)).map_err(db_error)?;
+            if project != GLOBAL_MEMORY_KEY
+                || !reviewed
+                || metadata.category != "preference"
+                || !metadata.applies_to.is_empty()
+            {
+                return Err("Universal scope requires explicit review of a global preference with no project applicability tags".into());
+            }
+            // Human scope confirmation updates verification while retaining capture/curation provenance.
+            tx.execute(
+                "UPDATE memory_records SET verification='user-confirmed' WHERE id=?1",
+                [id],
+            )
+            .map_err(db_error)?;
+            tx.execute("INSERT INTO memory_universal_preferences(memory_id,confirmed_at) VALUES(?1,?2) ON CONFLICT(memory_id) DO UPDATE SET confirmed_at=excluded.confirmed_at",params![id,now_ms()]).map_err(db_error)?;
+        } else {
+            tx.execute(
+                "DELETE FROM memory_universal_preferences WHERE memory_id=?1",
+                [id],
+            )
+            .map_err(db_error)?;
         }
         if metadata.state=="active" && tx.query_row("SELECT EXISTS(SELECT 1 FROM memory_metadata WHERE memory_id=?1 AND state<>'active')",[id],|r|r.get::<_,bool>(0)).map_err(db_error)? {
             let count:i64=tx.query_row("SELECT count(*) FROM memory_records WHERE project_key=?1 AND id NOT IN(SELECT memory_id FROM memory_metadata WHERE state<>'active')",[project],|r|r.get(0)).map_err(db_error)?;
@@ -838,13 +892,22 @@ impl Engine {
         Ok(candidates)
     }
     pub fn review_profile(&self, id: &str, accept: bool) -> Result<Option<MemoryRecord>> {
-        self.review_profile_impl(id, accept, false)
+        self.review_profile_impl(id, accept, false, false)
+    }
+    pub fn review_profile_for_scope(
+        &self,
+        id: &str,
+        accept: bool,
+        universal: bool,
+    ) -> Result<Option<MemoryRecord>> {
+        self.review_profile_impl(id, accept, false, universal)
     }
     pub(super) fn review_profile_impl(
         &self,
         id: &str,
         accept: bool,
         automatic: bool,
+        universal: bool,
     ) -> Result<Option<MemoryRecord>> {
         let candidate = self
             .profile_candidates()?
@@ -917,10 +980,21 @@ impl Engine {
             "INSERT INTO memory_metadata(memory_id,category,applies_to) VALUES(?1,'preference',?2)",
             params![
                 record_id,
-                serde_json::to_string(&candidate.applies_to).unwrap()
+                if universal && !automatic {
+                    "[]".to_owned()
+                } else {
+                    serde_json::to_string(&candidate.applies_to).unwrap()
+                }
             ],
         )
         .map_err(db_error)?;
+        if universal && !automatic {
+            tx.execute(
+                "INSERT INTO memory_universal_preferences(memory_id,confirmed_at) VALUES(?1,?2)",
+                params![record_id, at],
+            )
+            .map_err(db_error)?;
+        }
         tx.execute("UPDATE memory_metadata SET state='superseded',superseded_by=?2 WHERE state='active' AND memory_id IN(SELECT c.record_id FROM memory_profile_candidates c JOIN memory_records m ON m.id=c.record_id WHERE c.topic=?1 AND c.status='accepted' AND m.project_key=?3 AND substr(m.content,1,length(c.statement))=c.statement)",params![candidate.topic,record_id,GLOBAL_MEMORY_KEY]).map_err(db_error)?;
         tx.execute("UPDATE memory_profile_candidates SET status='accepted',record_id=?2,updated_at=?3 WHERE id=?1",params![id,record_id,at]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;

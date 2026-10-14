@@ -77,6 +77,12 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
       await page.locator(".ad-chat-context summary").click();
       if (provider === "OpenAI Codex") await page.screenshot({ path: ".local/validation/chat-continuity/context-controls.png" });
       await page.locator(".ad-chat-context").getByRole("button", { name: "Novo chat com contexto", exact: true }).click();
+      const review = page.getByRole("dialog", { name: "Revise o contexto a transferir" });
+      await expect(review).toBeVisible();
+      await expect(review.getByRole("textbox")).toHaveValue(/ORIGINAL_DECISION_ARCHIVED/);
+      await expect(review.getByRole("textbox")).toHaveValue(/LATEST_VERIFICATION_PASSED/);
+      expect(await requests(page)).toHaveLength(0);
+      await review.getByRole("button", { name: "Criar conversa com este contexto", exact: true }).click();
       await expect.poll(() => page.evaluate(async () => {
         const path = "/src/store/sessionStore.ts";
         return (await import(/* @vite-ignore */ path)).useSessionStore.getState().activeSessionId;
@@ -88,12 +94,19 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
       expect(targetId).toBeTruthy(); expect(targetId).not.toBe("session");
       const target = await state(page, targetId!);
       expect(target.providerSessionId).toBeUndefined(); expect(target.busy).toBe(false);
-      expect(target.goal).toBe("Preserve the original architectural decision");
+      expect(target.goal).toBeUndefined();
+      expect(target.draft).toContain("Preserve the original architectural decision");
       expect(target.continuation).toMatchObject({ sourceSessionId: "session", messageCount: 420 });
+      const requiresFurtherReview = await page.evaluate(async id => {
+        const deliveries = (await import("/src/store/sourceDeliveryStore.ts" as string)).useSourceDeliveryStore;
+        deliveries.getState().delivered(id, 1);
+        return (await import("/src/services/chatContinuity.ts" as string)).continuationNeedsSourceReview(id);
+      }, targetId!);
+      expect(requiresFurtherReview).toBe(true);
       expect(target.draft).toContain("Pending request that must survive");
       expect(target.draft).toContain("ORIGINAL_DECISION_ARCHIVED");
       expect(target.draft).toContain("LATEST_VERIFICATION_PASSED");
-      expect(target.draft).toContain(JSON.stringify(target.continuation.archivePath));
+      expect(target.draft).not.toContain(target.continuation.archivePath);
       expect(target.draft.length).toBeLessThan(40000);
       expect(await requests(page)).toHaveLength(0);
       const transfer = await page.evaluate(() => {
@@ -101,7 +114,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
         return { args: saved.args, archive: JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(saved.args.dataBase64), ch => ch.charCodeAt(0)))) };
       });
       expect(transfer.args).toMatchObject({ sessionId: "session", mimeType: "application/json" });
-      expect(transfer.archive).toMatchObject({ format: "agentdeck-chat-continuation", version: 1, goal: target.goal, draft: "Pending request that must survive" });
+      expect(transfer.archive).toMatchObject({ format: "agentdeck-chat-continuation", version: 1, goal: "Preserve the original architectural decision", draft: "Pending request that must survive" });
       expect(transfer.archive.messages).toHaveLength(420);
       expect(transfer.archive.messages[0].text).toBe("ORIGINAL_DECISION_ARCHIVED");
       expect(transfer.archive.messages[419].text).toBe("LATEST_VERIFICATION_PASSED");
@@ -174,7 +187,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
     });
     const result = await page.evaluate(async () => {
       const path = "/src/services/chatContinuity.ts";
-      try { await (await import(/* @vite-ignore */ path)).createChatContinuation("session", "pt-BR"); return "unexpected success"; }
+      try { await (await import(/* @vite-ignore */ path)).createChatContinuation("session", "pt-BR", { reviewedDraft: "User-reviewed pending work" }); return "unexpected success"; }
       catch (error) { return String(error); }
     });
     expect(result).toContain("Archive write failed");
@@ -205,7 +218,9 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
         return command === "save_chat_attachment" ? { ...value, size: atob(args.dataBase64).length } : value;
       };
       const continuityPath = "/src/services/chatContinuity.ts";
-      const id = await (await import(/* @vite-ignore */ continuityPath)).createChatContinuation("session", "pt-BR");
+      const service = await import(/* @vite-ignore */ continuityPath);
+      const reviewedDraft = await service.prepareReviewedContext("session", "pt-BR");
+      const id = await service.createChatContinuation("session", "pt-BR", { reviewedDraft });
       const saves = w.__calls.filter((c: any) => c.command === "save_chat_attachment");
       const manifestCall = saves.find((c: any) => c.args.name === "conversation-context-index.json");
       const decode = (value: string) => Uint8Array.from(atob(value), ch => ch.charCodeAt(0));
@@ -222,7 +237,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
       return {
         manifest, rendered, sizes: partBytes.map((part: Uint8Array) => part.length), byteLength: fullBytes.length,
         count: archive.messages.length, exact: archive.messages.every((m: any, i: number) => m.text === `Entry ${i}: ${content}`),
-        draftLength: target.draft.length, targetCount: target.continuation.messageCount,
+        draftLength: target.draft.length, draftWellFormed: new TextDecoder().decode(new TextEncoder().encode(target.draft)) === target.draft, targetCount: target.continuation.messageCount,
         sourceId: store.useChatStore.getState().threads.session.providerSessionId,
       };
     });
@@ -232,6 +247,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
     expect(result.manifest.byteLength).toBe(result.byteLength);
     expect(result.count).toBe(60); expect(result.exact).toBe(true); expect(result.targetCount).toBe(60);
     expect(result.draftLength).toBeLessThan(40000); expect(result.sourceId).toBe("existing-session");
+    expect(result.draftWellFormed).toBe(true);
     expect(result.rendered.count).toBeLessThan(80); expect(result.rendered.textLength).toBeLessThanOrEqual(160000); expect(result.rendered.latest).toBe(true);
     expect(await requests(page)).toHaveLength(0);
   });
@@ -287,7 +303,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
     expect((await state(page)).archivedCount).toBeGreaterThan(0);
     const result = await page.evaluate(async () => {
       const path = "/src/services/chatContinuity.ts";
-      try { await (await import(/* @vite-ignore */ path)).createChatContinuation("session", "pt-BR"); return "unexpected success"; }
+      try { await (await import(/* @vite-ignore */ path)).createChatContinuation("session", "pt-BR", { reviewedDraft: "User-reviewed pending work" }); return "unexpected success"; }
       catch (error) { return String(error); }
       finally { (window as any).__restoreContinuityTransaction(); }
     });
@@ -310,7 +326,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
         return value;
       };
       const path = "/src/services/chatContinuity.ts";
-      try { await (await import(/* @vite-ignore */ path)).createChatContinuation("session", "pt-BR"); return "unexpected success"; }
+      try { await (await import(/* @vite-ignore */ path)).createChatContinuation("session", "pt-BR", { reviewedDraft: "User-reviewed pending work" }); return "unexpected success"; }
       catch (error) { return String(error); }
       finally { IDBDatabase.prototype.transaction = originalTransaction; }
     });
@@ -351,7 +367,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
     const at = await page.evaluate(async () => {
       const path = "/src/store/chatStore.ts"; const store = await import(/* @vite-ignore */ path);
-      const at = Date.now() - 130000;
+      const at = Date.now() - 250000;
       store.useChatStore.getState().patch("session", { status: "reasoning", activity: "Reviewing the architecture", lastEventAt: at });
       const w = window as any;
       for (let i = 0; i < 3; i++) w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "status", status: "mcp-auth-warning", text: "MCP authentication failed for server miro. Refresh OAuth login to reconnect." });

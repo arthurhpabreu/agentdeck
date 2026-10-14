@@ -14,6 +14,8 @@ import { AgentFlowMap } from "./AgentFlowMap";
 import { normalizeAgentParents } from "./agentGraph";
 import { graphCopy } from "../graph/graphCopy";
 import "./agentObservatory.css";
+import { SortableCollection, ArrangementControls } from "../ordering/SortableCollection";
+import { usePresentationStore } from "../../store/presentationStore";
 
 export interface AgentNode {
   key: string;
@@ -52,6 +54,7 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [chromeInsets, setChromeInsets] = useState({ top: 44, bottom: 45 });
+  const density = usePresentationStore(state => state.density);
   const dialog = useRef<HTMLElement>(null);
   const closeHandler = useRef(onClose);
   closeHandler.current = onClose;
@@ -62,7 +65,7 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
     const previousFocus = document.activeElement as HTMLElement | null;
     dialog.current?.focus();
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeHandler.current(); }
+      if (event.key === "Escape" && !document.querySelector('[data-dragging="true"], [data-position-dragging="true"]')) { event.preventDefault(); event.stopPropagation(); closeHandler.current(); }
       if (event.key === "Tab") {
         const focusable = dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, summary, [tabindex="0"]');
         if (!focusable?.length) return;
@@ -179,11 +182,13 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
       <span className="ad-monitor-agent-copy"><strong>{node.name}</strong><span>{node.agent?.role || (node.isRoot ? workspaces.find(workspace => workspace.id === node.session.workspaceId)?.name || getAgentAdapter(node.session.runner.type).name : m.subagents)}</span><small>{node.task || m.noTask}</small></span>
       <span className="ad-monitor-node-side"><span className="ad-monitor-node-status"><i className="ad-monitor-dot" data-phase={node.status} />{agentPhaseLabel(node.status, locale)}</span><time>{relativeTime(node.updatedAt)}</time></span>
     </button>
-    {depth < 10 && visibleNodes.filter(child => child.parentKey === node.key).map(child => renderNode(child, depth + 1))}
+    {depth < 10 && <SortableCollection surface="agent-children" context={node.key} toolbar={false}
+      items={visibleNodes.filter(child => child.parentKey === node.key)} allIds={nodes.filter(child => child.parentKey === node.key).map(child => child.key)} getId={child => child.key} getLabel={child => child.name}
+      render={(child, handle) => <div className="ad-monitor-arrange-row">{handle}<div className="ad-monitor-arrange-content">{renderNode(child, depth + 1)}</div></div>} />}
   </div>;
 
   return <div className="ad-monitor-backdrop" style={chromeInsets} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="ad-agent-observatory" role="dialog" aria-modal="true" aria-labelledby="agent-monitor-title" tabIndex={-1} ref={dialog}>
+    <section className="ad-agent-observatory" role="dialog" aria-modal="true" aria-labelledby="agent-monitor-title" tabIndex={-1} ref={dialog} data-density={density}>
       <header className="ad-monitor-header">
         <div className="ad-monitor-brand"><h1 id="agent-monitor-title">{m.title}</h1><p>{m.subtitle}</p></div>
         <div className="ad-monitor-header-actions"><span className="ad-monitor-sync"><i />{updatedAt ? `${m.updated} ${relativeTime(updatedAt)}` : m.live}</span><button className="ad-monitor-icon-button" disabled={loading || !desktop} onClick={() => setRefreshCount(count => count + 1)} title={m.refresh} aria-label={m.refresh}><RefreshCw size={17} className={loading ? "ad-monitor-spinning" : ""} /></button><button className="ad-monitor-icon-button" onClick={onClose} title={m.close} aria-label={m.close}><X size={20} /></button></div>
@@ -194,16 +199,18 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
       </div>
 
       <div className="ad-monitor-controls"><div className="ad-graph-segments" role="group" aria-label={m.title}>{(["map", "tasks", "list"] as const).map(value => <button type="button" key={value} aria-pressed={view === value} onClick={() => setView(value)}>{g[value]}</button>)}</div><label className="ad-monitor-search"><Search size={17} /><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={m.search} aria-label={m.search} /></label><select value={provider} onChange={event => setProvider(event.target.value)} aria-label={m.allProviders}><option value="all">{m.allProviders}</option>{Object.entries(RUNNER_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></div>
+      <ArrangementControls surface={view === "list" ? "agent-roots" : "agent-map"} context={view === "list" ? "monitor" : "all"} density densityOnly={view !== "list"} />
       {error && <div className="ad-monitor-notice" role="alert"><CircleAlert size={15} /><span>{m.loadError} {error}</span></div>}
       {!desktop && <div className="ad-monitor-notice"><Activity size={15} /><span>{m.browser}</span></div>}
 
       {sessions.length === 0 ? <div className="ad-monitor-empty"><span><Network size={44} /></span><h2>{m.noSessions}</h2><p>{m.noSessionsDetail}</p></div>
         : visibleNodes.length === 0 ? <div className="ad-monitor-empty"><Search size={36} /><h2>{m.noResults}</h2><button className="ad-monitor-primary" onClick={clearFilters}>{m.clear}</button></div>
         : <div className="ad-monitor-body" data-view={view}>
-          {view === "list" ? <nav className="ad-monitor-tree" aria-label={m.title}>{visibleNodes.filter(node => node.isRoot).map(node => renderNode(node))}</nav> : <AgentFlowMap nodes={visibleNodes} selectedKey={selected?.key} onSelect={setSelectedKey} locale={locale} board={view === "tasks"} />}
+          {view === "list" ? <nav className="ad-monitor-tree" aria-label={m.title}><SortableCollection surface="agent-roots" context="monitor" toolbar={false} items={visibleNodes.filter(node => node.isRoot)} allIds={roots.map(node => node.key)} getId={node => node.key} getLabel={node => node.name}
+            render={(node, handle) => <div className="ad-monitor-arrange-row">{handle}<div className="ad-monitor-arrange-content">{renderNode(node)}</div></div>} /></nav> : <AgentFlowMap nodes={visibleNodes} allNodes={nodes} selectedKey={selected?.key} onSelect={setSelectedKey} locale={locale} board={view === "tasks"} />}
           {selected && <article className="ad-monitor-detail" key={selected.key}>
             <header className="ad-monitor-detail-header"><div><h2>{selected.name}</h2><div className="ad-monitor-breadcrumb"><ProviderIcon provider={selected.session.runner.type} size={14} />{getAgentAdapter(selected.session.runner.type).name}<span>{selected.isRoot ? m.root : m.subagents}</span>{selectedParent && <button className="ad-monitor-parent" onClick={() => setSelectedKey(selectedParent.key)}><GitBranch size={12} />{m.childOf} {selectedParent.name}</button>}</div><div className="ad-monitor-detail-status"><span className="ad-monitor-badge" data-phase={selected.status}><i className="ad-monitor-dot" data-phase={selected.status} />{agentPhaseLabel(selected.status, locale)}</span>{selected.agent?.role && <span className="ad-monitor-role">{selected.agent.role}</span>}<span><Clock3 size={12} />{relativeTime(selected.updatedAt)}</span></div></div><button className="ad-monitor-primary" onClick={() => onOpenSession(selected.session.id)}>{m.openChat}<ArrowUpRight size={15} /></button></header>
-            {!selected.isRoot && <p className="ad-monitor-history-note"><Clock3 size={13} />{m.history}</p>}
+            {!selected.isRoot && <><p className="ad-monitor-history-note"><Clock3 size={13} />{m.history}</p><ArrangementControls surface="agent-children" context={selected.parentKey ?? selected.key} /></>}
             <section className="ad-monitor-task"><span className="ad-monitor-section-label"><Terminal size={14} />{m.task}</span><p>{selected.task || m.noTask}</p></section>
             <div className="ad-monitor-detail-grid"><section className="ad-monitor-timeline"><div className="ad-monitor-section-heading"><h3><Wrench size={16} />{m.toolsLabel}</h3><span>{selected.events.length} {m.tools}</span></div><p className="ad-monitor-source">{m[selected.source]}</p>
               {selected.events.length ? <ol>{selected.events.slice().reverse().map((event, index) => <li key={`${event.id}-${index}`}><span className="ad-monitor-tool-icon" data-state={event.status}>{event.status === "completed" ? <Check size={13} /> : event.status === "failed" ? <X size={13} /> : <Wrench size={12} />}</span><div><div className="ad-monitor-tool-title"><strong>{event.title}</strong><span>{event.status === "completed" ? m.toolCompleted : event.status === "failed" ? m.toolFailed : event.status === "stopped" ? m.toolStopped : m.toolRunning}</span></div>{event.detail && <details><summary>{event.detail.split("\n")[0].slice(0, 140)}</summary><pre>{event.detail}</pre></details>}{event.timestamp && <time>{new Date(event.timestamp).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>}</div></li>)}</ol> : <div className="ad-monitor-inline-empty"><Wrench size={24} /><p>{m.noEvents}</p></div>}

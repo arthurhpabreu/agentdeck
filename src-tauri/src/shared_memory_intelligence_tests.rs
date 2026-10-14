@@ -1,4 +1,102 @@
 use super::*;
+#[test]
+fn legacy_curated_preference_requires_human_scope_confirmation_without_losing_provenance() {
+    let (root, engine) = sandbox();
+    let record = engine
+        .save(
+            GLOBAL_MEMORY_KEY,
+            &MemoryDraft {
+                id: None,
+                title: "Legacy preference".into(),
+                content: "Previously selected statement".into(),
+                kind: "fact".into(),
+                pinned: true,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    engine
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE memory_records SET source='curation',verification='auto-selected' WHERE id=?1",
+            [&record.id],
+        )
+        .unwrap();
+    engine
+        .set_metadata(
+            GLOBAL_MEMORY_KEY,
+            &record.id,
+            &MemoryMetadata {
+                category: "preference".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let canonical = project_key(&root).unwrap();
+    let config = root.join("knowledge.json");
+    crate::knowledge::policy::update(&config, |stored| {
+        stored.project_selections.insert(
+            canonical,
+            crate::knowledge::policy::Selection {
+                personal_preferences: true,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    let policy =
+        crate::knowledge::policy::resolve(&config, Some(root.to_str().unwrap()), None).unwrap();
+    let old = engine.get(GLOBAL_MEMORY_KEY, &record.id).unwrap().unwrap();
+    assert!(!policy.allows_memory(&engine, &old).unwrap());
+    engine
+        .set_metadata(
+            GLOBAL_MEMORY_KEY,
+            &record.id,
+            &MemoryMetadata {
+                category: "preference".into(),
+                universal_approved: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let reviewed = engine.get(GLOBAL_MEMORY_KEY, &record.id).unwrap().unwrap();
+    assert_eq!(reviewed.source, "curation");
+    assert_eq!(reviewed.verification, "user-confirmed");
+    assert!(reviewed.revision > old.revision);
+    assert!(policy.allows_memory(&engine, &reviewed).unwrap());
+    let mut changed_kind = reviewed.clone();
+    changed_kind.kind = "decision".into();
+    assert!(!policy.allows_memory(&engine, &changed_kind).unwrap());
+    engine
+        .set_metadata(
+            GLOBAL_MEMORY_KEY,
+            &record.id,
+            &MemoryMetadata {
+                category: "preference".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(!policy
+        .allows_memory(
+            &engine,
+            &engine.get(GLOBAL_MEMORY_KEY, &record.id).unwrap().unwrap()
+        )
+        .unwrap());
+    assert_eq!(
+        engine
+            .get(GLOBAL_MEMORY_KEY, &record.id)
+            .unwrap()
+            .unwrap()
+            .source,
+        "curation"
+    );
+    drop(engine);
+    fs::remove_dir_all(root).unwrap();
+}
 fn sandbox() -> (PathBuf, Engine) {
     let root = std::env::temp_dir().join(format!(
         "agentdeck-intelligence-test-{}",

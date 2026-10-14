@@ -378,6 +378,7 @@ impl Engine {
         }
         intelligence::migrate(&connection)?;
         curation::migrate(&connection)?;
+        intelligence::migrate_universal_scope(&connection)?;
         let connection = Arc::new(Mutex::new(connection));
         registry.insert(database, Arc::downgrade(&connection));
         Ok(Self { connection })
@@ -818,6 +819,24 @@ impl Engine {
         query: &str,
         byte_budget: usize,
     ) -> Result<PreparedContext> {
+        self.prepare_context_internal(project, conversation, query, byte_budget, true)
+    }
+    pub fn prepare_project_context(
+        &self,
+        project: &str,
+        conversation: &str,
+        query: &str,
+    ) -> Result<PreparedContext> {
+        self.prepare_context_internal(project, conversation, query, usize::MAX, false)
+    }
+    fn prepare_context_internal(
+        &self,
+        project: &str,
+        conversation: &str,
+        query: &str,
+        byte_budget: usize,
+        allow_global: bool,
+    ) -> Result<PreparedContext> {
         validate_conversation(conversation)?;
         let config = self.config(project)?;
         if !config.enabled || query.trim_start().starts_with('/') {
@@ -827,7 +846,17 @@ impl Engine {
         if max_bytes <= CONTEXT_PREFIX.len() + CONTEXT_SUFFIX.len() {
             return Ok(PreparedContext::default());
         }
-        let mut candidates = self.search_context(project, query, 30)?;
+        let mut candidates = if allow_global {
+            self.search_context(project, query, 30)?
+        } else {
+            let mut candidates = vec![];
+            for record in self.search(project, query, 30)? {
+                if self.applies(project, &record)? {
+                    candidates.push(record);
+                }
+            }
+            candidates
+        };
         let global_config = self.config(GLOBAL_MEMORY_KEY)?;
         let connection = self.connection()?;
         // Global pinned notes are a small, explicit baseline (e.g. language/style preferences).
@@ -840,7 +869,7 @@ impl Engine {
             .map_err(db_error)?;
         let pinned = pinned_statement
             .query_map(
-                params![GLOBAL_MEMORY_KEY, global_config.enabled],
+                params![GLOBAL_MEMORY_KEY, global_config.enabled && allow_global],
                 record_from_row,
             )
             .map_err(db_error)?

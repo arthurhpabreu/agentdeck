@@ -216,6 +216,9 @@ test("@macos missing randomUUID preserves terminal tabs, active input and chat c
   const continuation = page.getByRole("button", { name: "New chat with context", exact: true }).first();
   await expect(continuation).toBeEnabled();
   await continuation.click();
+  const review = page.getByRole("dialog", { name: "Review the context to transfer" });
+  await expect(review).toBeVisible();
+  await review.getByRole("button", { name: "Create conversation with this context", exact: true }).click();
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.activeSessionId)).not.toBe("mac-session");
   const continuationId = await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.activeSessionId);
   const ids = [terminalId, turn.turnId, supplement.messageId, continuationId];

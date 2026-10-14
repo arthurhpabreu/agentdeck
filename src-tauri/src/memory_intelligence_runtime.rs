@@ -89,8 +89,13 @@ pub fn memory_review_profile(
     app: tauri::AppHandle,
     id: String,
     accept: bool,
+    universal: Option<bool>,
 ) -> Result<Option<MemoryRecord>, String> {
-    let note = Engine::open(&data_dir(&app)?)?.review_profile(&id, accept)?;
+    let note = Engine::open(&data_dir(&app)?)?.review_profile_for_scope(
+        &id,
+        accept,
+        universal.unwrap_or(false),
+    )?;
     changed(&app, GLOBAL_MEMORY_KEY);
     Ok(note)
 }
@@ -180,15 +185,18 @@ pub async fn memory_retrieval_preview(
     app: tauri::AppHandle,
     project_path: String,
     query: String,
+    session_id: Option<String>,
 ) -> Result<crate::memory_retrieval::RetrievalSearch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let (engine, project) = open(&app, &project_path)?;
-        crate::memory_retrieval::search_report(
+        crate::memory_retrieval::search_report_scoped(
             &engine,
             &project,
             Some(&project_path),
             Some(&crate::knowledge::app_config(&app)?),
+            session_id.as_deref(),
             &query,
+            false,
         )
     })
     .await

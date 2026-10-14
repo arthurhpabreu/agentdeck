@@ -203,6 +203,7 @@ export function EditorHost({
       </div>
 
       <CodeEditorSurface
+        sessionId={session.id}
         path={activeTab.path}
         value={activeBuffer.content}
         onChange={(value) => { useEditorStore.getState().pinTab(activeTab.id); updateDraft(activeTab.id, value); }}

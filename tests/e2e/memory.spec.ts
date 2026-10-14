@@ -74,6 +74,7 @@ async function setupMemory(page: Page) {
         if (command === "memory_configure") { w.__memorySettings[args.projectPath] = { enabled: args.enabled, captureEnabled: args.captureEnabled, budgetTokens: args.budgetTokens }; return status(args.projectPath); }
         if (command === "memory_reset_session") return;
         if (command === "get_knowledge_config") return { sourcePath: "C:\\Notes", mode: "markdown" };
+        if (command === "get_source_policy") return {schemaVersion:2,revision:1,projectKey:args.projectPath??null,sessionId:args.sessionId??null,inheritProject:true,selection:{sourceIds:["qa-vault"],personalPreferences:false,memoryCollectionIds:[]},vaults:[{id:"qa-vault",name:"QA project vault",path:"C:\\Notes",mode:"automatic",allowedPaths:[]}],selectedSources:[{id:"qa-vault",name:"QA project vault",path:"C:\\Notes",mode:"automatic",allowedPaths:[]}],memoryCollections:[],missingSourceIds:[],migrationBackup:null};
         if (command === "search_knowledge") return [{ path: "guide.md", title: "Project guide", excerpt: "Existing document search remains available.", score: 1 }];
         if (command === "plugin:event|listen") { if (!listeners.has(args.event)) listeners.set(args.event, new Map()); listeners.get(args.event)!.set(++nextId, args.handler); return nextId; }
         if (command === "plugin:event|unlisten") { listeners.get(args.event)?.delete(args.eventId); return; }
@@ -248,6 +249,33 @@ test("note history restores content and saves applicability and feedback", async
   await expect(memory.locator(".ad-memory-note-content")).toHaveText("Earlier decision");
 });
 
+test("legacy global preferences require explicit universal approval and can be restricted again", async ({ page }) => {
+  await setupMemory(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__metadata = { ...w.__metadata, category: "preference", appliesTo: ["javascript"] };
+    w.__memoryRecords.__global__[0].source = "curation";
+    w.__memoryRecords.__global__[0].verification = "auto-selected";
+  });
+  const memory = page.getByRole("region", { name: "Memória compartilhada", exact: true });
+  await memory.getByRole("group", { name: "Escopo da memória" }).getByRole("button", { name: "Global", exact: true }).click();
+  await memory.getByRole("button").filter({ hasText: "Shared language preference" }).click();
+  await memory.locator("summary").filter({ hasText: "Histórico e aplicabilidade" }).click();
+  const approval = memory.getByRole("checkbox", { name: "Confirmar alcance pessoal universal", exact: true });
+  await expect(approval).not.toBeChecked();
+  expect(await page.evaluate(() => (window as any).__memoryCalls.some((c: any) => c.command === "memory_set_metadata"))).toBe(false);
+  await approval.check();
+  await expect(memory.getByRole("textbox", { name: "Aplicável às stacks (separadas por vírgula)" })).toHaveValue("");
+  await memory.getByRole("button", { name: "Salvar", exact: true }).click();
+  await expect(approval).toBeChecked();
+  expect(await page.evaluate(() => (window as any).__memoryCalls.filter((c: any) => c.command === "memory_set_metadata").at(-1).args)).toMatchObject({ scope: "global", metadata: { category: "preference", appliesTo: [], universalApproved: true } });
+  await memory.getByRole("textbox", { name: "Aplicável às stacks (separadas por vírgula)" }).fill("javascript");
+  await expect(approval).not.toBeChecked();
+  await memory.getByRole("button", { name: "Salvar", exact: true }).click();
+  await expect(approval).not.toBeChecked();
+  expect(await page.evaluate(() => (window as any).__memoryCalls.filter((c: any) => c.command === "memory_set_metadata").at(-1).args.metadata)).toMatchObject({ appliesTo: ["javascript"], universalApproved: false });
+});
+
 test("global notes have an explicit scope, project isolation and discoverable local storage", async ({ page }) => {
   await setupMemory(page);
   const memory = page.getByRole("region", { name: "Memória compartilhada", exact: true });
@@ -310,9 +338,9 @@ test("memory preferences validate budgets, preserve provenance and keep document
   });
   await expect(memory.getByText("New handoff captured", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Documentos", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Escolher pasta Markdown ou vault", exact: true })).toBeVisible();
-  await page.getByRole("tabpanel").getByRole("textbox").fill("architecture");
-  await page.getByRole("tabpanel").getByRole("textbox").press("Enter");
+  await expect(page.getByRole("checkbox", { name: "Selecionado: QA project vault", exact: true })).toBeVisible();
+  await page.getByRole("tabpanel").getByRole("textbox",{name:"Buscar",exact:true}).fill("architecture");
+  await page.getByRole("tabpanel").getByRole("textbox",{name:"Buscar",exact:true}).press("Enter");
   await expect(page.getByText("Project guide", { exact: true })).toBeVisible();
 });
 

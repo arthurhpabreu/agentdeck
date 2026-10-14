@@ -3,7 +3,7 @@ import { BookOpen, Files, GitBranch, GitBranchPlus, MessageSquareCode } from "lu
 import { StatusBar } from "../components/StatusBar";
 import { lazy, Suspense } from "react";
 const ExploreSidebar = lazy(() => import("../components/ExploreMode").then((module) => ({ default: module.ExploreSidebar })));
-import { KnowledgePanel } from "../components/KnowledgePanel";
+const KnowledgePanel = lazy(() => import("../components/KnowledgePanel").then(module => ({ default: module.KnowledgePanel })));
 import { ScmSidebar } from "../components/scm/ScmSidebar";
 import { useAppI18n } from "../i18n";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -141,7 +141,7 @@ export function WorkbenchSidebar({
               : sidebarSection === "scm"
               ? <ScmSidebar session={session} />
               : sidebarSection === "memory"
-              ? <KnowledgePanel />
+              ? <Suspense fallback={null}><KnowledgePanel /></Suspense>
               : menuContent}
           </div>
         </div>

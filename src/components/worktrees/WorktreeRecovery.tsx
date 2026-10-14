@@ -8,6 +8,7 @@ import { recoveryPathKey as pathKey, uniqueRecoveryPaths, useWorktreeRecoverySto
 import { worktreeRecoveryCommands as api, type RecoverableWorktree } from "../../services/worktreeRecoveryCommands";
 import { worktreeCopy } from "./worktreeCopy";
 import "../memory/contextSources.css";
+import { SortableCollection } from "../ordering/SortableCollection";
 
 export function WorktreeRecovery() {
   const { locale } = useAppI18n(); const c = worktreeCopy(locale);
@@ -47,11 +48,11 @@ export function WorktreeRecovery() {
       <div className="ad-worktree-actions"><button type="button" className="ad-button" disabled={busy} onClick={() => void act(async () => { const path = await invoke<string | null>("pick_folder"); if (path) { remember(path); setWorkdir(path); } })}>{c.choose}</button><button type="button" className="ad-button" disabled={busy || !workdir} onClick={() => void load()}>{c.refresh}</button></div>
       {busy && <p role="status">{c.loading}</p>}{error && <p role="alert">{error}</p>}{feedback && <p role="status">{feedback}</p>}
       {!workdir && <p>{c.noRepository}</p>}{!busy && !error && workdir && !rows.length && <p>{c.empty}</p>}
-      {notices.filter(notice => pathKey(notice.workdir) === pathKey(workdir)).map(notice => <details key={notice.path}><summary>{notice.path}</summary><p>{notice.message || c.notice}</p></details>)}
-      {rows.map(row => { const active = attached(row); return <article key={row.path}><strong>{row.branch || row.head}</strong><p><code>{row.path}</code></p><p>{c[active ? "in_use" : row.reason]}</p>
+      <SortableCollection surface="worktree-notices" context={pathKey(workdir)} items={notices.filter(notice => pathKey(notice.workdir) === pathKey(workdir))} allIds={notices.map(notice => notice.path)} getId={notice => notice.path} getLabel={notice => notice.path} toolbar={false} render={(notice, handle) => <div style={{ display: "flex", gap: 4 }}>{handle}<details><summary>{notice.path}</summary><p>{notice.message || c.notice}</p></details></div>} />
+      <SortableCollection surface="recoverable-worktrees" context={pathKey(workdir)} items={rows} getId={row => row.path} getLabel={row => row.branch || row.path} render={(row, handle) => { const active = attached(row); return <article><div style={{ display: "flex", gap: 4, alignItems: "center" }}>{handle}<strong>{row.branch || row.head}</strong></div><p><code>{row.path}</code></p><p>{c[active ? "in_use" : row.reason]}</p>
         <div className="ad-worktree-actions"><button type="button" className="ad-button" disabled={busy} onClick={() => void act(async () => { await navigator.clipboard.writeText(row.path); setFeedback(c.copied); })}>{c.copy}</button><button type="button" className="ad-button" disabled={busy || row.reason === "unavailable"} onClick={() => void act(() => api.open(workdir, row.path))}>{c.open}</button><button type="button" className="ad-button" disabled={busy || active || !row.canRemove} onClick={() => setConfirm(row)}>{c.cleanAction}</button></div>
         {confirm?.path === row.path && <div className="ad-source-warning"><p>{c.confirmHint}</p><code>{confirm.path}</code><div className="ad-worktree-actions"><button type="button" className="ad-button" disabled={busy} onClick={() => void act(async () => { if (attached(row)) throw new Error(c.in_use); await api.remove(workdir, confirm); resolved(confirm.path); setConfirm(null); setFeedback(c.removed); await load(); })}>{c.confirm}</button><button type="button" className="ad-button" disabled={busy} onClick={() => setConfirm(null)}>{c.cancel}</button></div></div>}
-      </article>; })}
+      </article>; }} />
     </dialog>, document.body)}
   </>;
 }

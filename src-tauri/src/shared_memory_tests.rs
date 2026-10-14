@@ -123,7 +123,7 @@ fn schema_upgrade_preserves_existing_project_records_configuration_and_delivery(
         .unwrap()
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 #[test]

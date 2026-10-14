@@ -754,6 +754,7 @@ pub async fn start_chat_turn(
     .ok()
     .flatten();
     if let Some(memory) = &memory {
+        crate::memory_runtime::validate_turn(&app, memory)?;
         append_knowledge_context(&mut request.prompt, &memory.text);
     }
     crate::token_economy::reset_after_compaction(
@@ -912,12 +913,17 @@ pub async fn start_chat_turn(
     let compacting_before_input =
         request.compact_before_turn && request.provider_session_id.is_some();
     let input_process = process.clone();
+    let input_app = app.clone();
+    let input_memory = memory.clone();
     std::thread::spawn(move || {
         let sent = input_process
             .input
             .lock()
             .map_err(|_| "Input unavailable".to_owned())
             .and_then(|mut control| {
+                if let Some(memory) = &input_memory {
+                    crate::memory_runtime::validate_turn(&input_app, memory)?;
+                }
                 if guidance_provider == "codex" {
                     control.initialize()
                 } else {
@@ -953,9 +959,24 @@ pub async fn start_chat_turn(
         let mut completion_shutdown = CompletionShutdown::default();
         let mut notification_evidence =
             crate::notification::completion::CompletionEvidence::default();
+        let mut initial_context_delivered = false;
         loop {
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(ProcessOutput::Stdout(line)) => {
+                    if !initial_context_delivered {
+                        if let Some(memory) = &memory {
+                            if let Err(error) = crate::memory_runtime::validate_turn(&app, memory) {
+                                parser.failed = true;
+                                emit_event(
+                                    &app,
+                                    &request.runner_type,
+                                    parser.message("error", &error),
+                                );
+                                kill_process(&process);
+                                break;
+                            }
+                        }
+                    }
                     let lines = match process.input.lock() {
                         Ok(mut input) => live.ingest(&line, &mut input),
                         Err(_) => vec![
@@ -967,6 +988,7 @@ pub async fn start_chat_turn(
                         if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) {
                             notification_evidence.observe(&record);
                             if record["type"] == "agentdeck.initial-delivered" {
+                                initial_context_delivered = true;
                                 process
                                     .last_output_at
                                     .store(now_millis(), Ordering::Relaxed);

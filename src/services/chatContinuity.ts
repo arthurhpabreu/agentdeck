@@ -5,6 +5,8 @@ import { usePtyRuntimeStore } from "../store/ptyRuntimeStore";
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { readCompleteChatHistory } from "./chatHistory";
 import { createUuid } from "./ids";
+import { sourcePolicyCommands } from "./knowledgeCommands";
+import { useSourceDeliveryStore } from "../store/sourceDeliveryStore";
 
 // Native attachments are limited to 20 MiB. Large transcripts use lossless byte
 // parts plus a manifest, instead of omitting old turns or flooding the next prompt.
@@ -29,10 +31,39 @@ function copy(locale: string) {
   };
 }
 
+export async function continuationNeedsSourceReview(sessionId: string): Promise<boolean> {
+  const session = useSessionStore.getState().sessions.find(session => session.id === sessionId); if (!session) return true;
+  // The retained previous archive can contain excluded sources or display-only checkpoint history.
+  if (useChatStore.getState().threads[sessionId]?.continuation?.reviewedContext) return true;
+  const policy = await sourcePolicyCommands.get(session.workdir, sessionId);
+  if (!policy) return true;
+  return useSourceDeliveryStore.getState().requiresReview(sessionId, policy.revision);
+}
+
+/** Keep UTF-16 excerpts well formed; the complete archive remains byte exact. */
+export function contextExcerpt(text: string, limit: number, omitted: string): string {
+  if (text.length <= limit) return text;
+  let head = Math.floor(limit / 2), tail = text.length - Math.ceil(limit / 2);
+  if (head > 0 && /[\uD800-\uDBFF]/.test(text[head - 1]) && /[\uDC00-\uDFFF]/.test(text[head])) head--;
+  if (tail > 0 && /[\uD800-\uDBFF]/.test(text[tail - 1]) && /[\uDC00-\uDFFF]/.test(text[tail])) tail++;
+  return `${text.slice(0, head)}\n${omitted}\n${text.slice(tail)}`;
+}
+/** Historical excerpts only enter a fresh provider after the user reviews this draft. */
+export async function prepareReviewedContext(sessionId: string, locale: string, checkpointThread?: ChatThread): Promise<string> {
+  await persistChatHistory();
+  if (useChatStore.getState().storageError) throw new Error(copy(locale).failed);
+  const thread = checkpointThread ?? useChatStore.getState().threads[sessionId] ?? emptyThread;
+  const messages = checkpointThread ? thread.messages : await readCompleteChatHistory(sessionId, thread.messages, thread.archivedCount);
+  const main = messages.filter(message => !message.parentId && message.role !== "tool");
+  const users = main.filter(message => message.role === "user"), assistants = main.filter(message => message.role === "assistant");
+  const selected = new Set([users[0]?.id, ...users.slice(-3).map(message => message.id), ...assistants.slice(-2).map(message => message.id)]);
+  const c = copy(locale), excerpt = (text: string, limit: number) => contextExcerpt(text, limit, c.omitted);
+  return [thread.goal ? `${c.objective}:\n${excerpt(thread.goal, 6000)}` : "", ...main.filter(message => selected.has(message.id)).map(message => JSON.stringify({ role: message.role, text: excerpt(message.text, 3000) })), thread.draft ? `${c.pending}:\n${excerpt(thread.draft, 12000)}` : ""].filter(Boolean).join("\n\n");
+}
 /** Extractive handoff: no model call, invented decisions or silent transcript loss. */
 export function buildContinuityDraft(session: ClaudeSession, thread: ChatThread, messages: ChatMessage[], archivePath: string, locale = "en"): string {
   const c = copy(locale);
-  const excerpt = (text: string, limit: number) => text.length > limit ? `${text.slice(0, Math.floor(limit / 2))}\n${c.omitted}\n${text.slice(-Math.ceil(limit / 2))}` : text;
+  const excerpt = (text: string, limit: number) => contextExcerpt(text, limit, c.omitted);
   const main = messages.filter(message => !message.parentId && message.role !== "tool");
   const users = main.filter(message => message.role === "user");
   const assistants = main.filter(message => message.role === "assistant");
@@ -62,7 +93,7 @@ async function saveArchiveBlob(sessionId: string, blob: Blob, name: string, mime
   if (!saved?.path) throw new Error("The conversation archive was not saved.");
   return saved;
 }
-async function saveArchive(session: ClaudeSession, thread: ChatThread, messages: ChatMessage[], createdAt: number): Promise<string> {
+export async function saveContinuityArchive(session: ClaudeSession, thread: ChatThread, messages: ChatMessage[], createdAt: number): Promise<string> {
   const archive = new Blob([JSON.stringify({
     format: "agentdeck-chat-continuation", version: 1, createdAt,
     session: { id: session.id, name: session.name, runner: session.runner, workdir: session.workdir, worktreePath: session.worktreePath, branchName: session.branchName, baseBranch: session.baseBranch, providerSessionId: session.providerSessionId || thread.providerSessionId },
@@ -80,7 +111,7 @@ async function saveArchive(session: ClaudeSession, thread: ChatThread, messages:
 }
 
 /** Prepare a fresh provider session only after the full prior transcript has been saved. */
-export async function createChatContinuation(sessionId: string, locale = getI18n().language || "en"): Promise<string> {
+export async function createChatContinuation(sessionId: string, locale = getI18n().language || "en", options?: { reviewedDraft: string; checkpointThread?: ChatThread }): Promise<string> {
   const c = copy(locale);
   if (preparing.has(sessionId)) throw new Error(c.running);
   preparing.add(sessionId);
@@ -90,6 +121,7 @@ export async function createChatContinuation(sessionId: string, locale = getI18n
     let thread = useChatStore.getState().threads[sessionId] ?? emptyThread;
     if (!session) throw new Error(c.missing);
     if (thread.busy || usePtyRuntimeStore.getState().sessions[sessionId]) throw new Error(c.running);
+    if (!options && await continuationNeedsSourceReview(sessionId)) throw new Error(locale.startsWith("pt") ? "Revise o contexto antes de transferir esta conversa para as fontes atuais." : locale.startsWith("es") ? "Revisa el contexto antes de transferir esta conversación a las fuentes actuales." : "Review the context before transferring this conversation to the current sources.");
     await persistChatHistory();
     if (useChatStore.getState().storageError) throw new Error(c.failed);
     session = useSessionStore.getState().sessions.find(value => value.id === sessionId);
@@ -100,19 +132,24 @@ export async function createChatContinuation(sessionId: string, locale = getI18n
     if (!messages.length && !thread.goal?.trim() && !thread.draft.trim()) throw new Error(c.empty);
     const createdAt = Date.now();
     let archivePath: string;
-    try { archivePath = await saveArchive(session, thread, messages, createdAt); }
+    try { archivePath = await saveContinuityArchive(session, thread, messages, createdAt); }
     catch (error) { throw new Error(`${c.failed} ${String(error)}`); }
     // The original may have been removed or started while the file was saved.
     if (!useSessionStore.getState().sessions.some(value => value.id === sessionId)) throw new Error(c.missing);
     if (useChatStore.getState().threads[sessionId]?.busy || usePtyRuntimeStore.getState().sessions[sessionId]) throw new Error(c.running);
     const id = createUuid();
+    const policy = await sourcePolicyCommands.get(session.workdir, session.id);
+    // Copy an explicit custom policy only; inherited conversations keep inheritance.
+    if (policy) await sourcePolicyCommands.setConversation(session.workdir, id, policy.inheritProject ? null : policy.selection);
     useSessionStore.getState().addSession(id, session.workspaceId, session.workdir, `${session.name} · ${c.continuation}`, { ...session.runner });
     useSessionStore.getState().updateSession(id, { runner: { ...session.runner }, worktreePath: session.worktreePath, branchName: session.branchName, baseBranch: session.baseBranch, providerSessionId: undefined });
     useSessionStore.getState().markWorktreeReady(id);
+    useSourceDeliveryStore.getState().start(id, { hasHistory: false });
     useChatStore.getState().patch(id, {
-      ...emptyThread, goal: thread.goal, compactionPolicy: thread.compactionPolicy ? { ...thread.compactionPolicy } : undefined,
-      continuation: { sourceSessionId: sessionId, sourceSessionName: session.name, archivePath, messageCount: messages.length, createdAt },
-      draft: buildContinuityDraft(session, thread, messages, archivePath, locale),
+      ...emptyThread, goal: options ? undefined : thread.goal, compactionPolicy: thread.compactionPolicy ? { ...thread.compactionPolicy } : undefined,
+      continuation: { sourceSessionId: sessionId, sourceSessionName: session.name, archivePath, messageCount: messages.length, createdAt, ...(options ? { reviewedContext: true } : {}) },
+      draft: options ? options.reviewedDraft : buildContinuityDraft(session, thread, messages, archivePath, locale),
+      ...(options?.checkpointThread ? { messages: options.checkpointThread.messages.map(message => ({ ...message })), archivedCount: 0 } : {}),
       contextPrompts: 0, contextTokens: 0, contextTokensEstimated: true,
     });
     await persistChatHistory();

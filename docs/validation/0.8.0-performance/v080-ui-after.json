@@ -1,0 +1,78 @@
+{
+  "phase": "after",
+  "browser": "Headless Microsoft Edge/Chromium",
+  "viewport": "1360x900",
+  "nativeBoundary": "Mocked; no account/model/real PTY",
+  "limitations": "CDP CPU/heap reflect browser renderer only, not native WebView/agent process. Latencies include automation and two animation frames; not absolute responsiveness guarantees. Drag and native memory/IPC queue peaks are separately functional-tested, not statistically benchmarked here.",
+  "measurements": [
+    {
+      "sessions": 5,
+      "streams": 5,
+      "historyBytes": 22118400,
+      "typing": {
+        "samples": 27,
+        "p50Ms": 31.399999998509884,
+        "p95Ms": 39.100000001490116
+      },
+      "switching": {
+        "samples": 4,
+        "p50Ms": 256.47450000000026,
+        "p95Ms": 521.8053999999993
+      },
+      "cancelMs": 446.97890000000007,
+      "nativeCalls": 53,
+      "nativeWrites": 11,
+      "localWrites": 12,
+      "mountedPanels": 4,
+      "taskCpuSeconds": 2.862838,
+      "scriptCpuSeconds": 2.542684,
+      "jsHeapBytes": 59373412
+    },
+    {
+      "sessions": 20,
+      "streams": 8,
+      "historyBytes": 22118400,
+      "typing": {
+        "samples": 27,
+        "p50Ms": 30.299999997019768,
+        "p95Ms": 43
+      },
+      "switching": {
+        "samples": 8,
+        "p50Ms": 532.8390999999974,
+        "p95Ms": 574.8657999999996
+      },
+      "cancelMs": 493.81470000000263,
+      "nativeCalls": 93,
+      "nativeWrites": 19,
+      "localWrites": 21,
+      "mountedPanels": 4,
+      "taskCpuSeconds": 5.624639999999999,
+      "scriptCpuSeconds": 5.048329,
+      "jsHeapBytes": 54208984
+    },
+    {
+      "sessions": 50,
+      "streams": 8,
+      "historyBytes": 22118400,
+      "typing": {
+        "samples": 27,
+        "p50Ms": 29.600000001490116,
+        "p95Ms": 60
+      },
+      "switching": {
+        "samples": 8,
+        "p50Ms": 737.6316999999981,
+        "p95Ms": 788.0322000000015
+      },
+      "cancelMs": 575.2527999999947,
+      "nativeCalls": 93,
+      "nativeWrites": 19,
+      "localWrites": 22,
+      "mountedPanels": 4,
+      "taskCpuSeconds": 7.196866,
+      "scriptCpuSeconds": 6.458286,
+      "jsHeapBytes": 90692492
+    }
+  ]
+}

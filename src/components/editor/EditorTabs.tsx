@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
-import { FileCode2, GitCommitHorizontal, X } from "lucide-react";
+import { FileCode2, GitCommitHorizontal, GripVertical, X } from "lucide-react";
 import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { useDroppable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
@@ -9,6 +9,9 @@ import { useEditorBufferStore } from "../../store/editorBufferStore";
 import { useEditorStore, type EditorGroup, type EditorViewMode } from "../../store/editorStore";
 import { type ClaudeSession } from "../../store/sessionStore";
 import { WorkbenchTooltip } from "../ui/WorkbenchTooltip";
+import { ArrangementControls } from "../ordering/SortableCollection";
+import { orderingCopy } from "../ordering/orderingCopy";
+import { usePresentationOrder, usePresentationStore } from "../../store/presentationStore";
 
 export interface EditorTabDragData {
   type: "editor-tab";
@@ -79,7 +82,8 @@ function SortableEditorTab({
   tabId: string;
   isActive: boolean;
 }) {
-  const { t } = useAppI18n();
+  const { t, locale } = useAppI18n();
+  const c = orderingCopy(locale);
   const tab = useEditorStore((s) => s.tabsById[tabId]);
   const setActiveTab = useEditorStore((s) => s.setActiveTab);
   const pinTab = useEditorStore((s) => s.pinTab);
@@ -88,6 +92,7 @@ function SortableEditorTab({
     attributes,
     listeners,
     setNodeRef,
+    setActivatorNodeRef,
     transform,
     transition,
     isDragging,
@@ -125,7 +130,17 @@ function SortableEditorTab({
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div ref={setNodeRef} style={style} data-dragging={isDragging} data-editor-tab={tab.id}>
+      <button ref={setActivatorNodeRef} type="button" className="ad-reorder-handle" {...attributes} {...listeners} aria-label={`${c.drag}: ${tab.title}`} title={c.hint} onKeyDown={event => {
+        if (event.altKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+          event.preventDefault(); event.stopPropagation();
+          const state = usePresentationStore.getState();
+          const saved = state.layouts[JSON.stringify(["editor-tabs", group.id])]?.order ?? [];
+          const ids = [...saved.filter(id => group.tabIds.includes(id)), ...group.tabIds.filter(id => !saved.includes(id))];
+          const target = ids[ids.indexOf(tab.id) + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1)];
+          if (target) state.moveItem("editor-tabs", group.id, group.tabIds, group.tabIds, tab.id, target);
+        } else listeners?.onKeyDown?.(event);
+      }}><GripVertical size={12} /></button>
       <button
         onClick={() => {
           setActiveTab(group.id, tabId);
@@ -211,11 +226,14 @@ export function EditorTabs({
     if (!group) return [] as string[];
     return group.tabIds.filter((tabId) => tabsById[tabId]);
   }, [group, tabsById]);
+  const orderedTabs = usePresentationOrder("editor-tabs", groupId, openTabs, id => id);
   const resolvedActiveTabId = group?.activeTabId && openTabs.includes(group.activeTabId)
     ? group.activeTabId
     : (openTabs[openTabs.length - 1] ?? null);
 
   return (
+    <div style={{ minWidth: 0 }} data-editor-group={groupId}>
+    <ArrangementControls surface="editor-tabs" context={groupId} />
     <div
       ref={setNodeRef}
       style={{
@@ -229,12 +247,12 @@ export function EditorTabs({
       }}
     >
       {session && group ? (
-        <SortableContext items={openTabs} strategy={horizontalListSortingStrategy}>
+        <SortableContext items={orderedTabs} strategy={horizontalListSortingStrategy}>
           {openTabs.length === 0 ? (
             <div style={{ display: "flex", alignItems: "center", padding: "0 14px", fontSize: 11, color: isOver ? "var(--ci-accent)" : "var(--ci-text-dim)" }}>
               {isOver ? t("editor.releaseToGroup") : t("editor.noOpenFiles")}
             </div>
-          ) : openTabs.map((tabId) => (
+          ) : orderedTabs.map((tabId) => (
             <SortableEditorTab
               key={tabId}
               session={session}
@@ -249,6 +267,7 @@ export function EditorTabs({
           {t("editor.noOpenFiles")}
         </div>
       )}
+    </div>
     </div>
   );
 }

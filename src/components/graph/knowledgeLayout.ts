@@ -1,6 +1,10 @@
 import type { KnowledgeGraph, KnowledgeNode } from "../../services/knowledgeCommands";
 
-export const noteFolder = (path: string) => path.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+export function notePathLabel(path: string) {
+  try { if (path.startsWith("doc:")) return (JSON.parse(path.slice(4)) as string[])[1] || path; } catch { /* Legacy path. */ }
+  return path;
+}
+export const noteFolder = (path: string) => notePathLabel(path).replace(/\\/g, "/").split("/").slice(0, -1).join("/");
 
 export function noteNeighborhood(graph: KnowledgeGraph, selected: string, depth: number) {
   const adjacency = new Map<string, Set<string>>();

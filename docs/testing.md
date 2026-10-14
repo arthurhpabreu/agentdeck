@@ -12,6 +12,7 @@ Build runs TypeScript checking before bundling. Translation checks validate EN/P
 
 ## Browser tests
 
+
 Playwright provides Chromium and WebKit projects. Chromium defaults to installed Microsoft Edge locally and the Playwright browser in CI. Tests run the real React application against mocked native commands/events and never start coding agent tasks.
 
 To use Chromium locally:
@@ -47,3 +48,4 @@ CI installs pinned pnpm, Node.js 22 and Rust stable on Windows x64, macOS Apple 
 Use the **Desktop release** workflow's manual dispatch for a packaging preview from a branch. It runs the complete validation matrix, builds Windows installers and a universal Mac application/DMG, validates architectures, deployment targets, metadata, bundled license and signing, then launches the same packaged application on Apple Silicon and Intel. Smoke reports/logs and available desktop screenshots are retained as workflow artifacts.
 
 A validated `v*` tag produces one **draft** GitHub release after both platform builds and packaged Mac smoke jobs succeed. The final assembly requires all four installers/application packages, LICENSE and a shared checksum manifest. Review those artifacts before publishing. Do not tag unvalidated commits just to test CI.
+Version 0.8 adds source-policy selection/migration fixtures, stable visual ordering, confirmed attention, diff review, contextual file navigation and checkpoint recovery. PTY tests verify one shared listener, byte-exact replay, Unicode input, interrupt fairness and view eviction without process restart. Chat activity tests verify the four-minute silence boundary and eight-second OAuth expiration independently. See [performance validation](validation/0.8.0-performance.md) for repeatable synthetic before/after loads.

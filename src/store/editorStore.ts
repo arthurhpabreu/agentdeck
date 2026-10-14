@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { mirroredPersistStorage } from "./persistStorage";
 
 export type EditorViewMode = "code" | "diff";
 
@@ -18,12 +20,14 @@ export interface EditorGroup {
   tabIds: string[];
   activeTabId: string | null;
 }
+interface EditorArrangement { groups: Record<string, EditorGroup>; groupIds: string[]; activeGroupId: string | null }
 
 interface EditorStore {
   tabsById: Record<string, EditorTab>;
   groupsById: Record<string, EditorGroup>;
   groupOrderBySessionId: Record<string, string[]>;
   activeGroupIdBySessionId: Record<string, string | null>;
+  arrangementHistoryBySession: Record<string, EditorArrangement[]>;
 
   ensureSessionGroup: (sessionId: string) => string;
   openFile: (sessionId: string, path: string, preview?: boolean) => string;
@@ -36,6 +40,7 @@ interface EditorStore {
   moveTabToGroup: (tabId: string, sourceGroupId: string, targetGroupId: string, index?: number) => void;
   splitGroupWithTab: (sourceGroupId: string, tabId: string, side: "left" | "right") => void;
   removeEmptyGroup: (groupId: string) => void;
+  undoSessionArrangement: (sessionId: string) => void;
 }
 
 function buildTabId(sessionId: string, path: string, viewMode: EditorViewMode) {
@@ -158,11 +163,18 @@ function removeGroupIfPossible(
   }
 }
 
-export const useEditorStore = create<EditorStore>()((set, get) => ({
+function rememberArrangement(state: EditorStore, sessionId: string) {
+  const groupIds = getSessionGroupIds(state.groupsById, state.groupOrderBySessionId, sessionId);
+  const snapshot: EditorArrangement = { groupIds, groups: Object.fromEntries(groupIds.map(id => [id, { ...state.groupsById[id], tabIds: [...state.groupsById[id].tabIds] }])), activeGroupId: state.activeGroupIdBySessionId[sessionId] ?? null };
+  return { ...state.arrangementHistoryBySession, [sessionId]: [...(state.arrangementHistoryBySession[sessionId] ?? []), snapshot].slice(-20) };
+}
+
+export const useEditorStore = create<EditorStore>()(persist((set, get) => ({
   tabsById: {},
   groupsById: {},
   groupOrderBySessionId: {},
   activeGroupIdBySessionId: {},
+  arrangementHistoryBySession: {},
 
   ensureSessionGroup: (sessionId) => {
     let ensuredGroupId = "";
@@ -403,7 +415,7 @@ export const useEditorStore = create<EditorStore>()((set, get) => ({
     removeGroupIfPossible(groupsById, groupOrderBySessionId, activeGroupIdBySessionId, sourceGroupId);
     normalizeSessionGroups(groupsById, groupOrderBySessionId, activeGroupIdBySessionId, sourceGroup.sessionId);
 
-    return { groupsById, groupOrderBySessionId, activeGroupIdBySessionId };
+    return { groupsById, groupOrderBySessionId, activeGroupIdBySessionId, arrangementHistoryBySession: rememberArrangement(state, sourceGroup.sessionId) };
   }),
 
   splitGroupWithTab: (sourceGroupId, tabId, side) => set((state) => {
@@ -436,7 +448,33 @@ export const useEditorStore = create<EditorStore>()((set, get) => ({
     groupOrderBySessionId[sessionId] = nextGroupIds;
     activeGroupIdBySessionId[sessionId] = nextGroup.id;
 
-    return { groupsById, groupOrderBySessionId, activeGroupIdBySessionId };
+    return { groupsById, groupOrderBySessionId, activeGroupIdBySessionId, arrangementHistoryBySession: rememberArrangement(state, sessionId) };
+  }),
+
+  undoSessionArrangement: sessionId => set(state => {
+    const history = state.arrangementHistoryBySession[sessionId];
+    const snapshot = history?.[history.length - 1]; if (!snapshot) return state;
+    const validTabs = new Set(Object.values(state.tabsById).filter(tab => tab.sessionId === sessionId).map(tab => tab.id));
+    const restored = Object.fromEntries(snapshot.groupIds.map(id => {
+      const group = snapshot.groups[id], tabIds = group.tabIds.filter(tab => validTabs.has(tab));
+      return [id, { ...group, tabIds, activeTabId: group.activeTabId && tabIds.includes(group.activeTabId) ? group.activeTabId : tabIds[0] ?? null }];
+    })) as Record<string, EditorGroup>;
+    const assigned = new Set(Object.values(restored).flatMap(group => group.tabIds));
+    const groupIds = [...snapshot.groupIds];
+    // Keep tabs opened since the move, including their current buffers and groups.
+    for (const group of Object.values(state.groupsById).filter(group => group.sessionId === sessionId)) {
+      const extra = group.tabIds.filter(id => validTabs.has(id) && !assigned.has(id));
+      if (!extra.length) continue;
+      if (restored[group.id]) restored[group.id] = { ...restored[group.id], tabIds: [...restored[group.id].tabIds, ...extra] };
+      else { restored[group.id] = { ...group, tabIds: extra, activeTabId: group.activeTabId && extra.includes(group.activeTabId) ? group.activeTabId : extra[0] }; groupIds.push(group.id); }
+      extra.forEach(id => assigned.add(id));
+    }
+    const fallback = restored[snapshot.activeGroupId ?? ""] ?? restored[groupIds[0]];
+    if (!fallback) return state;
+    const remaining = [...validTabs].filter(id => !assigned.has(id));
+    if (remaining.length) restored[fallback.id] = { ...fallback, tabIds: [...fallback.tabIds, ...remaining] };
+    const groupsById = { ...Object.fromEntries(Object.entries(state.groupsById).filter(([, group]) => group.sessionId !== sessionId)), ...restored };
+    return { groupsById, groupOrderBySessionId: { ...state.groupOrderBySessionId, [sessionId]: groupIds }, activeGroupIdBySessionId: { ...state.activeGroupIdBySessionId, [sessionId]: fallback.id }, arrangementHistoryBySession: { ...state.arrangementHistoryBySession, [sessionId]: history.slice(0, -1) } };
   }),
 
   removeEmptyGroup: (groupId) => set((state) => {
@@ -450,4 +488,4 @@ export const useEditorStore = create<EditorStore>()((set, get) => ({
     normalizeSessionGroups(groupsById, groupOrderBySessionId, activeGroupIdBySessionId, group.sessionId);
     return { groupsById, groupOrderBySessionId, activeGroupIdBySessionId };
   }),
-}));
+}), { name: "agentdeck-editor-layout", version: 1, storage: createJSONStorage(() => mirroredPersistStorage), partialize: state => ({ tabsById: state.tabsById, groupsById: state.groupsById, groupOrderBySessionId: state.groupOrderBySessionId, activeGroupIdBySessionId: state.activeGroupIdBySessionId }) }));

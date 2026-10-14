@@ -12,7 +12,7 @@ pub type ProcessMap = Arc<Mutex<HashMap<String, std::process::Child>>>;
 
 // PTY registries
 /// session_id → PTY master writer
-pub type PtyWriterMap = Arc<Mutex<HashMap<String, Box<dyn Write + Send>>>>;
+pub type PtyWriterMap = Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn Write + Send>>>>>>;
 /// session_id to PTY child process handle for kill/wait operations.
 pub struct PtyChildHandle {
     pub killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,

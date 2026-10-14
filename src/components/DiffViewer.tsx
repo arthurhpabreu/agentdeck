@@ -1,9 +1,15 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, FileCode2, FilePlus2, FileX2, Minus, Plus } from "lucide-react";
 import { useAppI18n } from "../i18n";
 import { DiffFile, DiffLine } from "../store/sessionStore";
 import { type ScmActionMode } from "../store/scmStore";
 import { WorkbenchTooltip } from "./ui/WorkbenchTooltip";
+import { useSessionStore } from "../store/sessionStore";
+import { useDiffReviewStore, diffContext, diffRevision } from "../store/diffReviewStore";
+import { improvementsCopy } from "./platformImprovementsCopy";
+import { DiffReviewPanel } from "./editor/DiffReviewPanel";
+import { SortableCollection } from "./ordering/SortableCollection";
+import { WindowedRows } from "./ui/WindowedRows";
 
 const MONO = "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace";
 
@@ -29,7 +35,8 @@ const LINE_STYLES: Record<DiffLine["type"], LineStyle> = {
   },
 };
 
-function DiffLineRow({ line }: { line: DiffLine }) {
+function DiffLineRow({ line, onSelect, selected }: { line: DiffLine; onSelect?: (extend: boolean) => void; selected?: boolean }) {
+  const { locale } = useAppI18n(); const copy = improvementsCopy(locale);
   const c = LINE_STYLES[line.type];
   const prefix = line.type === "added" ? "+" : line.type === "deleted" ? "−" : " ";
   return (
@@ -40,7 +47,7 @@ function DiffLineRow({ line }: { line: DiffLine }) {
       fontFamily: MONO,
       fontSize: 11,
       lineHeight: "18px",
-      background: c.bg,
+      background: selected ? "var(--ci-accent-soft, rgba(0,122,255,.18))" : c.bg,
     }}>
       <span style={{
         width: 36,
@@ -79,6 +86,7 @@ function DiffLineRow({ line }: { line: DiffLine }) {
       <span style={{ flex: 1, padding: "0 10px", color: c.text, whiteSpace: "pre" }}>
         {line.content || " "}
       </span>
+      {onSelect && <button type="button" style={{ height: 18, padding: 0, width: 22 }} aria-label={`${copy.comment} ${line.oldLineNo ?? ""}:${line.newLineNo ?? ""}`} className="ad-icon-button" onClick={event => onSelect(event.shiftKey)}>+</button>}
     </div>
   );
 }
@@ -133,6 +141,7 @@ function DiffFileRow({
   onDiscardHunk,
   busy,
   contentMaxHeight,
+  sessionId,
 }: {
   file: DiffFile;
   fileMode?: ScmActionMode | null;
@@ -141,11 +150,17 @@ function DiffFileRow({
   onDiscardHunk?: (path: string, hunkIndex: number) => void;
   busy?: boolean;
   contentMaxHeight?: number | string;
+  sessionId?: string;
 }) {
-  const { t } = useAppI18n();
+  const { t, locale } = useAppI18n(); const c = improvementsCopy(locale);
   const [isOpen, setIsOpen] = useState(true);
+  const [selection, setSelection] = useState<{ side: "old" | "new"; start: number; end: number; anchor: number }>();
+  const [comment, setComment] = useState("");
   const isBinary = !!file.binary;
   const useInnerScroll = contentMaxHeight !== "none";
+  const virtualRows = useMemo(() => file.hunks.flatMap((hunk, hunkIndex) => [{ line: undefined as DiffLine | undefined, hunkIndex, header: hunk.header }, ...hunk.lines.map(line => ({ line, hunkIndex, header: "" }))]), [file]);
+  const lineSelection = (line: DiffLine, extend: boolean) => { const side = line.newLineNo === undefined ? "old" : "new"; const number = (side === "old" ? line.oldLineNo : line.newLineNo)!; const anchor = extend && selection?.side === side ? selection.anchor : number; setSelection({ side, anchor, start: Math.min(anchor, number), end: Math.max(anchor, number) }); };
+  const isSelected = (line: DiffLine) => { const number = selection?.side === "old" ? line.oldLineNo : line.newLineNo; return !!selection && number !== undefined && number >= selection.start && number <= selection.end; };
 
   return (
     <div style={{ borderBottom: "1px solid var(--ci-toolbar-border)", background: "transparent" }}>
@@ -190,7 +205,7 @@ function DiffFileRow({
             <div style={{ padding: "12px 16px", fontSize: 11, color: "var(--ci-text-muted)", fontFamily: MONO }}>
               {file.note?.startsWith("agentdeck:mode:") ? t("diff.modeChange", { old: file.note.split(":")[2], new: file.note.split(":")[3] }) : file.note === "agentdeck:submodule" ? t("diff.submoduleChange") : file.note === "agentdeck:metadata" ? t("diff.metadataChange") : file.note ?? t("diff.noContentDiff")}
             </div>
-          ) : (
+          ) : virtualRows.length > 400 ? <WindowedRows items={virtualRows} height={typeof contentMaxHeight === "number" ? contentMaxHeight : 540} render={row => row.line ? <DiffLineRow line={row.line} selected={isSelected(row.line)} onSelect={sessionId ? extend => lineSelection(row.line!, extend) : undefined}/> : <div style={{ display: "flex", gap: 8, height: 20, paddingInline: 10, background: "var(--ci-toolbar-bg)", fontSize: 10, fontFamily: MONO }}><span>{row.header}</span><span style={{ marginInlineStart: "auto", display: "flex" }}>{fileMode === "unstaged" && onStageHunk && <HunkActionButton label={t("scm.stageHunk")} icon={<Plus size={12}/>} onClick={() => onStageHunk(file.path, row.hunkIndex)} disabled={busy}/>} {fileMode === "unstaged" && onDiscardHunk && <HunkActionButton label={t("scm.discardHunk")} icon={<Minus size={12}/>} onClick={() => onDiscardHunk(file.path, row.hunkIndex)} disabled={busy}/>} {fileMode === "staged" && onUnstageHunk && <HunkActionButton label={t("scm.unstageHunk")} icon={<Minus size={12}/>} onClick={() => onUnstageHunk(file.path, row.hunkIndex)} disabled={busy}/>}</span></div>}/> : (
             file.hunks.map((hunk, hi) => (
               <div key={hi}>
                 <div style={{
@@ -213,13 +228,18 @@ function DiffFileRow({
                   </div>
                 </div>
                 {hunk.lines.map((line, li) => (
-                  <DiffLineRow key={li} line={line} />
+                  <DiffLineRow key={li} line={line} selected={!!selection && (selection.side === "old" ? line.oldLineNo : line.newLineNo) !== undefined && (selection.side === "old" ? line.oldLineNo! : line.newLineNo!) >= selection.start && (selection.side === "old" ? line.oldLineNo! : line.newLineNo!) <= selection.end} onSelect={sessionId ? extend => {
+                    const side = line.newLineNo === undefined ? "old" : "new"; const number = (side === "old" ? line.oldLineNo : line.newLineNo)!;
+                    const anchor = extend && selection?.side === side ? selection.anchor : number;
+                    setSelection({ side, anchor, start: Math.min(anchor, number), end: Math.max(anchor, number) });
+                  } : undefined} />
                 ))}
               </div>
             ))
           )}
         </div>
       )}
+      {selection && sessionId && <form className="ad-diff-comment" onSubmit={event => { event.preventDefault(); if (!comment.trim()) return; useDiffReviewStore.getState().add({ sessionId, path: file.path, side: selection.side, start: selection.start, end: selection.end, revision: diffRevision(file), context: diffContext(file, selection.side, selection.start, selection.end), text: comment.trim() }); setComment(""); setSelection(undefined); }}><label>{c.comment} · {selection.side}:{selection.start}-{selection.end}<textarea aria-label={c.comment} value={comment} onChange={event => setComment(event.target.value)} placeholder={c.commentHint}/></label><button className="ad-button" disabled={!comment.trim()}>{c.add}</button><button type="button" className="ad-button ad-button-ghost" onClick={() => setSelection(undefined)}>{c.cancel}</button></form>}
     </div>
   );
 }
@@ -232,6 +252,7 @@ export function DiffViewer({
   onDiscardHunk,
   busy = false,
   contentMaxHeight = 420,
+  sessionId: explicitSessionId,
 }: {
   files: DiffFile[];
   fileMode?: ScmActionMode | null;
@@ -240,8 +261,11 @@ export function DiffViewer({
   onDiscardHunk?: (path: string, hunkIndex: number) => void;
   busy?: boolean;
   contentMaxHeight?: number | string;
+  sessionId?: string;
 }) {
   const { t } = useAppI18n();
+  const activeSessionId = useSessionStore(state => state.activeSessionId);
+  const sessionId = explicitSessionId ?? activeSessionId ?? undefined;
 
   if (files.length === 0) {
     return (
@@ -272,7 +296,7 @@ export function DiffViewer({
           <span style={{ color: "var(--ci-deleted-text)" }}>−{totalDeletions}</span>
         </span>
       </div>
-      {files.map((f) => (
+      <SortableCollection surface="diff-files" context={sessionId ?? "preview"} items={files} getId={file => file.path} getLabel={file => file.path} render={(f, handle) => <div>{handle}
         <DiffFileRow
           key={f.path}
           file={f}
@@ -282,8 +306,10 @@ export function DiffViewer({
           onDiscardHunk={onDiscardHunk}
           busy={busy}
           contentMaxHeight={contentMaxHeight}
+          sessionId={sessionId}
         />
-      ))}
+      </div>} />
+      {sessionId && <DiffReviewPanel sessionId={sessionId} files={files}/>}
     </div>
   );
 }

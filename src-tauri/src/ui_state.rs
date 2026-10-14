@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -17,6 +17,46 @@ const DELETED_UI_STATE_KEY: &str = "agentdeck-deleted-items";
 const RECOVERY_BINDINGS_KEY: &str = "agentdeck-recovery-bindings";
 const SESSION_ID_STATE_KEY: &str = "agentdeck-session-id-state";
 static SESSION_ID_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static UI_WRITE_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+> = std::sync::OnceLock::new();
+
+fn ui_write_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    UI_WRITE_LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(path.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+fn write_state_atomic(path: &Path, value: &str) -> std::io::Result<bool> {
+    let lock = ui_write_lock(path);
+    let _guard = lock.lock().unwrap();
+    if fs::read(path).is_ok_and(|bytes| bytes == value.as_bytes()) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(value.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)?;
+        Ok(true)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,23 +363,15 @@ fn read_ui_state(app: &tauri::AppHandle, key: &str) -> Result<Option<String>, St
 
 fn write_ui_state(app: &tauri::AppHandle, key: &str, value: &str) -> Result<(), String> {
     let path = ui_state_file(app, key)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            crate::i18n::native_text("native.create", &format!("UI {} : {e}", parent.display()))
-        })?;
-    }
-
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, value).map_err(|e| {
-        crate::i18n::native_text("native.write", &format!("{} : {e}", tmp.display()))
-    })?;
-    fs::rename(&tmp, &path).map_err(|e| {
+    write_state_atomic(&path, value).map(|_| ()).map_err(|e| {
         crate::i18n::native_text("native.replace", &format!("{} : {e}", path.display()))
     })
 }
 
 fn remove_ui_state_file(app: &tauri::AppHandle, key: &str) -> Result<(), String> {
     let path = ui_state_file(app, key)?;
+    let lock = ui_write_lock(&path);
+    let _guard = lock.lock().unwrap();
     remove_state_files(&path)
 }
 
@@ -929,13 +961,21 @@ pub fn load_ui_states(
 }
 
 #[tauri::command]
-pub fn save_ui_state(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
-    write_ui_state(&app, &key, &value)
+pub async fn save_ui_state(
+    app: tauri::AppHandle,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || write_ui_state(&app, &key, &value))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn remove_ui_state(app: tauri::AppHandle, key: String) -> Result<(), String> {
-    remove_ui_state_file(&app, &key)
+pub async fn remove_ui_state(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || remove_ui_state_file(&app, &key))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1292,6 +1332,29 @@ pub fn recover_workspace_sessions(
 #[cfg(test)]
 mod migration_tests {
     use super::*;
+
+    #[test]
+    fn atomic_state_skips_unchanged_and_serializes_concurrent_revisions() {
+        let root = temporary_directory();
+        let path = root.join("session.json");
+        assert!(write_state_atomic(&path, "first").unwrap());
+        assert!(!write_state_atomic(&path, "first").unwrap());
+        let threads: Vec<_> = (0..12)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    write_state_atomic(&path, &format!("revision-{i}")).unwrap()
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert!(write_state_atomic(&path, "confirmed-final").unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "confirmed-final");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn temporary_directory() -> PathBuf {
         let path = std::env::temp_dir().join(format!(

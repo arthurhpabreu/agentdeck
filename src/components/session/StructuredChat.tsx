@@ -25,15 +25,18 @@ import { boundedChatMessages } from "../../services/chatCompaction";
 import { matchesChatMessage, readChatHistory, searchChatHistory } from "../../services/chatHistory";
 import { ChatToolCard } from "./ChatToolCard";
 import { ChatTurnActivity } from "./ChatTurnActivity";
-import { createChatContinuation } from "../../services/chatContinuity";
+import { continuationNeedsSourceReview, createChatContinuation } from "../../services/chatContinuity";
 import { showSessionSurface } from "../../services/workbenchCommands";
 import { McpAuthNotice } from "./McpAuthNotice";
+import { ChatRecoveryControl } from "./ChatRecoveryControl";
+import { getChatViewState, type PendingChatAttachment } from "../../services/chatViewState";
 
-interface PendingAttachment extends ChatAttachment { preview?: string }
+type PendingAttachment = PendingChatAttachment;
 const CHAT_BRAND = "AGENTDECK / WORKSPACE";
 function readBase64(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(reader.error); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.readAsDataURL(file); }); }
 
 export function StructuredChat({ session, visible, onNative, nativeLive = false }: { session: ClaudeSession; visible: boolean; onNative: (query?: string) => void; nativeLive?: boolean }) {
+  const retainedView = getChatViewState(session.id);
   const { t, locale } = useAppI18n(); const c = chatCopy(locale);
   const w = workflowCopy(locale);
   const context = contextCopy(locale);
@@ -44,21 +47,29 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   const worktreeReady = useSessionStore(s => s.worktreeReadyIds.has(session.id));
   const storageError = useChatStore(s => s.storageError);
   const historyReady = useChatStore(s => s.historyReady);
-  const [historyPage, setHistoryPage] = useState<ChatMessage[]>();
+  const [historyPage, setHistoryPage] = useState<ChatMessage[] | undefined>(retainedView.historyPage);
   const [searchResults, setSearchResults] = useState<ChatMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [continuing, setContinuing] = useState(false); const continuingRef = useRef(false);
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>(retainedView.attachments);
   const [uploading, setUploading] = useState(false); const uploadingRef = useRef(false);
   const [error, setError] = useState(""); const [menu, setMenu] = useState(false);
   const [showGoal, setShowGoal] = useState(!!thread.goal); const [sketch, setSketch] = useState(false);
-  const [search, setSearch] = useState<string | null>(null); const [dragging, setDragging] = useState(false); const dragDepth = useRef(0);
-  const [follow, setFollow] = useState(true);
+  const [search, setSearch] = useState<string | null>(retainedView.search); const [dragging, setDragging] = useState(false); const dragDepth = useRef(0);
+  const [follow, setFollow] = useState(retainedView.follow);
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const filesRef = useRef<HTMLInputElement>(null);
   const addContextRef = useRef<HTMLDivElement>(null);
   const attachmentsRef = useRef(attachments); attachmentsRef.current = attachments;
   const patch = (value: Parameters<ReturnType<typeof useChatStore.getState>["patch"]>[1]) => useChatStore.getState().patch(session.id, value);
-  useEffect(() => () => attachmentsRef.current.forEach(a => a.preview && URL.revokeObjectURL(a.preview)), []);
+  retainedView.attachments = attachments; retainedView.follow = follow; retainedView.historyPage = historyPage; retainedView.search = search;
+  useEffect(() => () => {
+    // Keep saved files and draft metadata across renderer eviction, release image blobs.
+    retainedView.attachments = attachmentsRef.current.map(({ preview, ...file }) => {
+      if (preview) URL.revokeObjectURL(preview);
+      return file;
+    });
+  }, [retainedView]);
+  useEffect(() => { const scroll = scrollRef.current; if (scroll && !retainedView.follow) scroll.scrollTop = retainedView.scrollTop; inputRef.current?.setSelectionRange(retainedView.selectionStart, retainedView.selectionEnd); }, []);
   useEffect(() => {
     if (!menu) return;
     const dismiss = (event: PointerEvent) => { if (!addContextRef.current?.contains(event.target as Node)) setMenu(false); };
@@ -120,7 +131,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   const continueChat = async () => {
     if (nativeLive || thread.busy || continuingRef.current || uploading || attachments.length || session.runner.type === "gemini") return;
     continuingRef.current = true; setContinuing(true); setError("");
-    try { const id = await createChatContinuation(session.id, locale); showSessionSurface(id); }
+    try { if (await continuationNeedsSourceReview(session.id)) window.dispatchEvent(new CustomEvent("agentdeck-correct-sources", { detail: { sessionId: session.id } })); else { const id = await createChatContinuation(session.id, locale); showSessionSurface(id); } }
     catch (failure) { setError(String(failure)); }
     finally { continuingRef.current = false; setContinuing(false); }
   };
@@ -135,7 +146,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   return <section className="ad-chat" aria-label={c.chat} onDragEnter={e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); dragDepth.current++; setDragging(true); } }} onDragOver={e => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }} onDragLeave={e => { e.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }} onDrop={e => { e.preventDefault(); dragDepth.current = 0; setDragging(false); void addFiles(Array.from(e.dataTransfer.files)); }}>
     {!!thread.messages.length && <header className="ad-chat-heading"><span><ProviderIcon provider={session.runner.type} size={18} /><strong>{RUNNER_LABELS[session.runner.type]}</strong><small title={thread.resolvedModel ? modelCopy(locale).reported : undefined}>{thread.resolvedModel || modelDisplayName(session.runner, session.worktreePath || session.workdir) || t("chat.defaultModel")}</small></span><div><button className="ad-icon-button" title={c.search} aria-label={c.search} onClick={() => setSearch(search === null ? "" : null)}><Search size={16} /></button><button className="ad-icon-button" title={c.export} aria-label={c.export} onClick={exportChat}><Download size={16} /></button>{session.runner.type !== "gemini" && <button className="ad-icon-button" title={context.continueHint} aria-label={continuing ? context.continuing : context.continueChat} disabled={nativeLive || thread.busy || continuing || uploading || !!attachments.length} onClick={() => void continueChat()}>{continuing ? <LoaderCircle size={16} className="ad-spin" /> : <ArrowRight size={16} />}</button>}</div></header>}
     {search !== null && <div className="ad-chat-search"><Search size={16} /><input autoFocus aria-label={c.searching} placeholder={c.searching} value={search} onChange={e => setSearch(e.target.value)} /><button className="ad-icon-button" aria-label={c.cancel} onClick={() => setSearch(null)}><X size={15} /></button></div>}
-    <div className={`ad-chat-scroll ${!thread.messages.length ? "is-empty" : ""}`} ref={scrollRef} onScroll={e => { const el = e.currentTarget; setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 90); }}>
+    <div className={`ad-chat-scroll ${!thread.messages.length ? "is-empty" : ""}`} ref={scrollRef} onScroll={e => { const el = e.currentTarget; retainedView.scrollTop = el.scrollTop; setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 90); }}>
       {!thread.messages.length ? <div className="ad-chat-welcome">
         <div className="ad-chat-logo"><img src="/agentdeck-logo.jpg" alt="Agentdeck" /></div><span className="ad-eyebrow">{CHAT_BRAND}</span><h2>{c.ready}</h2><p>{c.intro}</p>
         <div className="ad-agent-pills" role="group" aria-label={t("agents.title")}>{(Object.entries(RUNNER_LABELS) as [RunnerType, string][]).map(([type, label]) => <button key={type} className="ad-button" disabled={nativeLive || thread.busy} aria-pressed={type === session.runner.type} onClick={() => switchProvider(type)}><ProviderIcon provider={type} size={17} />{label}</button>)}</div>
@@ -144,7 +155,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
         {(earlier || historyPage || search) && <div className="ad-chat-history"><small>{search ? context.searchLimit : context.page}</small>{earlier && <button className="ad-button ad-button-ghost" disabled={loadingHistory} onClick={() => void loadEarlier()}>{context.older}</button>}{historyPage && <button className="ad-button ad-button-ghost" onClick={() => { setHistoryPage(undefined); setFollow(true); }}>{context.latest}</button>}</div>}
         {filtered.map(message => message.role === "tool" ? <ChatToolCard key={message.id} message={message} active={thread.busy && message.turnId === thread.turnId} /> : <article key={message.id} className={`ad-message ad-message-${message.role}`}>
           <div className="ad-message-meta">{message.role === "assistant" ? <ProviderIcon provider={session.runner.type} size={19} /> : <span className="ad-user-avatar">{c.you.slice(0, 1)}</span>}<strong>{message.role === "user" ? c.you : RUNNER_LABELS[session.runner.type]}</strong>{message.parentId && <small className="ad-subagent-label" title={message.parentId}>{locale.startsWith("en") ? "Subagent" : "Subagente"} · {message.parentId.slice(-6)}</small>}<time>{new Date(message.at).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}</time><CopyButton text={message.text} />{message.role === "assistant" && <SaveResponseToMemory session={session} text={message.text} disabled={thread.busy} onError={setError} />}</div>
-          <div className="ad-message-body">{message.role === "assistant" ? <ChatMarkdown text={message.text} /> : <p className="ad-user-text">{message.text}</p>}{message.role === "user" && message.status && <small className="ad-supplement-status" role="status" title={message.title}>{message.status === "accepted" ? w.accepted : message.status === "failed" ? w.failed : message.status === "queued" ? w.queued : w.sending}</small>}{!!message.attachments?.length && <div className="ad-message-files">{message.attachments.map((file, index) => <span key={index}><Paperclip size={13} />{file.name}</span>)}</div>}</div>
+          <div className="ad-message-body">{message.role === "assistant" ? <ChatMarkdown text={message.text} sessionId={session.id} /> : <p className="ad-user-text">{message.text}</p>}{message.role === "user" && message.status && <small className="ad-supplement-status" role="status" title={message.title}>{message.status === "accepted" ? w.accepted : message.status === "failed" ? w.failed : message.status === "queued" ? w.queued : w.sending}</small>}{!!message.attachments?.length && <div className="ad-message-files">{message.attachments.map((file, index) => <span key={index}><Paperclip size={13} />{file.name}</span>)}</div>}</div>
         </article>)}
         {search && !filtered.length && <p className="ad-hint">{c.noMatch}</p>}
       </div>}
@@ -153,6 +164,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
     </div>
     {!follow && thread.messages.length > 0 && <button className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => { setFollow(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><ArrowDown size={16} /></button>}
     <div className="ad-chat-bottom">
+      <ChatRecoveryControl session={session} visible={visible} disabled={nativeLive || uploading || !!attachments.length} />
       {thread.continuation && <p className="ad-chat-continuation" role="status"><span>{context.continuation} <button type="button" disabled={!useSessionStore.getState().sessions.some(s => s.id === thread.continuation!.sourceSessionId)} onClick={() => showSessionSurface(thread.continuation!.sourceSessionId)}>{thread.continuation.sourceSessionName}</button></span><small title={thread.continuation.archivePath}>{context.transcript}: {thread.continuation.messageCount.toLocaleString(locale)}</small></p>}
       <McpAuthNotice sessionId={session.id} warning={thread.mcpAuthWarning} deadline={thread.mcpAuthWarningUntil} busy={thread.busy || nativeLive} onNative={() => onNative()} />
       {thread.recoveryNotice && <p className="ad-chat-reconnecting" role="status">{context.reconnecting} <small>{thread.recoveryNotice}</small></p>}
@@ -163,7 +175,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
       <div className="ad-composer ad-chat-composer ad-composer-compact">
         {showGoal && <label className="ad-chat-goal"><Target size={15} /><input aria-label={c.goal} placeholder={c.goalPlaceholder} title={c.goalHint} value={thread.goal ?? ""} disabled={thread.busy} onChange={e => patch({ goal: e.target.value })} /><button className="ad-icon-button" aria-label={c.remove} disabled={thread.busy} onClick={() => { setShowGoal(false); patch({ goal: "" }); }}><X size={14} /></button></label>}
         {!!attachments.length && <div className="ad-attachments">{attachments.map((file, index) => <div className="ad-attachment" key={file.path}>{file.preview ? <img src={file.preview} alt={file.name} /> : <FileText size={22} />}<span><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small></span><button className="ad-icon-button" aria-label={`${c.removeAttachment}: ${file.name}`} onClick={() => { if (file.preview) URL.revokeObjectURL(file.preview); setAttachments(files => files.filter((_, i) => i !== index)); }}><X size={14} /></button></div>)}</div>}
-        <CommandTextarea shortcutsPlacement="above" visible={visible} inputRef={inputRef} runner={session.runner} workdir={session.worktreePath || session.workdir} projectPath={session.workdir} browse={browse} onCatalogue={setCatalogue} disabled={nativeLive} rows={2} aria-label={t("session.promptTitle")} placeholder={thread.messages.length ? t("chat.followup") : t("session.promptPlaceholder")} value={thread.draft} onValueChange={value => patch({ draft: value, inputError: undefined })} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void addFiles(files); } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); } if (e.key === "Escape") setMenu(false); }} />
+        <CommandTextarea shortcutsPlacement="above" visible={visible} inputRef={inputRef} runner={session.runner} workdir={session.worktreePath || session.workdir} projectPath={session.workdir} browse={browse} onCatalogue={setCatalogue} disabled={nativeLive} rows={2} aria-label={t("session.promptTitle")} placeholder={thread.messages.length ? t("chat.followup") : t("session.promptPlaceholder")} value={thread.draft} onValueChange={value => patch({ draft: value, inputError: undefined })} onSelect={event => { retainedView.selectionStart = event.currentTarget.selectionStart; retainedView.selectionEnd = event.currentTarget.selectionEnd; }} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void addFiles(files); } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); } if (e.key === "Escape") setMenu(false); }} />
         <div className="ad-composer-footer"><div className="ad-add-context" ref={addContextRef}><button className="ad-icon-button ad-add-button" aria-label={c.add} title={c.add} disabled={uploading} aria-expanded={menu} onClick={() => setMenu(!menu)}><Plus size={19} /></button>{menu && <div className="ad-context-menu"><small>{c.add}</small><button onClick={() => { filesRef.current?.click(); setMenu(false); }}><ImagePlus size={16} />{c.files}<kbd>+</kbd></button><button onClick={() => { setShowGoal(!showGoal); setMenu(false); }}><Target size={16} />{c.goal}</button><button onClick={() => { setSketch(true); setMenu(false); }}><Pencil size={16} />{c.sketch}</button><button onClick={() => { setMenu(false); void invoke<string | null>("pick_folder").then(path => { if (path) patch({ draft: `${thread.draft}\n\n@${JSON.stringify(path)}`.trim() }); }).catch(e => setError(String(e))); }}><FolderOpen size={16} />{c.folder}</button></div>}</div>
           <input hidden ref={filesRef} type="file" multiple onChange={e => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} aria-label={c.attach} />
           <AgentModelPicker compact runner={session.runner} workdir={session.worktreePath || session.workdir} disabled={thread.busy || nativeLive} onChange={value => useSessionStore.getState().updateSession(session.id, { runner: { ...session.runner, ...value } })} />

@@ -16,13 +16,15 @@ import { MemoryIntelligencePanel, MemoryNoteHistory } from "./MemoryIntelligence
 import { curationCopy } from "./MemoryCurationControl";
 import "./sharedMemory.css";
 import { KnowledgeScopeControls } from "./KnowledgeScopeControls";
+import { SortableCollection } from "../ordering/SortableCollection";
 
 const emptyDraft = (): MemoryDraft => ({ title: "", content: "", kind: "fact", pinned: false });
 const knownProvider = (provider?: string | null): provider is RunnerType => provider === "codex" || provider === "claude-code" || provider === "gemini";
 
 export function SharedMemoryPanel() {
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
-  const projectPath = useWorkspaceStore(state => state.workspaces.find(project => project.id === activeWorkspaceId)?.path);
+  const selectedSession = useSessionStore(state => state.sessions.find(session => session.id === state.activeSessionId));
+  const projectPath = useWorkspaceStore(state => state.workspaces.find(project => project.id === (selectedSession?.workspaceId ?? activeWorkspaceId))?.path);
   const scope = useSharedMemoryStore(state => state.memoryScope);
   return <ProjectMemoryPanel key={`${scope}:${scope === "global" ? GLOBAL_MEMORY_KEY : projectPath ?? "no-project"}`} />;
 }
@@ -33,7 +35,8 @@ function ProjectMemoryPanel() {
   const m = memoryCopy(locale);
   const workspaces = useWorkspaceStore(state => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
-  const project = workspaces.find(workspace => workspace.id === activeWorkspaceId);
+  const selectedSession = useSessionStore(state => state.sessions.find(session => session.id === state.activeSessionId));
+  const project = workspaces.find(workspace => workspace.id === (selectedSession?.workspaceId ?? activeWorkspaceId));
   const scope = useSharedMemoryStore(state => state.memoryScope);
   const global = scope === "global";
   const path = global ? GLOBAL_MEMORY_KEY : project?.path ?? "";
@@ -195,7 +198,7 @@ function ProjectMemoryPanel() {
 
   return <section className="ad-memory-panel" ref={panelRef} aria-label={m.title}>
     <header className="ad-memory-heading"><h2>{m.title}</h2><p>{m.intro}</p></header>
-    <KnowledgeScopeControls scope={scope} onChange={value => useSharedMemoryStore.getState().setMemoryScope(value)} disabled={memory.saving || exporting} labels={{ scope: m.scopeLabel, global: m.global, project: m.projectScope, globalHint: m.globalHint, projectHint: m.projectHint, projectLabel: m.project, noProject: m.noProject }} />
+    <KnowledgeScopeControls scope={scope} onChange={value => useSharedMemoryStore.getState().setMemoryScope(value)} disabled={memory.saving || exporting} projectId={project?.id} labels={{ scope: m.scopeLabel, global: m.global, project: m.projectScope, globalHint: m.globalHint, projectHint: m.projectHint, projectLabel: m.project, noProject: m.noProject }} />
     {!project && !global ? <div className="ad-memory-empty"><Folder size={29} /><p>{m.noProject}</p></div> : !desktop ? <div className="ad-memory-empty"><Database size={29} /><p>{m.desktop}</p></div> : <>
       {!selected && !editing && <>
         <MemoryIntelligencePanel path={path} />
@@ -234,7 +237,7 @@ function ProjectMemoryPanel() {
         <select className="ad-memory-kind-filter" aria-label={m.kindField} value={kind} onChange={event => setKind(event.target.value as MemoryKind | "all")}><option value="all">{m.all}</option><option value="handoff">{m.handoff}</option><option value="decision">{m.decision}</option><option value="fact">{m.fact}</option></select>
         {memory.loading && !memory.updatedAt && <p className="ad-memory-loading" role="status"><LoaderCircle size={14} className="ad-memory-spinning" />{m.loading}</p>}
         {!records.length && !memory.loading && !memory.error && <div className="ad-memory-empty"><strong>{query || kind !== "all" ? m.noResults : global ? m.globalEmpty : m.empty}</strong>{!query && kind === "all" ? <p>{global ? m.globalEmptyHint : m.emptyHint}</p> : <button type="button" className="ad-memory-button" onClick={() => { setQuery(""); setKind("all"); }}>{m.clearSearch}</button>}</div>}
-        <div className="ad-memory-notes">{records.map(record => <button type="button" key={record.id} ref={element => { if (element) noteButtons.current.set(record.id, element); else noteButtons.current.delete(record.id); }} className="ad-memory-note" onClick={() => openRecord(record)}><BookOpenText className="ad-memory-note-symbol" size={17} /><span className="ad-memory-note-body"><span className="ad-memory-note-title"><strong>{record.title}</strong>{record.pinned && <Pin size={12} aria-label={m.pinned} />}{knownProvider(record.provider) && <ProviderIcon provider={record.provider} size={14} />}</span><span className="ad-memory-note-top"><span className="ad-memory-kind" data-kind={record.kind}>{kindLabel(record.kind)}</span><span>{origin(record)}</span></span><span className="ad-memory-note-bottom"><time>{formatDate(record.updatedAt)}</time>{record.verification !== "user-confirmed" && <span className="ad-memory-note-unverified"><Info size={11} />{record.verification === "auto-selected" ? curationCopy(locale).automatic : m.unverified}</span>}</span></span></button>)}</div>
+        <SortableCollection surface="memory-notes" context={path} className="ad-memory-notes" items={records} allIds={memory.records.map(record => record.id)} getId={record => record.id} getLabel={record => record.title} render={(record, handle) => <div className="ad-memory-sortable-note">{handle}<button type="button" ref={element => { if (element) noteButtons.current.set(record.id, element); else noteButtons.current.delete(record.id); }} className="ad-memory-note" onClick={() => openRecord(record)}><BookOpenText className="ad-memory-note-symbol" size={17} /><span className="ad-memory-note-body"><span className="ad-memory-note-title"><strong>{record.title}</strong>{record.pinned && <Pin size={12} aria-label={m.pinned} />}{knownProvider(record.provider) && <ProviderIcon provider={record.provider} size={14} />}</span><span className="ad-memory-note-top"><span className="ad-memory-kind" data-kind={record.kind}>{kindLabel(record.kind)}</span><span>{origin(record)}</span></span><span className="ad-memory-note-bottom"><time>{formatDate(record.updatedAt)}</time>{record.verification !== "user-confirmed" && <span className="ad-memory-note-unverified"><Info size={11} />{record.verification === "auto-selected" ? curationCopy(locale).automatic : m.unverified}</span>}</span></span></button></div>} />
       </>}
       {!editing && !selected && <footer className="ad-memory-footer"><div className="ad-memory-storage"><strong><Database size={13} />{m.storageTitle}</strong><p>{m.storageHint}</p>{memory.status?.storagePath && <code>{memory.status.storagePath}</code>}<div><button type="button" className="ad-memory-button" onClick={() => void storageAction(memoryCommands.openStorage)}><Folder size={13} />{m.openStorage}</button><button type="button" className="ad-memory-button" disabled={!memory.status?.storagePath} onClick={() => void storageAction(() => navigator.clipboard.writeText(memory.status!.storagePath!), m.copiedPath)}><Copy size={13} />{m.copyPath}</button></div><button type="button" className="ad-memory-button" disabled={exporting || memory.saving || !memory.status?.recordCount} title={m.exportHint} onClick={() => void exportNotes()}>{exporting ? <LoaderCircle size={13} className="ad-memory-spinning" /> : <Download size={13} />}{m.exportMarkdown}</button><p>{m.exportHint}</p>{storageError && <p role="alert" className="ad-memory-validation">{storageError}</p>}</div><details><summary><Info size={12} />{m.readMore}</summary><p>{m.retrieval}</p><p>{m.captureReview}</p></details>{activeSession && !global && <button type="button" className="ad-memory-button" title={m.recallHint} disabled={memory.saving || !memory.status?.enabled} onClick={() => void recall(activeSession.id, activeSession.runner.type)}><RotateCcw size={12} />{m.recall}</button>}</footer>}
     </>}

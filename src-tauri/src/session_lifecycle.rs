@@ -188,7 +188,7 @@ pub fn emit_session_lifecycle(
                 if crate::chat::is_session_running(app, &sid) {
                     continue;
                 }
-                let _ = app.emit("pty-waiting", serde_json::json!({ "session_id": sid }));
+                let _ = app.emit("pty-waiting", serde_json::json!({ "session_id": sid, "turn_id": turn_id, "source": routing.source.label() }));
                 crate::notification::completion::terminal_completed(
                     app,
                     &sid,

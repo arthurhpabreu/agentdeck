@@ -129,7 +129,7 @@ fn automatic_cleanup_archives_duplicates_and_preserves_manual_and_pinned_notes()
     assert_eq!(engine.curate("project").unwrap().archived, 2);
 }
 #[test]
-fn automatic_preferences_require_durable_evidence_and_do_not_replace_user_choices() {
+fn durable_general_preferences_remain_pending_until_explicit_universal_review() {
     let fixture = Fixture::new();
     let engine = fixture.1.as_ref().unwrap();
     event(
@@ -141,9 +141,13 @@ fn automatic_preferences_require_durable_evidence_and_do_not_replace_user_choice
         vec![],
     );
     let notes = engine.list(GLOBAL_MEMORY_KEY, "").unwrap();
-    assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].verification, "auto-selected");
-    assert_eq!(notes[0].source, "curation");
+    assert!(notes.is_empty());
+    let candidate = engine.profile_candidates().unwrap().remove(0);
+    assert_eq!(candidate.status, "candidate");
+    assert_eq!(engine.curate_profiles().unwrap(), 0);
+    let approved = engine.review_profile(&candidate.id, true).unwrap().unwrap();
+    assert_eq!(approved.verification, "user-confirmed");
+    assert_eq!(approved.source, "manual");
     event(
         engine,
         "chat",

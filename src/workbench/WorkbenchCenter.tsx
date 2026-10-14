@@ -10,6 +10,7 @@ import { sanitizeRunnerConfig, useSettingsStore } from "../store/settingsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
+import { SortableCollection } from "../components/ordering/SortableCollection";
 
 function WelcomeAction({ label, accent = false, onClick }: { label: string; accent?: boolean; onClick: () => void }) {
   return (
@@ -280,15 +281,16 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
                 )}
               </WelcomeList>
               <WelcomeList title={t("workbench.welcome.recent")}>
-                {recentSessions.length > 0 ? recentSessions.map((recent) => (
+                {recentSessions.length > 0 ? <SortableCollection surface="welcome-recent-sessions" context={activeWorkspaceId ?? "all"} items={recentSessions} allIds={sessions.map(item => item.id)} getId={recent => recent.id} getLabel={recent => recent.name} render={(recent, handle) => (
+                  <div style={{ display: "flex", minWidth: 0, alignItems: "center" }}>{handle}<div style={{ minWidth: 0, flex: 1 }}>
                   <WelcomeEntry
-                    key={recent.id}
                     title={recent.name}
                     detail={recent.currentTask || undefined}
                     onClick={() => showSessionSurface(recent.id)}
                     action={<WelcomeAction label={t("workbench.welcome.open")} onClick={() => showSessionSurface(recent.id)} />}
                   />
-                )) : (
+                  </div></div>
+                )} /> : (
                   <WelcomeEntry title={t("workbench.welcome.noRecentSessions")} detail={t("workbench.welcome.recentWillAppear")} />
                 )}
               </WelcomeList>
@@ -318,7 +320,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
               {t("workbench.welcome.otherWorkspaces")}
             </div>
             <div style={{ marginTop: 10 }}>
-              {otherWorkspaces.map((workspace) => {
+              <SortableCollection surface="welcome-projects" context="all" items={otherWorkspaces} allIds={workspaces.map(workspace => workspace.id)} getId={workspace => workspace.id} getLabel={workspace => workspace.name} render={(workspace, handle) => {
                 const workspaceSessions = sessions.filter((item) => item.workspaceId === workspace.id);
                 const topSession = workspaceSessions[0] ?? null;
                 return (
@@ -333,6 +335,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
                       e.currentTarget.style.background = "transparent";
                     }}
                   >
+                    {handle}
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 11.5, color: "var(--ci-text-muted)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {workspace.name}
@@ -346,7 +349,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
                     <WelcomeAction label={t("workbench.welcome.switch")} onClick={() => useWorkspaceStore.getState().bringToFront(workspace.id)} />
                   </div>
                 );
-              })}
+              }} />
             </div>
           </div>
         )}

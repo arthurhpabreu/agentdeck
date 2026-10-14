@@ -223,6 +223,13 @@ pub fn run() {
             knowledge::search_knowledge,
             knowledge::get_knowledge_graph,
             knowledge::read_knowledge_note,
+            knowledge::get_source_policy,
+            knowledge::save_knowledge_vault,
+            knowledge::remove_knowledge_vault,
+            knowledge::set_project_source_policy,
+            knowledge::set_conversation_source_policy,
+            knowledge::save_memory_collection,
+            knowledge::rollback_source_policy_migration,
             memory_runtime::memory_status,
             memory_runtime::memory_open_storage,
             memory_runtime::memory_export_markdown,
@@ -286,6 +293,7 @@ pub fn run() {
             session_files::read_session_file,
             session_files::write_session_file,
             session_files::list_session_directory,
+            session_files::search_session_files,
             // Git branch management
             git::branch::git_current_branch,
             git::branch::git_branch_create,
@@ -307,6 +315,8 @@ pub fn run() {
             // PTY terminals
             pty::start_pty_session,
             pty::write_pty,
+            pty::ack_pty_output,
+            pty::read_pty_output,
             pty::resize_pty,
             pty::stop_pty_session,
             pty::send_pty_query,
@@ -354,13 +364,17 @@ pub fn run() {
                 .cloned()
                 .collect();
             for id in ids {
-                let _ = pty::stop_pty_session(app.clone(), id);
+                let _ = pty::stop_pty_session_inner(app.clone(), id);
             }
             let process_state = app.state::<ProcessMap>();
-            let mut processes = process_state.lock().unwrap();
-            for (_, mut child) in processes.drain() {
-                let _ = child.kill();
-                let _ = child.wait();
+            let children: Vec<_> = process_state
+                .lock()
+                .unwrap()
+                .drain()
+                .map(|(_, child)| child)
+                .collect();
+            for mut child in children {
+                let _ = runner::terminate_child(&mut child);
             }
         }
         #[cfg(target_os = "macos")]

@@ -1,0 +1,2 @@
+import { create } from "zustand";
+export const useEditorLocationStore = create<{ locations: Record<string, { path: string; line: number; revision: number }>; setLocation: (sessionId: string, path: string, line: number) => void }>(set => ({ locations: {}, setLocation: (sessionId, path, line) => set(state => ({ locations: { ...state.locations, [sessionId]: { path, line, revision: (state.locations[sessionId]?.revision ?? 0) + 1 } } })) }));

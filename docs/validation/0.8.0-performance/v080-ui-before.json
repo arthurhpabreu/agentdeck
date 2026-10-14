@@ -1,0 +1,78 @@
+{
+  "phase": "before",
+  "browser": "Headless Microsoft Edge/Chromium",
+  "viewport": "1360x900",
+  "nativeBoundary": "Mocked; no account/model/real PTY",
+  "limitations": "CDP CPU/heap reflect browser renderer only, not native WebView/agent process. Latencies include automation and two animation frames; not absolute responsiveness guarantees. Drag and native memory/IPC queue peaks are separately functional-tested, not statistically benchmarked here.",
+  "measurements": [
+    {
+      "sessions": 5,
+      "streams": 5,
+      "historyBytes": 22118400,
+      "typing": {
+        "samples": 27,
+        "p50Ms": 64.79999999701977,
+        "p95Ms": 159.70000000298023
+      },
+      "switching": {
+        "samples": 4,
+        "p50Ms": 2212.5438000000013,
+        "p95Ms": 2760.8444
+      },
+      "cancelMs": 2156.786100000001,
+      "nativeCalls": 572,
+      "nativeWrites": 532,
+      "localWrites": 532,
+      "mountedPanels": 5,
+      "taskCpuSeconds": 15.525481000000001,
+      "scriptCpuSeconds": 14.779049,
+      "jsHeapBytes": 61447852
+    },
+    {
+      "sessions": 20,
+      "streams": 8,
+      "historyBytes": 22118400,
+      "typing": {
+        "samples": 27,
+        "p50Ms": 84.19999999552965,
+        "p95Ms": 215.39999999850988
+      },
+      "switching": {
+        "samples": 8,
+        "p50Ms": 3089.3738999999987,
+        "p95Ms": 4283.613299999997
+      },
+      "cancelMs": 2501.363599999997,
+      "nativeCalls": 1431,
+      "nativeWrites": 1359,
+      "localWrites": 1359,
+      "mountedPanels": 9,
+      "taskCpuSeconds": 31.018815999999998,
+      "scriptCpuSeconds": 29.817573,
+      "jsHeapBytes": 98019704
+    },
+    {
+      "sessions": 50,
+      "streams": 8,
+      "historyBytes": 22118400,
+      "typing": {
+        "samples": 27,
+        "p50Ms": 70.5,
+        "p95Ms": 164.30000000447035
+      },
+      "switching": {
+        "samples": 8,
+        "p50Ms": 3527.8492000000115,
+        "p95Ms": 6238.205900000001
+      },
+      "cancelMs": 3143.7265000000043,
+      "nativeCalls": 1368,
+      "nativeWrites": 1295,
+      "localWrites": 1295,
+      "mountedPanels": 9,
+      "taskCpuSeconds": 37.520772,
+      "scriptCpuSeconds": 36.194472,
+      "jsHeapBytes": 116520620
+    }
+  ]
+}

@@ -14,6 +14,7 @@ import { getExplorerDirectoryError, getExplorerDirectoryLoading, hasExplorerDire
 import { EMPTY_SCM_GROUPS, useScmStore } from "../../store/scmStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { type ClaudeSession } from "../../store/sessionStore";
+import { SortableCollection } from "../ordering/SortableCollection";
 
 function FileStatusGlyph({ kind }: { kind: "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted" | null }) {
   const color = kind === "conflicted"
@@ -121,16 +122,105 @@ export function ExplorerPane({
     const rowElement = container.querySelector<HTMLElement>(`[data-row-index="${selectedIndex}"]`);
     if (!rowElement) return;
 
-    const rowTop = rowElement.offsetTop;
-    const rowBottom = rowTop + rowElement.offsetHeight;
+    const row = rowElement.closest("button") ?? rowElement;
+    const rowBox = row.getBoundingClientRect();
+    const rowTop = rowBox.top - container.getBoundingClientRect().top + container.scrollTop;
+    const rowBottom = rowTop + rowBox.height;
     const viewportTop = container.scrollTop;
     const viewportBottom = viewportTop + container.clientHeight;
     const fullyVisible = rowTop >= viewportTop && rowBottom <= viewportBottom;
     if (fullyVisible && selectedRevealMode !== "force") return;
 
-    const nextScrollTop = Math.max(0, rowTop - Math.max(0, container.clientHeight * 0.5 - rowElement.offsetHeight * 0.5));
+    const nextScrollTop = Math.max(0, rowTop - Math.max(0, container.clientHeight * 0.5 - rowBox.height * 0.5));
     container.scrollTo({ top: nextScrollTop, behavior: "smooth" });
   }, [selectedPath, selectedRevealMode, rowIndexByPath, visiblePathSet]);
+
+  const renderDirectory = (directory: string): React.ReactNode => <SortableCollection surface="explorer-siblings" context={JSON.stringify([session.id, directory])}
+    items={visibleRows.filter(node => (node.parentPath ?? "") === directory)} getId={node => node.key} getLabel={node => node.name}
+    toolbar={directory === "" || visibleRows.filter(node => (node.parentPath ?? "") === directory).length > 1} render={(node, handle) => {
+          if (node.type === "dir") {
+            const isOpen = expandedDirs.includes(node.path);
+            const isHovered = hoveredNodeKey === node.key;
+            const isTouched = touchedPathSet.has(node.path);
+            return (
+              <div key={node.key}>
+                <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>{handle}<div style={{ flex: 1, minWidth: 0 }}>
+                <button
+                  onClick={() => {
+                    toggleDir(session.id, node.path);
+                    if (!isOpen && !useExplorerStore.getState().childrenBySessionPath[`${session.id}:${node.path}`]) {
+                      void loadDirectory(session.id, node.path);
+                    }
+                  }}
+                  onMouseEnter={() => setHoveredNodeKey(node.key)}
+                  onMouseLeave={() => setHoveredNodeKey((current) => (current === node.key ? null : current))}
+                  style={{
+                    ...rowBaseStyle,
+                    padding: "0 10px",
+                    paddingInlineStart: 8 + node.depth * 14,
+                    background: isHovered ? rowHoverBackground : "transparent",
+                    color: isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
+                    cursor: "pointer",
+                    outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
+                    outlineOffset: -1,
+                  }}
+                >
+                  <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
+                    {isOpen ? <ChevronDown size={12} strokeWidth={1.8} /> : <ChevronRight size={12} strokeWidth={1.8} />}
+                  </span>
+                  <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
+                    <Folder size={12} strokeWidth={1.8} />
+                  </span>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
+                  {node.loading && <span style={{ marginInlineStart: "auto", fontSize: 10, color: "var(--ci-text-dim)" }}>…</span>}
+                </button>
+                </div></div>
+                {node.error && (
+                  <div style={{ paddingInlineStart: 34 + node.depth * 14, paddingTop: 2, paddingBottom: 6, fontSize: 10, color: "var(--ci-deleted-text)" }}>
+                    {node.error}
+                  </div>
+                )}
+                {isOpen && renderDirectory(node.path)}
+              </div>
+            );
+          }
+
+          const isSelected = selectedPath === node.path;
+          const isHovered = hoveredNodeKey === node.key;
+          const buffer = buffersByTabId[`code:${session.id}:${node.path}`];
+          const kind = statusByPath.get(node.path) ?? null;
+          const isTouched = touchedPathSet.has(node.path);
+          return (
+            <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>{handle}<button
+              key={node.key}
+              onClick={() => {
+                openFile(session.id, node.path, true, true, "explorer");
+              }}
+              onDoubleClick={() => openFile(session.id, node.path, false, true, "explorer")}
+              onMouseEnter={() => setHoveredNodeKey(node.key)}
+              onMouseLeave={() => setHoveredNodeKey((current) => (current === node.key ? null : current))}
+              style={{
+                ...rowBaseStyle,
+                padding: "0 10px",
+                paddingInlineStart: 24 + node.depth * 14,
+                background: isSelected ? rowActiveBackground : isHovered ? rowHoverBackground : "transparent",
+                color: isSelected || isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
+                cursor: "pointer",
+                borderInlineStart: isSelected ? "1px solid var(--ci-accent)" : "1px solid transparent",
+                outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
+                outlineOffset: -1,
+              }}
+              title={node.path}
+            >
+              <FileStatusGlyph kind={kind} />
+              <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: isSelected ? "var(--ci-text)" : "var(--ci-text-dim)", flexShrink: 0 }}>
+                <FileCode2 size={11} strokeWidth={1.8} />
+              </span>
+              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
+              {buffer?.dirty && <span style={{ color: "var(--ci-accent)", fontSize: 10, marginInlineStart: "auto" }}>●</span>}
+            </button></div>
+          );
+    }} />;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "transparent" }}>
@@ -207,87 +297,7 @@ export function ExplorerPane({
           <div style={{ padding: "18px 12px", fontSize: 12, color: "var(--ci-text-dim)", lineHeight: 1.7 }}>
             {t("explorer.emptyDirectory")}
           </div>
-        ) : visibleRows.map((node) => {
-          if (node.type === "dir") {
-            const isOpen = expandedDirs.includes(node.path);
-            const isHovered = hoveredNodeKey === node.key;
-            const isTouched = touchedPathSet.has(node.path);
-            return (
-              <div key={node.key}>
-                <button
-                  onClick={() => {
-                    toggleDir(session.id, node.path);
-                    if (!isOpen && !useExplorerStore.getState().childrenBySessionPath[`${session.id}:${node.path}`]) {
-                      void loadDirectory(session.id, node.path);
-                    }
-                  }}
-                  onMouseEnter={() => setHoveredNodeKey(node.key)}
-                  onMouseLeave={() => setHoveredNodeKey((current) => (current === node.key ? null : current))}
-                  style={{
-                    ...rowBaseStyle,
-                    padding: "0 10px",
-                    paddingInlineStart: 8 + node.depth * 14,
-                    background: isHovered ? rowHoverBackground : "transparent",
-                    color: isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
-                    cursor: "pointer",
-                    outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
-                    outlineOffset: -1,
-                  }}
-                >
-                  <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
-                    {isOpen ? <ChevronDown size={12} strokeWidth={1.8} /> : <ChevronRight size={12} strokeWidth={1.8} />}
-                  </span>
-                  <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ci-text-dim)", flexShrink: 0 }}>
-                    <Folder size={12} strokeWidth={1.8} />
-                  </span>
-                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
-                  {node.loading && <span style={{ marginInlineStart: "auto", fontSize: 10, color: "var(--ci-text-dim)" }}>…</span>}
-                </button>
-                {node.error && (
-                  <div style={{ paddingInlineStart: 34 + node.depth * 14, paddingTop: 2, paddingBottom: 6, fontSize: 10, color: "var(--ci-deleted-text)" }}>
-                    {node.error}
-                  </div>
-                )}
-              </div>
-            );
-          }
-
-          const isSelected = selectedPath === node.path;
-          const isHovered = hoveredNodeKey === node.key;
-          const buffer = buffersByTabId[`code:${session.id}:${node.path}`];
-          const kind = statusByPath.get(node.path) ?? null;
-          const isTouched = touchedPathSet.has(node.path);
-          return (
-            <button
-              key={node.key}
-              onClick={() => {
-                openFile(session.id, node.path, true, true, "explorer");
-              }}
-              onDoubleClick={() => openFile(session.id, node.path, false, true, "explorer")}
-              onMouseEnter={() => setHoveredNodeKey(node.key)}
-              onMouseLeave={() => setHoveredNodeKey((current) => (current === node.key ? null : current))}
-              style={{
-                ...rowBaseStyle,
-                padding: "0 10px",
-                paddingInlineStart: 24 + node.depth * 14,
-                background: isSelected ? rowActiveBackground : isHovered ? rowHoverBackground : "transparent",
-                color: isSelected || isHovered ? "var(--ci-text)" : "var(--ci-text-muted)",
-                cursor: "pointer",
-                borderInlineStart: isSelected ? "1px solid var(--ci-accent)" : "1px solid transparent",
-                outline: isTouched ? "1px solid var(--ci-accent-bdr)" : "none",
-                outlineOffset: -1,
-              }}
-              title={node.path}
-            >
-              <FileStatusGlyph kind={kind} />
-              <span style={{ width: 12, display: "flex", alignItems: "center", justifyContent: "center", color: isSelected ? "var(--ci-text)" : "var(--ci-text-dim)", flexShrink: 0 }}>
-                <FileCode2 size={11} strokeWidth={1.8} />
-              </span>
-              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} data-row-index={node.index}>{node.name}</span>
-              {buffer?.dirty && <span style={{ color: "var(--ci-accent)", fontSize: 10, marginInlineStart: "auto" }}>●</span>}
-            </button>
-          );
-        })}
+        ) : renderDirectory("")}
       </div>
     </div>
   );

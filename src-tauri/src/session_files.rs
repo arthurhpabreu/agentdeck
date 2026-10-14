@@ -334,3 +334,106 @@ pub fn list_session_directory(
         entries,
     })
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFileSearchResult {
+    paths: Vec<String>,
+    truncated: bool,
+}
+
+fn search_file_paths(root: &Path, query: &str) -> SessionFileSearchResult {
+    let tokens: Vec<_> = query
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let mut paths = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    let mut visited = 0usize;
+    let started = std::time::Instant::now();
+    let mut truncated = false;
+    'walk: while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > 50_000 || started.elapsed() > std::time::Duration::from_millis(750) {
+                truncated = true;
+                break 'walk;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            // Never follow a symlink outside the registered session root.
+            if kind.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if kind.is_dir() {
+                if ![
+                    ".git",
+                    "node_modules",
+                    "target",
+                    ".local",
+                    ".next",
+                    "dist",
+                    ".venv",
+                ]
+                .contains(&name.as_str())
+                {
+                    pending.push(entry.path());
+                }
+            } else if kind.is_file() {
+                let path = entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap_or(Path::new(""))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let normalized = path.to_lowercase();
+                if tokens.iter().all(|token| normalized.contains(token)) {
+                    paths.push(path);
+                    if paths.len() >= 200 {
+                        truncated = true;
+                        break 'walk;
+                    }
+                }
+            }
+        }
+    }
+    paths.sort();
+    SessionFileSearchResult { paths, truncated }
+}
+
+#[tauri::command]
+pub async fn search_session_files(
+    app: tauri::AppHandle,
+    session_id: String,
+    query: String,
+) -> Result<SessionFileSearchResult, String> {
+    let root = session_root(&app, &session_id)?;
+    let query: String = query.chars().take(200).collect();
+    tauri::async_runtime::spawn_blocking(move || search_file_paths(&root, &query))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    #[test]
+    fn scoped_file_search_skips_dependency_trees_and_keeps_real_relative_paths() {
+        let root =
+            std::env::temp_dir().join(format!("agentdeck-file-search-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("node_modules/private")).unwrap();
+        fs::write(root.join("src/ação.ts"), "fixture").unwrap();
+        fs::write(root.join("node_modules/private/secret.ts"), "fixture").unwrap();
+        let result = search_file_paths(&root, "ts");
+        assert_eq!(result.paths, vec!["src/ação.ts"]);
+        assert!(!result.truncated);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

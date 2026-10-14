@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useAppI18n } from "../i18n";
 import { useSettingsStore, isGlassTheme, type ThemeMode } from "../store/settingsStore";
-import { startPtySession, stopPtySession } from "../store/ptyRuntimeStore";
-import { encodeTerminalInput } from "../services/terminalEncoding";
+import { startPtySession } from "../store/ptyRuntimeStore";
+import { attachPtyOutput } from "../services/ptyOutputRouter";
+import { writePtyInput } from "../services/ptyInput";
 import { getRuntimePlatform } from "../services/platform";
 
 interface Props {
@@ -28,6 +28,7 @@ interface Props {
   // Use Command on macOS and Ctrl on Windows, preserving Ctrl+C as a Unix interrupt.
   enableClipboardShortcuts?: boolean;
 }
+const terminalViewportOffsets = new Map<string, number>();
 
 // ── xterm theme definitions ───────────────────────────────────
 const TERM_THEME_DARK = {
@@ -110,8 +111,7 @@ function getClampedTerminalSize(term: Terminal) {
 }
 
 function writePtyData(sessionId: string, data: string) {
-  const b64 = encodeTerminalInput(data);
-  return invoke("write_pty", { sessionId, data: b64 });
+  return writePtyInput(sessionId, data);
 }
 
 function wheelDeltaToLines(event: WheelEvent, rows: number): number {
@@ -245,6 +245,7 @@ export function PtyTerminal({
 
     return () => {
       container.removeEventListener("wheel", wheelHandler);
+      terminalViewportOffsets.set(sessionId, Math.max(0, term.buffer.active.baseY - term.buffer.active.viewportY));
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -252,17 +253,7 @@ export function PtyTerminal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Switching runner/workdir changes the key and unmounts this component; stop the old PTY so it cannot consume the next input.
-  useEffect(() => {
-    return () => {
-      if (!startedRef.current && !startingRef.current) return;
-      startingRef.current = false;
-      launchTokenRef.current += 1;
-      if (startedRef.current) {
-        stopPtySession(sessionId).catch(() => {});
-      }
-    };
-  }, [sessionId]);
+  // A renderer is disposable; the child belongs to its session and is stopped explicitly.
 
   // ── Update xterm colors when the theme changes ──────────────
   useEffect(() => {
@@ -317,76 +308,37 @@ export function PtyTerminal({
 
   // ── Listen for PTY data events ──────────────────────────────
   useEffect(() => {
-    const u1 = listen<{ session_id: string; data: string }>(
-      "pty-data",
-      ({ payload }) => {
-        if (payload.session_id !== sessionId) return;
+    const pending = new Set<() => void>();
+    const subscription = attachPtyOutput(sessionId, {
+      data: bytes => new Promise<void>(resolve => {
         const term = termRef.current;
-        if (!term) return;
-        try {
-          const bin = atob(payload.data);
-          const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-          term.write(bytes);
-        } catch {}
-      }
-    );
-
-    const u2 = listen<{ session_id: string }>(
-      "pty-exit",
-      ({ payload }) => {
-        if (payload.session_id !== sessionId) return;
+        if (!term) { resolve(); return; }
+        const consumed = () => { pending.delete(consumed); resolve(); };
+        pending.add(consumed);
+        term.write(bytes, consumed);
+      }),
+      reset: () => termRef.current?.reset(),
+      exit: () => {
         termRef.current?.writeln("\r\n\x1b[90m─────────────────────────────────────\x1b[0m");
         termRef.current?.writeln(`\x1b[90m${t("pty.processExited")}\x1b[0m`);
         setExited(true);
         startedRef.current = false; // Allow restarting.
         startingRef.current = false;
         launchTokenRef.current += 1;
-      }
-    );
-
-    // The CLI completed the task and awaits another query, detected by "? for shortcuts".
-    const u3 = listen<{ session_id: string }>(
-      "pty-waiting",
-      ({ payload }) => {
-        if (payload.session_id !== sessionId) return;
-        onWaitingRef.current?.();
-      }
-    );
-
-    // The CLI started processing a query, detected by "esc to interrupt".
-    const u4 = listen<{ session_id: string }>(
-      "pty-running",
-      ({ payload }) => {
-        if (payload.session_id !== sessionId) return;
-        onRunningRef.current?.();
-      }
-    );
-
-    // API error interruption, such as the Claude StopFailure hook.
-    const u5 = listen<{ session_id: string; error: string }>(
-      "pty-error",
-      ({ payload }) => {
-        if (payload.session_id !== sessionId) return;
-        onErrorRef.current?.(payload.error);
-      }
-    );
-
-    // CLI Notification hook, currently mainly from Claude when user confirmation or input is needed.
-    const u6 = listen<{ session_id: string; title: string; message: string; notification_type: string }>(
-      "pty-notification",
-      ({ payload }) => {
-        if (payload.session_id !== sessionId) return;
-        onNotificationRef.current?.(payload.title, payload.message, payload.notification_type);
-      }
-    );
-
+      },
+      waiting: () => onWaitingRef.current?.(),
+      running: () => onRunningRef.current?.(),
+      error: error => onErrorRef.current?.(error),
+      notification: (title, message, type) => onNotificationRef.current?.(title, message, type),
+    });
+    void subscription.ready.then(() => {
+      const term = termRef.current;
+      const distance = terminalViewportOffsets.get(sessionId);
+      if (term && distance !== undefined) term.scrollToLine(Math.max(0, term.buffer.active.baseY - distance));
+    });
     return () => {
-      u1.then((f) => f()).catch(() => {});
-      u2.then((f) => f()).catch(() => {});
-      u3.then((f) => f()).catch(() => {});
-      u4.then((f) => f()).catch(() => {});
-      u5.then((f) => f()).catch(() => {});
-      u6.then((f) => f()).catch(() => {});
+      subscription.dispose();
+      pending.forEach(resolve => resolve());
     };
   }, [sessionId]);
 
@@ -448,7 +400,7 @@ export function PtyTerminal({
         env: envRef.current ?? null,
       })
         .then(() => {
-          if (launchTokenRef.current !== launchToken) { void stopPtySession(sessionId).catch(() => {}); return; }
+          if (launchTokenRef.current !== launchToken) return;
           startedRef.current = true;
           startingRef.current = false;
           // A successful spawn means the CLI started; resolve_command_path supplies an absolute executable path.
@@ -474,6 +426,7 @@ export function PtyTerminal({
 
   // ── Restart after exit when the user clicks Restart ─────────
   const handleRestart = () => {
+    terminalViewportOffsets.delete(sessionId);
     setExited(false);
     startedRef.current = false;
     startingRef.current = false;
@@ -502,7 +455,7 @@ export function PtyTerminal({
       env: envRef.current ?? null,
       })
       .then(() => {
-        if (launchTokenRef.current !== launchToken) { void stopPtySession(sessionId).catch(() => {}); return; }
+        if (launchTokenRef.current !== launchToken) return;
         startedRef.current = true;
         startingRef.current = false;
         onReadyRef.current?.();

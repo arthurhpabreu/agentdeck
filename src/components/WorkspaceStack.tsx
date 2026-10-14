@@ -1,7 +1,8 @@
 import { NewWorkspaceForm } from "./workspaces/NewWorkspaceForm";
 import { WorkspaceColorControl } from "./workspaces/WorkspaceColorPicker";
 import { X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppI18n } from "../i18n";
 import {
@@ -10,11 +11,12 @@ import {
   getWorkspaceColor,
   type Workspace,
 } from "../store/workspaceStore";
-import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
+import { selectSessionNavigation, useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { WorktreeRecovery } from "./worktrees/WorktreeRecovery";
 import { cleanupSessionWorktree } from "../services/worktreeRecoveryCommands";
 import { useWorktreeRecoveryStore } from "../store/worktreeRecoveryStore";
+import { SortableCollection } from "./ordering/SortableCollection";
 
 // ── Constants ────────────────────────────────────────────────
 const EMPTY_SESSIONS: ClaudeSession[] = [];
@@ -31,8 +33,8 @@ function WorkspaceCardExpanded({
   const { t } = useAppI18n();
   const [hovered, setHovered] = useState(false);
   const color = getWorkspaceColor(ws.color);
-  const sessions = useSessionStore((s) => (Array.isArray(s.sessions) ? s.sessions : EMPTY_SESSIONS));
-  const { sessionCount, waitingCount, runningCount } = useMemo(() => {
+  const { sessionCount, waitingCount, runningCount } = useSessionStore(useShallow(state => {
+    const sessions = Array.isArray(state.sessions) ? selectSessionNavigation(state) : EMPTY_SESSIONS;
     return sessions.reduce(
       (counts, sess) => {
         if (!sess || typeof sess !== "object") return counts;
@@ -44,7 +46,7 @@ function WorkspaceCardExpanded({
       },
       { sessionCount: 0, waitingCount: 0, runningCount: 0 }
     );
-  }, [sessions, ws.id]);
+  }));
   const showActions = hovered || isActive;
   const summaryParts = [
     waitingCount > 0 ? `${waitingCount} ${t("workspace.summaryWaiting")}` : null,
@@ -172,7 +174,7 @@ function WorkspaceCardExpanded({
 export function WorkspaceStack() {
   const { t } = useAppI18n();
   const { workspaces, activeWorkspaceId, bringToFront, removeWorkspace } = useWorkspaceStore();
-  const { removeSessionsByWorkspace } = useSessionStore();
+  const removeSessionsByWorkspace = useSessionStore(state => state.removeSessionsByWorkspace);
   const sorted = useWorkspacesSorted();
   const [showForm, setShowForm] = useState(workspaces.length === 0);
   const handleRemove = async (id: string) => {
@@ -222,9 +224,10 @@ export function WorkspaceStack() {
     </div>
     <div style={{ display: "flex", flexWrap: "wrap" }}><WorktreeRecovery /></div>
     {showForm && <NewWorkspaceForm onDone={() => setShowForm(false)} />}
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 190, overflow: "auto" }}>
-      {sorted.map(ws => <WorkspaceCardExpanded key={ws.id} ws={ws} isActive={ws.id === activeWorkspaceId}
-        onClick={() => bringToFront(ws.id)} onRemove={() => void handleRemove(ws.id)} />)}
-    </div>
+    <SortableCollection surface="projects" context="navigation" items={sorted} getId={ws => ws.id} getLabel={ws => ws.name} densityControl
+      style={{ maxHeight: 230, overflow: "auto" }} render={(ws, handle) => <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+        {handle}<div style={{ flex: 1, minWidth: 0 }}><WorkspaceCardExpanded ws={ws} isActive={ws.id === activeWorkspaceId}
+          onClick={() => bringToFront(ws.id)} onRemove={() => void handleRemove(ws.id)} /></div>
+      </div>} />
   </section>;
 }

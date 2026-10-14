@@ -6,6 +6,7 @@ import { useWorkspaceStore } from "../store/workspaceStore";
 import { WindowControls } from "./WindowControls";
 import { CliUpdateIndicator } from "./CliUpdates";
 import { AppUpdateIndicator } from "./AppUpdates";
+import { NeedsYou } from "./navigation/NeedsYou";
 import type { ReactNode } from "react";
 import { getRuntimePlatform } from "../services/platform";
 
@@ -26,6 +27,7 @@ export function TitleBar({ onAgents, navigation }: { onAgents?: () => void; navi
     </div>
     <div className="ad-titlebar-actions">
       {navigation}
+      <NeedsYou />
       <CliUpdateIndicator />
       <AppUpdateIndicator />
       <button className="ad-button ad-button-ghost" onClick={onAgents} aria-label={locale.startsWith("en") ? "Agents" : "Agentes"}><Network size={16} />{locale.startsWith("en") ? "Agents" : "Agentes"}</button>

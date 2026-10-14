@@ -5,17 +5,17 @@ const scopeArgs = (path: string) => path === GLOBAL_MEMORY_KEY ? { projectPath: 
 export interface IntelligenceSettings { contribute: boolean; consume: boolean; discovery: boolean; visible: boolean }
 export interface CatalogProject { id: string; name: string; description: string; stack: string[]; paths: string[]; repositoryIdentity: string; updatedAt: number; recordCount: number; settings: IntelligenceSettings }
 export interface ProfileCandidate { id: string; topic: string; statement: string; category: string; appliesTo: string[]; general: boolean; status: string; recordId: string | null; projectCount: number; eligible: boolean; evidence: { projectKey: string; eventId: string; quote: string; observedAt: number }[] }
-export interface MemoryMetadata { category: string; appliesTo: string[]; state: string; supersededBy: string | null; relations: Record<string, string[]>; accessCount: number; lastAccessedAt: number; feedback: string }
+export interface MemoryMetadata { category: string; appliesTo: string[]; state: string; supersededBy: string | null; relations: Record<string, string[]>; accessCount: number; lastAccessedAt: number; feedback: string; universalApproved?: boolean }
 export interface MemoryVersion { record: MemoryRecord; recordedAt: number }
 export interface ExportPlan { directory: string; changes: { path: string; action: string }[]; conflicts: string[]; recordCount: number; applied: boolean }
-export interface RetrievalHit { id: string; source: string; scope: string; title: string; excerpt: string; revision: number; score: number; reason: string; path: string | null }
+export interface RetrievalHit { id: string; source: string; scope: string; sourceName?: string; title: string; excerpt: string; revision: number; score: number; reason: string; path: string | null }
 export interface RetrievalSearch { hits: RetrievalHit[]; warnings: KnowledgeWarning[] }
 export const intelligenceCommands = {
   catalog: (projects: { path: string; name: string }[], query = "") => invoke<CatalogProject[]>("memory_catalog", { projects, query }),
   updateProject: (project: CatalogProject) => invoke<void>("memory_update_project", { id: project.id, name: project.name, description: project.description, settings: project.settings }),
   attachProject: (id: string, path: string) => invoke<void>("memory_attach_project", { id, path }),
   profile: () => invoke<ProfileCandidate[]>("memory_profile"),
-  review: (id: string, accept: boolean) => invoke<MemoryRecord | null>("memory_review_profile", { id, accept }),
+  review: (id: string, accept: boolean, universal = false) => invoke<MemoryRecord | null>("memory_review_profile", { id, accept, universal }),
   metadata: (path: string, id: string) => invoke<MemoryMetadata>("memory_metadata", { ...scopeArgs(path), id }),
   setMetadata: (path: string, id: string, metadata: MemoryMetadata) => invoke<void>("memory_set_metadata", { ...scopeArgs(path), id, metadata }),
   versions: (path: string, id: string) => invoke<MemoryVersion[]>("memory_versions", { ...scopeArgs(path), id }),
@@ -23,8 +23,8 @@ export const intelligenceCommands = {
   inactive: (path: string) => invoke<MemoryRecord[]>("memory_inactive", scopeArgs(path)),
   maintain: (path: string, apply: boolean) => invoke<MemoryRecord[]>("memory_maintain", { ...scopeArgs(path), apply }),
   export: (path: string, destination: string, apply: boolean) => invoke<ExportPlan>("memory_export_incremental", { ...scopeArgs(path), destination, apply }),
-  search: async (projectPath: string, query: string): Promise<RetrievalSearch> => {
-    const result = await invoke<RetrievalSearch | RetrievalHit[]>("memory_retrieval_preview", { projectPath, query });
+  search: async (projectPath: string, query: string, sessionId?: string): Promise<RetrievalSearch> => {
+    const result = await invoke<RetrievalSearch | RetrievalHit[]>("memory_retrieval_preview", { projectPath, query, sessionId: sessionId ?? null });
     return Array.isArray(result) ? { hits: result, warnings: [] } : result;
   },
 };

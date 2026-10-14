@@ -121,3 +121,10 @@
 @media (max-width: 1050px) { .ad-monitor-controls { gap: 8px; } .ad-monitor-detail-grid { grid-template-columns: minmax(0, 1fr); gap: 24px; } .ad-monitor-facts { border-left: 0; border-top: 1px solid var(--am-line); padding: 20px 0 0; } .ad-monitor-facts dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; } .ad-monitor-facts dt, .ad-monitor-facts dd { margin: 0; } .ad-monitor-detail-header { flex-wrap: wrap; } .ad-monitor-detail-header > button { margin-left: 0; } .ad-monitor-sync { display: none; } }
 @media (max-width: 700px) { .ad-monitor-backdrop { padding: 8px; } .ad-monitor-header { padding: 18px 16px; gap: 10px; } .ad-monitor-header p { display: none; } .ad-monitor-header h1 { font-size: 20px; } .ad-monitor-metrics { padding: 0 16px; margin-bottom: 14px; gap: 0 18px; } .ad-monitor-metric { font-size: 11px; padding-bottom: 10px; } .ad-monitor-controls { padding: 0 16px 14px; } .ad-monitor-body { display: flex; flex-direction: column; } .ad-monitor-tree { max-height: 200px; min-height: 110px; border-right: 0; border-bottom: 1px solid var(--am-line); } .ad-monitor-detail { padding: 20px 16px; flex: 1; } .ad-monitor-footer { padding: 10px 16px; } .ad-monitor-footer > span:last-child { display: none; } }
 @media (prefers-reduced-motion: reduce) { .ad-monitor-spinning, .ad-monitor-detail, .ad-monitor-timeline details[open] pre { animation: none; } .ad-agent-observatory button { transition-duration: 0ms; } }
+.ad-monitor-arrange-row { display: flex; align-items: flex-start; min-width: 0; }
+.ad-monitor-arrange-row > .ad-reorder-handle { margin-top: 19px; }
+.ad-monitor-arrange-content { flex: 1; min-width: 0; }
+.ad-agent-observatory[data-density="compact"] .ad-monitor-agent { padding-block: 6px; min-height: 54px; }
+.ad-agent-observatory[data-density="compact"] .ad-monitor-agent-copy small { max-height: 16px; }
+.ad-monitor-agent-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-agent-observatory > .ad-arrangement-controls { padding-inline: 20px; }

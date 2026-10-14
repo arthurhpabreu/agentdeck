@@ -1,18 +1,17 @@
 import { X } from "lucide-react";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { cleanupSessionWorktree } from "../services/worktreeRecoveryCommands";
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { useMemo, useState } from "react";
 import { useAppI18n } from "../i18n";
-import { ClaudeSession, SessionStatus, orderWorkspaceSessions, useSessionStore } from "../store/sessionStore";
+import { ClaudeSession, SessionStatus, orderWorkspaceSessions, selectSessionNavigation, useSessionStore } from "../store/sessionStore";
+import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceStore, getWorkspaceColor } from "../store/workspaceStore";
 import { useSettingsStore, RUNNER_LABELS, sanitizeRunnerConfig, isGlassTheme } from "../store/settingsStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { showExplorer, showSessionSurface } from "../services/workbenchCommands";
 import { SessionRenameControl } from "./session/SessionRenameControl";
+import { SortableCollection } from "./ordering/SortableCollection";
 
 // ── Status configuration using CSS variables ─────────────────
 const STATUS_CONFIG: Record<SessionStatus, {
@@ -132,6 +131,7 @@ function SessionCard({
   } as const;
   return (
     <motion.div
+      className="ad-session-card"
       layout={!reducedMotion}
       layoutId={`session-card-${session.id}`}
       initial={false}
@@ -172,7 +172,7 @@ function SessionCard({
 
       <StatusDot status={session.status} />
 
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <button type="button" aria-label={`${session.name} ${runnerLabel}`} onClick={event => { event.stopPropagation(); onClick(); }} style={{ flex: 1, minWidth: 0, padding: 0, border: 0, background: "transparent", textAlign: "start", cursor: "pointer", font: "inherit" }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, minWidth: 0 }}>
           <span title={session.name} style={{
             flexBasis: "100%",
@@ -238,7 +238,7 @@ function SessionCard({
             <span style={{ fontFamily: "monospace" }}>⎇ s-{session.id}</span>
           </p>
         ) : null)}
-      </div>
+      </button>
 
       {isDeleteConfirming ? (
         <div
@@ -401,22 +401,6 @@ function SessionCard({
   );
 }
 
-function SortableSessionCard({ id, children }: { id: string; children: ReactNode }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
-  const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    zIndex: isDragging ? 3 : 1,
-    position: "relative",
-    touchAction: "none",
-  };
-  return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      {children}
-    </div>
-  );
-}
-
 // ── Main component: SessionList ───────────────────────────────
 export function SessionList() {
   const { t } = useAppI18n();
@@ -430,10 +414,9 @@ export function SessionList() {
     setExpandedSession,
     addSession,
     markWorktreeReady,
-    reorderWorkspaceSessionsByVisibleMove,
     updateSession,
-  } = useSessionStore();
-  const { activeWorkspaceId } = useWorkspaceStore();
+  } = useSessionStore(useShallow(state => ({ sessions: selectSessionNavigation(state), activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, sessionOrderByWorkspace: state.sessionOrderByWorkspace, removeSession: state.removeSession, setActiveSession: state.setActiveSession, setExpandedSession: state.setExpandedSession, addSession: state.addSession, markWorktreeReady: state.markWorktreeReady, updateSession: state.updateSession })));
+  const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
   const focusSession = useWorkbenchStore((s) => s.focusSession);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspace = useWorkspaceStore((s) =>
@@ -450,23 +433,6 @@ export function SessionList() {
     if (!activeWorkspace) return [];
     return orderWorkspaceSessions(sessions, activeWorkspace.id, sessionOrderByWorkspace);
   }, [activeWorkspace, sessions, sessionOrderByWorkspace]);
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  );
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    if (!activeWorkspace) return;
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-
-    reorderWorkspaceSessionsByVisibleMove(
-      activeWorkspace.id,
-      String(active.id),
-      String(over.id)
-    );
-  };
 
   const handleNewSession = async () => {
     if (!activeWorkspace) return;
@@ -632,11 +598,10 @@ export function SessionList() {
       </div>
 
           {/* Session list */}
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={wsSessions.map((s) => s.id)} strategy={verticalListSortingStrategy}>
-              <AnimatePresence>
-                {wsSessions.map((session) => (
-                  <SortableSessionCard key={session.id} id={session.id}>
+          <SortableCollection surface="sessions" context={activeWorkspace.id} items={wsSessions}
+            getId={session => session.id} getLabel={session => session.name} render={(session, handle) => (
+                  <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+                    {handle}<div style={{ flex: 1, minWidth: 0 }}>
                     <SessionCard
                       session={session}
                       isSelected={session.id === activeSessionId}
@@ -674,11 +639,9 @@ export function SessionList() {
                         });
                       }}
                     />
-                  </SortableSessionCard>
-                ))}
-              </AnimatePresence>
-            </SortableContext>
-          </DndContext>
+                    </div>
+                  </div>
+                )} />
 
       {wsSessions.length === 0 && (
         <div

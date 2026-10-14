@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSessionStore } from "../store/sessionStore";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { selectSessionMetadata, useSessionStore } from "../store/sessionStore";
 import { useSettingsStore, type RunnerType } from "../store/settingsStore";
 import {
   buildRunnerContextEnv,
@@ -14,8 +14,17 @@ import {
 } from "../services/runnerCommands";
 import { useAgentActivityStore } from "../store/agentActivityStore";
 import { getAgentAdapter } from "../services/agentAdapters";
-import { stopPtySession } from "../store/ptyRuntimeStore";
+import { stopPtySession, usePtyRuntimeStore } from "../store/ptyRuntimeStore";
 import { getRuntimePlatform } from "../services/platform";
+
+const nativeDrafts = new Map<string, string>();
+const nativeLaunchPrompts = new Map<string, string | null>();
+const nativePendingQueries = new Map<string, { current: string | null }>();
+const nativeSending = new Set<string>();
+useSessionStore.subscribe(state => {
+  const valid = new Set(state.sessions.map(session => session.id));
+  for (const cache of [nativeDrafts, nativeLaunchPrompts, nativePendingQueries]) for (const id of cache.keys()) if (!valid.has(id)) cache.delete(id);
+});
 
 export function useSessionRunnerController({
   sessionId,
@@ -25,12 +34,13 @@ export function useSessionRunnerController({
   isOpen: boolean;
 }) {
   const isWindows = getRuntimePlatform().os === "windows";
-  const session = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId));
+  const session = useSessionStore((s) => selectSessionMetadata(s, sessionId));
   const worktreeReady = useSessionStore((s) => s.worktreeReadyIds.has(sessionId));
-  const { updateSession } = useSessionStore();
-  const { settings } = useSettingsStore();
+  const updateSession = useSessionStore(state => state.updateSession);
+  const settings = useSettingsStore(state => state.settings);
 
-  const [pendingQuery, setPendingQuery] = useState("");
+  const [pendingQuery, setPendingQueryState] = useState(() => nativeDrafts.get(sessionId) ?? "");
+  const setPendingQuery = useCallback((value: string) => { nativeDrafts.set(sessionId, value); setPendingQueryState(value); }, [sessionId]);
   const [querySent, setQuerySent] = useState(() => {
     const s = useSessionStore.getState().sessions.find((x) => x.id === sessionId);
     return !!s && ((s.status === "running" || s.status === "waiting" || s.status === "suspended") || hasNativeResumeBinding(s));
@@ -40,16 +50,17 @@ export function useSessionRunnerController({
   const [installing, setInstalling] = useState(false);
   const installCountRef = useRef(0);
   const [installId, setInstallId] = useState("");
-  const [launchPrompt, setLaunchPrompt] = useState<string | null>(null);
+  const [launchPrompt, setLaunchPromptState] = useState<string | null>(() => nativeLaunchPrompts.get(sessionId) ?? null);
+  const setLaunchPrompt = useCallback((value: string | null) => { nativeLaunchPrompts.set(sessionId, value); setLaunchPromptState(value); }, [sessionId]);
   const [ptyEverActive, setPtyEverActive] = useState(false);
   const [launchResumeSessionId, setLaunchResumeSessionId] = useState("");
   const [cliAvailable, setCliAvailable] = useState<boolean | null>(null);
 
-  const ptyReadyRef = useRef(false);
+  const ptyReadyRef = useRef(usePtyRuntimeStore.getState().sessions[sessionId] === "running");
   const lastQuerySentAtRef = useRef(0);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
-  const pendingQueryRef = useRef<string | null>(null);
+  const pendingQueryRef = useMemo(() => { const queued = nativePendingQueries.get(sessionId) ?? { current: null }; nativePendingQueries.set(sessionId, queued); return queued; }, [sessionId]);
   const pendingQueryTimerRef = useRef<number | null>(null);
 
   const runner = session ? session.runner : settings.runner;
@@ -78,7 +89,9 @@ export function useSessionRunnerController({
 
     const send = () => {
       const query = pendingQueryRef.current?.trim();
-      if (!query || !ptyReadyRef.current) return;
+      if (!query || !ptyReadyRef.current || nativeSending.has(sessionIdRef.current)) return;
+      const destination = sessionIdRef.current;
+      nativeSending.add(destination);
       invoke("send_pty_query", {
         sessionId: sessionIdRef.current,
         query,
@@ -94,7 +107,7 @@ export function useSessionRunnerController({
             pendingQueryTimerRef.current = null;
             flushPendingQuery(isWindows ? 1200 : 300);
           }, isWindows ? 1200 : 300);
-        });
+        }).finally(() => nativeSending.delete(destination));
     };
 
     if (delay > 0) {
@@ -200,16 +213,19 @@ export function useSessionRunnerController({
 
   const handleSwitchRunner = useCallback((type: RunnerType) => {
     if (type === runner.type) return;
-    setLaunchPrompt(null);
-    clearPendingQueryTimer();
-    ptyReadyRef.current = false;
-    pendingQueryRef.current = null;
-    setPtyEverActive(false);
-    setQuerySent(false);
-    setLaunchResumeSessionId("");
-    updateSession(sessionId, { providerSessionId: undefined, status: "idle" });
-    switchRunnerForSession(sessionId, type);
-  }, [clearPendingQueryTimer, runner.type, sessionId, updateSession]);
+    void (async () => {
+      if (usePtyRuntimeStore.getState().sessions[sessionId]) await stopPtySession(sessionId);
+      setLaunchPrompt(null);
+      clearPendingQueryTimer();
+      ptyReadyRef.current = false;
+      pendingQueryRef.current = null;
+      setPtyEverActive(false);
+      setQuerySent(false);
+      setLaunchResumeSessionId("");
+      updateSession(sessionId, { providerSessionId: undefined, status: "idle" });
+      switchRunnerForSession(sessionId, type);
+    })().catch(error => handlePtyError(String(error)));
+  }, [clearPendingQueryTimer, runner.type, sessionId, updateSession, handlePtyError, setLaunchPrompt, pendingQueryRef]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -222,17 +238,16 @@ export function useSessionRunnerController({
   useEffect(() => {
     const s = useSessionStore.getState().sessions.find((x) => x.id === sessionId);
     setQuerySent(!!s && ((s.status === "running" || s.status === "waiting" || s.status === "suspended") || hasNativeResumeBinding(s)));
-    setPendingQuery("");
-    setLaunchPrompt(null);
+    setPendingQuery(nativeDrafts.get(sessionId) ?? "");
+    setLaunchPrompt(nativeLaunchPrompts.get(sessionId) ?? null);
     setLaunchResumeSessionId(
       s && getAgentAdapter(s.runner.type).supportsResume
         ? (s.providerSessionId?.trim() ?? "")
         : ""
     );
     clearPendingQueryTimer();
-    ptyReadyRef.current = false;
-    pendingQueryRef.current = null;
-  }, [clearPendingQueryTimer, sessionId]);
+    ptyReadyRef.current = usePtyRuntimeStore.getState().sessions[sessionId] === "running";
+  }, [clearPendingQueryTimer, sessionId, setPendingQuery, setLaunchPrompt]);
 
   useEffect(() => {
     if (isOpen && !querySent) {
@@ -266,6 +281,8 @@ export function useSessionRunnerController({
       if (payload.session_id !== sessionIdRef.current) return;
       ptyReadyRef.current = false;
       clearPendingQueryTimer();
+      pendingQueryRef.current = null;
+      nativeLaunchPrompts.delete(payload.session_id);
       updateSession(payload.session_id, { status: payload.exit_code ? "error" : "done" });
     });
     return () => { clearPendingQueryTimer(); void u.then(f => f()).catch(() => {}); };

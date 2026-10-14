@@ -1,9 +1,15 @@
-import type { StateStorage } from "zustand/middleware";
+import { createJSONStorage, type PersistStorage, type StateStorage } from "zustand/middleware";
 
 const PERSIST_KEYS = [
   "agentdeck-sessions",
   "agentdeck-workspaces",
   "agentdeck-settings",
+  "agentdeck-presentation",
+  "agentdeck-editor-layout",
+  "agentdeck-attention-v1",
+  "agentdeck-navigation-v1",
+  "agentdeck-diff-review-v1",
+  "agentdeck-source-delivery-v1",
 ] as const;
 
 type PersistKey = typeof PERSIST_KEYS[number];
@@ -328,6 +334,12 @@ function mergePersistedValue(
     case "agentdeck-workspaces":
       return mergeWorkspaceValue(fileValue, localValue, deletedState);
     case "agentdeck-settings":
+    case "agentdeck-presentation":
+    case "agentdeck-editor-layout":
+    case "agentdeck-attention-v1":
+    case "agentdeck-navigation-v1":
+    case "agentdeck-diff-review-v1":
+    case "agentdeck-source-delivery-v1":
       return localValue ?? fileValue ?? null;
     default:
       return localValue ?? fileValue ?? null;
@@ -361,15 +373,35 @@ export async function bootstrapPersistState(): Promise<void> {
         window.localStorage.setItem(key, mergedValue);
       }
       if (fileValue !== mergedValue) {
-        void invokeSafe("save_ui_state", { key, value: mergedValue });
+        queueNativeState(key, mergedValue);
       }
       continue;
     }
 
     if (localValue !== null) {
-      void invokeSafe("save_ui_state", { key, value: localValue });
+      queueNativeState(key, localValue);
     }
   }
+}
+
+const pendingNative = new Map<string, { value: string | null; timer?: ReturnType<typeof setTimeout>; writing: boolean }>();
+
+/** Coalesce pending revisions, but never let an older asynchronous write finish last. */
+function queueNativeState(name: string, value: string | null) {
+  const previous = pendingNative.get(name);
+  if (previous) { previous.value = value; return; }
+  const entry = { value, writing: false, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+  pendingNative.set(name, entry);
+  const flush = async () => {
+    entry.timer = undefined;
+    entry.writing = true;
+    const revision = entry.value;
+    await invokeSafe(revision === null ? "remove_ui_state" : "save_ui_state", revision === null ? { key: name } : { key: name, value: revision });
+    entry.writing = false;
+    if (entry.value !== revision) { entry.timer = setTimeout(() => void flush(), 0); }
+    else pendingNative.delete(name);
+  };
+  entry.timer = setTimeout(() => void flush(), 32);
 }
 
 export const mirroredPersistStorage: StateStorage = {
@@ -381,14 +413,31 @@ export const mirroredPersistStorage: StateStorage = {
   setItem: (name, value) => {
     if (typeof window === "undefined" || !("localStorage" in window)) return;
 
+    if (readLocalState(name) === value) return;
+    // The synchronous local copy preserves every confirmed metadata change during coalescing.
     window.localStorage.setItem(name, value);
-    void invokeSafe("save_ui_state", { key: name, value });
+    queueNativeState(name, value);
   },
 
   removeItem: (name) => {
     if (typeof window === "undefined" || !("localStorage" in window)) return;
 
     window.localStorage.removeItem(name);
-    void invokeSafe("remove_ui_state", { key: name });
+    queueNativeState(name, null);
   },
 };
+
+/** Zustand normally stringifies after every set, even if its durable projection is identical. */
+export function createDurableJSONStorage<T>(): PersistStorage<T> {
+  const storage = createJSONStorage<T>(() => mirroredPersistStorage)!;
+  let previousState: T | undefined;
+  return {
+    getItem: name => storage.getItem(name),
+    setItem: (name, value) => {
+      if (value.state === previousState) return;
+      previousState = value.state;
+      return storage.setItem(name, value);
+    },
+    removeItem: name => { previousState = undefined; return storage.removeItem(name); },
+  };
+}

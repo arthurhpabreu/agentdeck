@@ -1,6 +1,91 @@
 use super::*;
 use crate::shared_memory::{MemoryDraft, MemoryMetadata};
 use std::fs;
+#[test]
+fn selected_shared_records_are_admitted_before_global_ranking_caps() {
+    let (root, engine, project, config) = fixture();
+    let selected = engine
+        .save(
+            GLOBAL_MEMORY_KEY,
+            &MemoryDraft {
+                id: None,
+                title: "Selected evidence".into(),
+                content: "common selected collection".into(),
+                kind: "fact".into(),
+                pinned: true,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    for index in 0..40 {
+        engine
+            .save(
+                GLOBAL_MEMORY_KEY,
+                &MemoryDraft {
+                    id: None,
+                    title: format!("common common unselected {index}"),
+                    content: "common irrelevant outside selection".into(),
+                    kind: "fact".into(),
+                    pinned: true,
+                },
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let canonical = crate::knowledge::policy::canonical_project(Some(root.to_str().unwrap()))
+        .unwrap()
+        .unwrap();
+    crate::knowledge::policy::update(&config, |stored| {
+        stored
+            .memory_collections
+            .push(crate::knowledge::policy::MemoryCollection {
+                id: "explicit".into(),
+                name: "Selected shared scope".into(),
+                record_ids: vec![selected.id.clone()],
+            });
+        stored
+            .project_selections
+            .get_mut(&canonical)
+            .unwrap()
+            .memory_collection_ids = vec!["explicit".into()];
+        Ok(())
+    })
+    .unwrap();
+    let result = search_report_scoped(
+        &engine,
+        &project,
+        Some(root.to_str().unwrap()),
+        Some(&config),
+        Some("chat"),
+        "common",
+        false,
+    )
+    .unwrap();
+    assert!(result.hits.iter().any(|hit| hit.id == selected.id));
+    assert_eq!(
+        result
+            .hits
+            .iter()
+            .filter(|hit| hit.source == "memory" && hit.scope == "global")
+            .count(),
+        1
+    );
+    let prepared = prepare(
+        &engine,
+        &project,
+        root.to_str().unwrap(),
+        &config,
+        "codex:chat",
+        "unrelated new topic",
+        (3, 1400),
+    )
+    .unwrap();
+    assert!(prepared.hits.iter().any(|hit| hit.id == selected.id));
+    drop(engine);
+    fs::remove_dir_all(root).unwrap();
+}
 fn fixture() -> (std::path::PathBuf, Engine, String, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("agentdeck-retrieval-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(root.join("docs")).unwrap();
@@ -9,9 +94,10 @@ fn fixture() -> (std::path::PathBuf, Engine, String, std::path::PathBuf) {
         .register_project(root.to_str().unwrap(), None)
         .unwrap();
     let config = root.join("knowledge.json");
+    let key = crate::shared_memory::project_key(&root).unwrap();
     fs::write(
         &config,
-        serde_json::json!({"sourcePath":root.join("docs").to_string_lossy()}).to_string(),
+        serde_json::json!({"sourcePath":root.join("docs").to_string_lossy(),"projects":{&key:root.join("docs")}}).to_string(),
     )
     .unwrap();
     (root, engine, project, config)
@@ -29,9 +115,15 @@ fn unavailable_vault_reports_scope_without_disabling_healthy_evidence() {
     let key = crate::shared_memory::project_key(&root).unwrap();
     fs::write(
         &config,
-        serde_json::json!({"sourcePath": root.join("docs"), "projects": {key: missing}})
+        serde_json::json!({"sourcePath": root.join("docs"), "projects": {&key: missing}})
             .to_string(),
     )
+    .unwrap();
+    crate::knowledge::policy::update(&config, |stored| {
+        stored.project_selections.get_mut(&key).unwrap().source_ids =
+            stored.vaults.iter().map(|vault| vault.id.clone()).collect();
+        Ok(())
+    })
     .unwrap();
     let memory = engine
         .save(
@@ -59,9 +151,9 @@ fn unavailable_vault_reports_scope_without_disabling_healthy_evidence() {
     assert!(result
         .hits
         .iter()
-        .any(|hit| hit.source == "document" && hit.scope == "global"));
+        .any(|hit| hit.source == "document" && hit.title == "OAuth"));
     assert_eq!(result.warnings.len(), 1);
-    assert_eq!(result.warnings[0].scope, "project");
+    assert!(result.warnings[0].scope.starts_with("vault-"));
     assert_eq!(result.warnings[0].code, "unavailable");
     let context = prepare(
         &engine,
@@ -159,7 +251,7 @@ fn automatic_queries_obey_byte_limit_and_preserve_utf8_and_both_ends() {
 }
 
 #[test]
-fn large_prompts_retrieve_project_memory_and_global_vault_without_changing_prompt() {
+fn large_prompts_retrieve_project_memory_and_selected_vault_without_changing_prompt() {
     let (root, engine, project, config) = fixture();
     fs::create_dir(root.join("docs/.obsidian")).unwrap();
     fs::write(
@@ -212,7 +304,7 @@ fn large_prompts_retrieve_project_memory_and_global_vault_without_changing_promp
     assert!(prepared
         .hits
         .iter()
-        .any(|hit| hit.source == "document" && hit.scope == "global" && hit.title == "Renewal"));
+        .any(|hit| hit.source == "document" && hit.title == "Renewal"));
     assert!(!prepared.prepared.text.is_empty());
     assert!(prepared.prepared.text.len() <= engine.config(&project).unwrap().budget_tokens * 4);
     engine
@@ -409,7 +501,7 @@ fn selected_document_is_scoped_utf8_safe_and_rechecked_on_read() {
         0,
         400
     )
-    .is_err());
+    .is_ok());
     assert!(crate::knowledge::read_document(
         &config,
         Some(root.to_str().unwrap()),

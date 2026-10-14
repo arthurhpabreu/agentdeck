@@ -19,13 +19,15 @@ export function GraphViewport({ width, height, label, controls, children, resetK
     const scale = Math.max(.08, Math.min(1, (box.clientWidth - 48) / width, (box.clientHeight - 48) / height));
     setCamera({ scale, x: (box.clientWidth - width * scale) / 2, y: (box.clientHeight - height * scale) / 2 });
   }, [width, height]);
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
   useEffect(() => {
     const box = viewport.current;
     if (!box) return;
-    const observer = new ResizeObserver(fit);
-    observer.observe(box); fit();
+    const observer = new ResizeObserver(() => fitRef.current());
+    observer.observe(box); fitRef.current();
     return () => observer.disconnect();
-  }, [fit, resetKey]);
+  }, [resetKey]);
   useEffect(() => {
     const box = viewport.current;
     if (box && focusTarget) setCamera({ scale: 1, x: box.clientWidth / 2 - focusTarget.x, y: box.clientHeight / 2 - focusTarget.y });
@@ -72,7 +74,7 @@ export function GraphViewport({ width, height, label, controls, children, resetK
         else if (event.key === "0") fit();
         else if (event.key.startsWith("Arrow")) setCamera(old => ({ ...old, x: old.x + (event.key === "ArrowLeft" ? 50 : event.key === "ArrowRight" ? -50 : 0), y: old.y + (event.key === "ArrowUp" ? 50 : event.key === "ArrowDown" ? -50 : 0) }));
       }}>
-      <div className="ad-graph-world" style={{ width, height, transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})` }}>{children}</div>
+      <div className="ad-graph-world" data-scale={camera.scale} style={{ width, height, transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})` }}>{children}</div>
     </div>
     <div className="ad-graph-toolbar" role="group" aria-label={label}>
       <span>{controls.hint.replace("Ctrl", getPrimaryModifierLabel())}</span><button type="button" onClick={() => zoom(1 / 1.2)} title={controls.zoomOut} aria-label={controls.zoomOut}><Minus size={15} /></button>

@@ -8,6 +8,7 @@ import { chatActivityCases } from "./chat-activity-cases";
 import { chatReliabilityCases } from "./chat-reliability-cases";
 import { workspaceColorCases } from "./workspace-color-cases";
 import { continuityCases } from "./continuity-cases";
+import { performanceUiCases } from "./performance-ui-cases";
 
 effortCases(setup, openSession);
 commandCases(setup);
@@ -18,6 +19,7 @@ chatActivityCases(setup, openSession);
 chatReliabilityCases(setup, openSession);
 workspaceColorCases(setup);
 continuityCases(setup, openSession);
+performanceUiCases(setup, openSession);
 
 test("titlebar CLI indicator opens update management and follows confirmed results", async ({ page }) => {
   await setup(page);
@@ -278,7 +280,7 @@ test("terminal tabs support switching, closing and recovery after repeated start
   await expect(panel.getByRole("tab", { name: "Terminal 2", exact: true })).toBeFocused();
   await expect(panel.locator(".ci-pty-terminal:visible")).toHaveCount(1);
   await page.screenshot({ path: "test-results/terminal-panel.png", animations: "disabled" });
-  await panel.getByRole("button", { name: /Terminal 2/ }).click();
+  await panel.getByRole("button", { name: "Fechar Terminal 2", exact: true }).click();
   await expect(panel.getByRole("tab")).toHaveCount(1);
   await expect.poll(() => page.evaluate(id => (window as any).__calls.some((call: any) => call.command === "stop_pty_session" && call.args.sessionId === id), secondId)).toBe(true);
   expect(await page.evaluate(id => (window as any).__calls.some((call: any) => call.command === "stop_pty_session" && call.args.sessionId === id), firstId)).toBe(false);
@@ -334,7 +336,7 @@ test("closing a tab while its restart is pending stops the late native process",
   await panel.getByRole("button", { name: "Reiniciar", exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).__calls.filter((call: any) => call.command === "start_pty_session").length)).toBe(3);
   const restartingId = await page.evaluate(() => (window as any).__calls.filter((call: any) => call.command === "start_pty_session").at(-1).args.sessionId);
-  await panel.getByRole("button", { name: /Terminal 2/ }).click();
+  await panel.getByRole("button", { name: "Fechar Terminal 2", exact: true }).click();
   await expect(panel.getByRole("tab")).toHaveCount(1);
   await expect.poll(() => page.evaluate(id => (window as any).__calls.some((call: any) => call.command === "stop_pty_session" && call.args.sessionId === id), restartingId)).toBe(true);
 });

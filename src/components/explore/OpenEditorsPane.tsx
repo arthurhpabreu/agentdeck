@@ -5,6 +5,7 @@ import { closeTab } from "../../services/editorCommands";
 import { useEditorBufferStore } from "../../store/editorBufferStore";
 import { findEditorGroupIdByTabId, getSessionEditorTabIds, useEditorStore } from "../../store/editorStore";
 import { type ClaudeSession } from "../../store/sessionStore";
+import { SortableCollection } from "../ordering/SortableCollection";
 
 export function OpenEditorsPane({ session }: { session: ClaudeSession }) {
   const { t } = useAppI18n();
@@ -28,7 +29,7 @@ export function OpenEditorsPane({ session }: { session: ClaudeSession }) {
       <div style={{ fontSize: 10, color: "var(--ci-text-dim)", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", padding: "0 12px 6px" }}>
         {t("editor.openEditors")}
       </div>
-      {tabIds.map((tabId) => {
+      <SortableCollection surface="open-editors" context={session.id} items={tabIds} getId={id => id} getLabel={id => tabsById[id]?.title ?? id} render={(tabId, handle) => {
         const tab = tabsById[tabId];
         if (!tab) return null;
         const isActive = activeTabId === tabId;
@@ -51,6 +52,7 @@ export function OpenEditorsPane({ session }: { session: ClaudeSession }) {
               borderInlineStart: isActive ? "1px solid var(--ci-accent)" : "1px solid transparent",
             }}
           >
+            {handle}
             <button
               onClick={() => {
                 if (groupId) {
@@ -104,7 +106,7 @@ export function OpenEditorsPane({ session }: { session: ClaudeSession }) {
             </button>
           </div>
         );
-      })}
+      }} />
     </div>
   );
 }

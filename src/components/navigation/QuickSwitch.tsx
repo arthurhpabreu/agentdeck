@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, FolderOpen, Network, Search, Settings2, X } from "lucide-react";
+import { BookOpen, FileCode, FolderOpen, Network, Search, Settings2, Star, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { useAttentionStore } from "../../store/attentionStore";
+import { useNavigationStore } from "../../store/navigationStore";
+import { openFileReference } from "../../services/fileReferences";
+import { improvementsCopy } from "../platformImprovementsCopy";
+import { orderingCopy } from "../ordering/orderingCopy";
+import { SortableCollection } from "../ordering/SortableCollection";
+import { applyPresentationOrder, presentationKey, usePresentationStore } from "../../store/presentationStore";
 import { useAppI18n } from "../../i18n";
 import { RUNNER_LABELS } from "../../store/settingsStore";
-import { useSessionStore } from "../../store/sessionStore";
+import { selectSessionNavigation, useSessionStore } from "../../store/sessionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useWorkbenchStore } from "../../store/workbenchStore";
 import { showSessionSurface } from "../../services/workbenchCommands";
@@ -52,7 +60,9 @@ function otherDialogOpen(own: HTMLDialogElement | null): boolean {
 export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSettings }: Props) {
   const { locale, t } = useAppI18n();
   const copy = quickSwitchCopy(locale);
-  const sessions = useSessionStore(state => state.sessions);
+  const improvements = improvementsCopy(locale);
+  const ordering = orderingCopy(locale);
+  const sessions = useSessionStore(selectSessionNavigation);
   const activeSessionId = useSessionStore(state => state.activeSessionId);
   const workspaces = useWorkspaceStore(state => state.workspaces);
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
@@ -66,6 +76,11 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
   const id = useId();
   const listId = `${id}-results`;
   const isMac = getRuntimePlatform().os === "macos";
+  const favorites = useNavigationStore(state => state.favorites);
+  const presentationLayouts = usePresentationStore(state => state.layouts);
+  const [snapshot, setSnapshot] = useState(() => ({ sessions, workspaces, activeSessionId, activeWorkspaceId, favorites: [] as string[], recent: [] as string[], attention: [] as string[] }));
+  const [fileResults, setFileResults] = useState<string[]>([]);
+  const [filesLimited, setFilesLimited] = useState(false);
 
   const close = useCallback((action?: () => void) => {
     dialog.current?.close();
@@ -79,8 +94,19 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
   const openSearch = useCallback(() => {
     if (disabled || otherDialogOpen(dialog.current)) return;
     restoreFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : trigger.current;
+    const navigation = useNavigationStore.getState();
+    setSnapshot({ sessions: useSessionStore.getState().sessions.map(session => ({ ...session })), workspaces: useWorkspaceStore.getState().workspaces.map(workspace => ({ ...workspace })), activeSessionId: useSessionStore.getState().activeSessionId, activeWorkspaceId: useWorkspaceStore.getState().activeWorkspaceId, favorites: [...navigation.favorites], recent: [...navigation.recent], attention: useAttentionStore.getState().items.filter(item => !item.read).map(item => item.sessionId) });
+    setFileResults([]); setFilesLimited(false);
     setQuery(""); setActiveId(null); setOpen(true);
   }, [disabled]);
+
+  useEffect(() => {
+    if (!open || !snapshot.activeSessionId) return;
+    let cancelled = false; setFileResults([]); setFilesLimited(false);
+    const searchQuery = query.replace(/(?::\d+(?::\d+)?|#L\d+)$/, "");
+    const timer = setTimeout(() => { void invoke<{ paths: string[]; truncated: boolean }>("search_session_files", { sessionId: snapshot.activeSessionId, query: searchQuery }).then(result => { if (!cancelled && result?.paths) { setFileResults(result.paths); setFilesLimited(result.truncated); } }).catch(() => {}); }, 150);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [open, query, snapshot.activeSessionId]);
 
   useEffect(() => {
     if (!open) return;
@@ -105,6 +131,8 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
 
   const groups = useMemo(() => {
     if (!open) return [];
+    const { sessions, workspaces, activeWorkspaceId, activeSessionId } = snapshot;
+    const priority = (id: string, sessionId?: string) => (sessionId && snapshot.attention.includes(sessionId) ? 100 : 0) + (snapshot.favorites.includes(id) ? 70 : 0) + (snapshot.recent.includes(id) ? 20 - Math.min(19, snapshot.recent.indexOf(id)) : 0);
     const groups: Group[] = [];
     for (const workspace of [...workspaces].sort((left, right) => Number(right.id === activeWorkspaceId) - Number(left.id === activeWorkspaceId) || left.order - right.order)) {
       const projectSessions = sessions.filter(session => session.workspaceId === workspace.id);
@@ -132,7 +160,7 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
           id: `session:${session.id}`, title: session.name,
           detail: `${provider} · ${t(`status.${session.status}`)}${session.branchName ? ` · ${session.branchName}` : ""}`,
           icon: <ProviderIcon provider={session.runner.type} size={18} />, current: session.id === activeSessionId,
-          score, select: () => {
+          score: score + priority(`session:${session.id}`, session.id), select: () => {
             const current = useSessionStore.getState().sessions.find(item => item.id === session.id);
             if (!current) return;
             useWorkspaceStore.getState().setActiveWorkspace(current.workspaceId);
@@ -148,11 +176,24 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
       { id: "settings", title: copy.settings, detail: copy.settingsHint, keywords: "settings configuracoes configuracion preferences", icon: <Settings2 size={18} />, select: onSettings },
     ].map(action => ({ ...action, id: `action:${action.id}`, score: scoreMatch(query, action.title, action.keywords) })).filter(action => action.score >= 0).sort((a, b) => b.score - a.score);
     if (actions.length) groups.push({ id: "actions", title: copy.actions, entries: actions, score: Math.max(...actions.map(action => action.score)) });
-    if (query.trim()) groups.sort((a, b) => b.score - a.score);
+    const filePrefix = `file:${activeSessionId}:`;
+    const rememberedFiles = [...snapshot.favorites, ...snapshot.recent].filter(id => id.startsWith(filePrefix)).map(id => id.slice(filePrefix.length)).filter(path => scoreMatch(query.replace(/(?::\d+(?::\d+)?|#L\d+)$/, ""), path) >= 0);
+    const files = [...new Set([...fileResults, ...rememberedFiles])].map(path => ({ id: `${filePrefix}${path}`, title: path, detail: `${improvements.files} · ${sessions.find(session => session.id === activeSessionId)?.name ?? ""}`, icon: <FileCode size={18}/>, score: priority(`${filePrefix}${path}`), select: () => { if (activeSessionId) { showSessionSurface(activeSessionId); void openFileReference(activeSessionId, path + (query.match(/(?::\d+(?::\d+)?|#L\d+)$/)?.[0] ?? "")); } } }));
+    if (files.length) groups.push({ id: "files", title: improvements.files, entries: files.sort((a, b) => b.score - a.score), score: Math.max(...files.map(file => file.score)) });
+    groups.sort((a, b) => b.score - a.score);
+    if (!query.trim()) {
+      const favorites = groups.flatMap(group => group.entries).filter(entry => snapshot.favorites.includes(entry.id));
+      const recent = snapshot.recent.map(id => groups.flatMap(group => group.entries).find(entry => entry.id === id)).filter((entry): entry is Entry => !!entry && !snapshot.favorites.includes(entry.id));
+      const promoted = new Set([...favorites, ...recent].map(entry => entry.id));
+      groups.forEach(group => { group.entries = group.entries.filter(entry => !promoted.has(entry.id)); });
+      if (recent.length) groups.unshift({ id: "recent", title: improvements.recent, entries: recent, score: 0 });
+      if (favorites.length) groups.unshift({ id: "favorites", title: improvements.favorites, entries: favorites, score: 0 });
+    }
     return groups;
-  }, [activeSessionId, activeWorkspaceId, copy, onAgents, onKnowledge, onSettings, open, query, sessions, t, workspaces]);
+  }, [snapshot, fileResults, improvements.files, improvements.favorites, improvements.recent, copy, onAgents, onKnowledge, onSettings, open, query, t]);
 
-  const entries = groups.flatMap(group => group.entries).slice(0, 60);
+  const orderedGroups = groups.map(group => { const byId = new Map(group.entries.map(entry => [entry.id, entry])); return { ...group, entries: applyPresentationOrder([...byId.keys()], presentationLayouts[presentationKey(`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all")]?.order).map(id => byId.get(id)!) }; });
+  const entries = orderedGroups.flatMap(group => group.entries).slice(0, 60);
   const selected = entries.find(entry => entry.id === activeId) ?? entries[0];
   const optionId = (entryId: string) => `${id}-${encodeURIComponent(entryId)}`;
   useEffect(() => {
@@ -180,12 +221,19 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
           }
           return;
         }
-        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
+        if (event.key === "Escape") { if (event.currentTarget.querySelector('[data-dragging="true"]')) return; event.preventDefault(); event.stopPropagation(); close(); }
         if (event.isPropagationStopped() || event.nativeEvent.isComposing || event.target !== input.current) return;
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (event.altKey && ["z", "r"].includes(event.key.toLowerCase()) && selected) { event.preventDefault(); const group = orderedGroups.find(group => group.entries.includes(selected)); if (group) usePresentationStore.getState()[event.key.toLowerCase() === "z" ? "undo" : "reset"](`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all"); }
+        else if (event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp") && selected) {
+          event.preventDefault(); const group = orderedGroups.find(group => group.entries.includes(selected)); if (!group) return;
+          const ids = group.entries.map(entry => entry.id), index = ids.indexOf(selected.id), over = ids[index + (event.key === "ArrowDown" ? 1 : -1)];
+          const complete = [...new Set([...(presentationLayouts[presentationKey(`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all")]?.order ?? []), ...ids])];
+          if (over) usePresentationStore.getState().moveItem(`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all", complete, ids, selected.id, over);
+        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
           if (entries.length) { const current = entries.findIndex(entry => entry.id === selected?.id); setActiveId(entries[(current + (event.key === "ArrowDown" ? 1 : -1) + entries.length) % entries.length].id); }
-        } else if (event.key === "Enter") { event.preventDefault(); if (selected) close(selected.select); }
+        } else if (event.altKey && event.key.toLowerCase() === "f" && selected) { event.preventDefault(); useNavigationStore.getState().toggleFavorite(selected.id); }
+        else if (event.key === "Enter") { event.preventDefault(); if (selected) close(() => { useNavigationStore.getState().visit(selected.id); selected.select(); }); }
       }}>
       <h2 id={`${id}-title`} className="ad-quick-switch-sr">{copy.title}</h2>
       <div className="ad-quick-switch-search">
@@ -196,18 +244,21 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
         <button type="button" className="ad-quick-switch-close" onClick={() => close()} aria-label={copy.close}><X size={18} /></button>
       </div>
       <div className="ad-quick-switch-results" id={listId} role="listbox" aria-label={copy.title}>
-        {groups.map(group => {
+        {orderedGroups.map(group => {
           const visible = group.entries.filter(entry => entries.includes(entry));
           if (!visible.length) return null;
           const projectFirst = visible[0].id.startsWith("project:");
           return <div key={group.id} role="group" aria-label={group.title} className="ad-quick-switch-group">
             {!projectFirst && <div className="ad-quick-switch-group-label" aria-hidden="true">{group.title}</div>}
-            {visible.map(entry => <div key={entry.id} id={optionId(entry.id)} role="option" aria-selected={entry.id === selected?.id}
-              className={`ad-quick-switch-option${entry.id.startsWith("session:") ? " is-session" : ""}`} onMouseMove={() => setActiveId(entry.id)} onMouseDown={event => event.preventDefault()} onClick={() => close(entry.select)}>
+            {!!presentationLayouts[presentationKey(`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all")]?.order && <div className="ad-arrangement-controls"><button tabIndex={-1} title={`${ordering.undo} (Alt+Z)`} onClick={() => usePresentationStore.getState().undo(`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all")}>{ordering.undo}</button><button tabIndex={-1} title={`${ordering.reset} (Alt+R)`} onClick={() => usePresentationStore.getState().reset(`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all")}>{ordering.reset}</button></div>}
+            <SortableCollection surface={`quick-switch-${group.id}`} context={snapshot.activeWorkspaceId ?? "all"} items={visible} allIds={[...new Set([...(presentationLayouts[presentationKey(`quick-switch-${group.id}`, snapshot.activeWorkspaceId ?? "all")]?.order ?? []), ...group.entries.map(entry => entry.id)])]} getId={entry => entry.id} getLabel={entry => entry.title} handleTabIndex={-1} toolbar={false} render={(entry, handle) => <div id={optionId(entry.id)} role="option" aria-selected={entry.id === selected?.id}
+              className={`ad-quick-switch-option${entry.id.startsWith("session:") ? " is-session" : ""}`} onMouseMove={() => setActiveId(entry.id)} onMouseDown={event => event.preventDefault()} onClick={() => close(() => { useNavigationStore.getState().visit(entry.id); entry.select(); })}>
+              {handle}
               <span className="ad-quick-switch-icon" aria-hidden="true">{entry.icon}</span>
               <span className="ad-quick-switch-text"><strong>{entry.title}</strong><span>{entry.detail}</span></span>
               {entry.current && <span className="ad-quick-switch-current">{copy.current}</span>}
-            </div>)}
+              <button type="button" tabIndex={-1} className="ad-icon-button" aria-label={favorites.includes(entry.id) ? improvements.unfavorite : improvements.favorite} title={`${improvements.favorite} (Alt+F)`} aria-pressed={favorites.includes(entry.id)} onClick={event => { event.stopPropagation(); useNavigationStore.getState().toggleFavorite(entry.id); }}><Star size={15} fill={favorites.includes(entry.id) ? "currentColor" : "none"}/></button>
+            </div>}/>
           </div>;
         })}
       </div>
@@ -216,7 +267,7 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
       <footer className="ad-quick-switch-footer">
         <span><kbd>↑ ↓</kbd> {copy.navigate}</span><span><kbd>{"Enter"}</kbd> {copy.open}</span><span><kbd>{"Esc"}</kbd> {copy.dismiss}</span>
       </footer>
-      {groups.reduce((count, group) => count + group.entries.length, 0) > 60 && <p className="ad-quick-switch-limit">{copy.limited}</p>}
+      {(filesLimited || groups.reduce((count, group) => count + group.entries.length, 0) > 60) && <p className="ad-quick-switch-limit">{copy.limited}</p>}
     </dialog>, document.body)}
   </>;
 }
