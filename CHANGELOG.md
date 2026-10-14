@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.6.8 — 2026-10-14
+
+### Added
+
+- **New chat with context** for Claude Code and Codex saves the complete locally
+  recorded transcript and prepares an editable continuation draft in a separate
+  conversation. The original chat, goal, model settings and worktree are preserved.
+- Large continuation archives use lossless byte parts and a manifest instead of
+  shortening the saved history or loading every old message into the next prompt.
+- Conversation context controls show the provider-reported model window, reserved
+  response/tool capacity, effective compaction threshold and projected draft size.
+
+### Changed
+
+- Automatic compaction considers the next request, conversation goal and attachment
+  paths. Reported context-window pressure and substantial new input bypass the
+  five-prompt interval after compaction.
+- Requests and live follow-up messages whose estimated input alone exceeds a known
+  model window stay editable without interrupting the current response.
+- Codex resumes native threads without retransmitting their complete turn history.
+- Chat history pages bound rendered text as well as message count. Large restored
+  conversations use smaller pages, with previous messages still accessible and
+  local archives unchanged.
+
+### Fixed
+
+- MCP OAuth warnings and diagnostic output no longer replace the agent's work
+  state or hide inactivity. Connection retries remain separate from fatal errors.
+- Provider negotiation, stalled compaction and unconfirmed input acknowledgments
+  have recovery deadlines that preserve the conversation without replaying tasks.
+- A transport left open after confirmed native completion is closed without
+  discarding the result. Running model turns and tools remain unaffected.
+- Measured context and model windows follow the main agent, including after
+  compaction, rather than inheriting subagent measurements.
+- Failed history reads or archive writes cannot create an incomplete continuation;
+  failure to persist the new chat rolls back its creation.
+
 ## 0.6.7 — 2026-10-09
 
 ### Added

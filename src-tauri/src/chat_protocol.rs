@@ -37,6 +37,8 @@ pub struct ChatEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -54,6 +56,7 @@ pub struct ChatParser {
     pub failed: bool,
     saw_text: bool,
     context_input: u64,
+    main_model: Option<String>,
 }
 
 struct ToolInput {
@@ -192,6 +195,7 @@ impl ChatParser {
             failed: false,
             saw_text: false,
             context_input: 0,
+            main_model: None,
         }
     }
 
@@ -207,6 +211,28 @@ impl ChatParser {
     pub fn message(&self, kind: &str, text: &str) -> ChatEvent {
         let mut event = self.event(kind);
         event.text = Some(bounded_text(text, 65_536));
+        event
+    }
+
+    pub fn stderr_event(&self, provider: &str, line: &str) -> ChatEvent {
+        let lower = line.to_ascii_lowercase();
+        let marker = "failed to refresh oauth tokens for server ";
+        if provider == "codex" && lower.contains(marker) {
+            let start = lower.find(marker).unwrap() + marker.len();
+            let connector = line[start..]
+                .split(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '-' | '_' | '.'))
+                .next()
+                .filter(|name| !name.is_empty() && name.len() <= 64)
+                .unwrap_or("unknown");
+            // OAuth failures can include credential responses. Surface a clear
+            // connector warning without copying the authentication payload.
+            let mut event = self.message("status", &format!("MCP connector {connector} could not refresh its login. Reconnect this connector in Codex. This warning alone does not mean the conversation failed."));
+            event.title = Some("MCP login".into());
+            event.status = Some("mcp-auth-warning".into());
+            return event;
+        }
+        let mut event = self.message("status", line);
+        event.status = Some("diagnostic".into());
         event
     }
 
@@ -287,6 +313,23 @@ impl ChatParser {
                 let mut event = self.event("status");
                 event.model = string(record, "model");
                 events.push(event);
+            }
+            "agentdeck.warning" => {
+                let mut event = self.message(
+                    "status",
+                    record["message"]
+                        .as_str()
+                        .unwrap_or("The provider is retrying the connection."),
+                );
+                event.status = string(record, "status");
+                events.push(event);
+            }
+            "agentdeck.context-window" => {
+                let mut event = self.event("status");
+                event.context_window = record["context_window"].as_u64();
+                if event.context_window.is_some() {
+                    events.push(event);
+                }
             }
             "thread.started" => self.bind(string(record, "thread_id"), &mut events),
             "turn.started" => {
@@ -373,6 +416,7 @@ impl ChatParser {
                 let mut event = self.event("status");
                 event.usage = record.get("usage").cloned();
                 event.context_tokens = record["context_tokens"].as_u64();
+                event.context_window = record["context_window"].as_u64();
                 event.status = Some(
                     if record["type"] == "usage.updated" {
                         "running"
@@ -436,6 +480,9 @@ impl ChatParser {
                 event.status = Some("running".into());
                 event.context_tokens =
                     Some(self.context_input + usage["output_tokens"].as_u64().unwrap_or(0));
+                event.context_window = usage["context_window"]
+                    .as_u64()
+                    .or_else(|| usage["contextWindow"].as_u64());
                 events.push(event);
             }
         }
@@ -452,7 +499,12 @@ impl ChatParser {
                 model.filter(|value| value.len() <= 200 && !value.chars().any(char::is_control))
             {
                 let mut event = self.event("status");
+                self.main_model = Some(model.clone());
                 event.model = Some(model);
+                event.context_window = record["context_window"]
+                    .as_u64()
+                    .or_else(|| record["message"]["context_window"].as_u64())
+                    .or_else(|| record["event"]["message"]["context_window"].as_u64());
                 events.push(event);
             }
         }
@@ -680,6 +732,13 @@ impl ChatParser {
                 let mut event = self.event("status");
                 event.status = Some("finishing".into());
                 event.usage = record.get("usage").cloned();
+                if parent.is_none() {
+                    event.context_window = self
+                        .main_model
+                        .as_deref()
+                        .and_then(|model| record["modelUsage"][model]["contextWindow"].as_u64())
+                        .filter(|window| *window > 0);
+                }
                 events.push(event);
             }
             _ => {}
@@ -691,6 +750,65 @@ impl ChatParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_context_window_follows_main_model_without_using_subagent_windows() {
+        let mut parser = parser();
+        parser.parse(
+            "claude-code",
+            r#"{"type":"system","subtype":"init","model":"claude-main"}"#,
+        );
+        let child = parser.parse("claude-code", r#"{"type":"assistant","parent_tool_use_id":"child","message":{"model":"claude-child","usage":{"input_tokens":200,"context_window":1000000},"content":[]}}"#);
+        assert!(child.iter().all(|event| event.context_window.is_none()));
+        let main = parser.parse("claude-code", r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"main","model":"claude-main","usage":{"input_tokens":100,"context_window":200000}}}}"#);
+        assert!(main
+            .iter()
+            .any(|event| event.context_window == Some(200000)));
+        let result = parser.parse("claude-code", r#"{"type":"result","modelUsage":{"claude-main":{"contextWindow":200000},"claude-child":{"contextWindow":1000000}},"usage":{},"is_error":false}"#);
+        assert!(result
+            .iter()
+            .any(|event| event.context_window == Some(200000)));
+        assert!(result
+            .iter()
+            .all(|event| event.context_window != Some(1000000)));
+        let child = parser.parse("claude-code", r#"{"type":"result","parent_tool_use_id":"child","modelUsage":{"claude-main":{"contextWindow":1000000}},"is_error":false}"#);
+        assert!(child.iter().all(|event| event.context_window.is_none()));
+    }
+
+    #[test]
+    fn mcp_oauth_warning_is_nonfatal_and_does_not_expose_authentication_payloads() {
+        let parser = parser();
+        let event = parser.stderr_event("codex", "2026-10-14 ERROR codex_rmcp_client::oauth::refresh_transaction: error=failed to refresh OAuth tokens for server miro: OAuth refresh_token=private-token");
+        assert_eq!(event.kind, "status");
+        assert_eq!(event.status.as_deref(), Some("mcp-auth-warning"));
+        assert_eq!(event.title.as_deref(), Some("MCP login"));
+        assert!(event.text.as_deref().unwrap().contains("miro"));
+        assert!(!event.text.as_deref().unwrap().contains("private-token"));
+        assert!(!parser.failed);
+        for line in ["Connected to Codex", "ERROR connection refused"] {
+            let event = parser.stderr_event("codex", line);
+            assert_eq!(event.status.as_deref(), Some("diagnostic"));
+            assert_eq!(event.text.as_deref(), Some(line));
+        }
+    }
+
+    #[test]
+    fn connection_retry_stays_nonfatal_and_real_context_window_is_reported() {
+        let mut parser = parser();
+        let events = parser.parse("codex", r#"{"type":"agentdeck.warning","status":"reconnecting","message":"Connection lost, retrying"}"#);
+        assert_eq!(events[0].status.as_deref(), Some("reconnecting"));
+        assert!(!parser.failed);
+        let events = parser.parse(
+            "codex",
+            r#"{"type":"usage.updated","context_tokens":300000,"context_window":400000}"#,
+        );
+        assert_eq!(events[0].context_window, Some(400000));
+        assert_eq!(
+            serde_json::to_value(&events[0]).unwrap()["contextWindow"],
+            400000
+        );
+        assert!(!parser.failed);
+    }
+
     #[test]
     fn reasoning_is_not_an_accumulating_diagnostic() {
         let mut parser = parser();

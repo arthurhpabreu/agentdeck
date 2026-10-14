@@ -1,5 +1,35 @@
 # Validation evidence
 
+## 0.6.8
+
+Validated locally on Windows on October 14, 2026.
+
+| Check | Result |
+| --- | --- |
+| TypeScript and production frontend build | Passed for version 0.6.8. Existing Vite chunk-size and mixed-import warnings remain. |
+| Translations and Rust formatting | Passed: 471 EN/PT/ES keys and `cargo fmt --check`. |
+| Rust library suite | 195 passed, 6 optional tests ignored, no failures; 55 cover chat protocol and recovery. |
+| Playwright browser coverage | 160 scenarios covered across the full run and focused checks. The initial full run passed 157 of 159; a memory scenario passed independently after a development-server reload, and a large-history timeout exposed excessive text layout. The corrected large-history scenario and the added pagination scenario passed with all content assertions preserved. |
+| Large continuation archive | More than 13 MiB of UTF-8 history reconstructed exactly from bounded byte parts. The final focused run completed the archive scenario in 6.8 seconds and verified that rendered history remains bounded. |
+| History navigation | Large-message pages preserve every archived message. Previous-page checks reached entries 59, 58 and 57 in order; returning to latest and searching an older entry also passed. |
+| Packaged memory MCP smoke test | 12 scenarios passed against the optimized 0.6.8 executable: 36 RPC requests, 3 processes, no stderr or unexpected responses. |
+| Packaged Codex RTK smoke test | Five checks passed against the packaged adapter and installed RTK. No model requests. |
+| Windows installers | NSIS and MSI x64 packages generated. Version 0.6.8, publisher, bundled LICENSE, application architecture and unchanged MSI upgrade identity verified without installation. |
+| Release integrity | SHA-256 manifest covers both installers and LICENSE; staged copies match the generated artifacts and repository license. |
+
+Chat regressions cover both providers, measured context windows, conversation
+goals and attachment paths, post-compaction pressure, retained summary readings,
+subagent isolation, archived history, storage failures, separate provider IDs,
+unsent continuation drafts and oversized input during an active response. Native
+tests cover retry versus fatal errors, protocol deadlines, unconfirmed input,
+MCP warnings and confirmed-completion transport cleanup.
+
+Browser tests use mocked desktop commands and native chat tests use protocol
+fixtures. Packaged smoke checks use isolated temporary databases and commands.
+They do not authenticate external integrations, send model requests or establish
+live provider behavior. A clean-machine install/upgrade was not exercised.
+Installers remain unsigned.
+
 ## 0.6.7
 
 Validated locally on Windows on October 9, 2026.
@@ -262,7 +292,7 @@ Agent Deck 0.5.0 was validated locally on Windows on October 7, 2026, using Node
 - A 38-agent fixture covers two sessions, 36 subagents, missing parents, cyclic relationships and a narrow light-theme viewport.
 - CLI indicator tests cover confirmed updates, badge counts after updating and hiding the badge when version checks fail.
 
-The [agent map](images/agent-flow-map.png) and [knowledge graph](images/knowledge-expanded.png) screenshots contain synthetic data. They are documentation assets rather than captures of a personal project or provider account.
+The graph and agent fixtures use synthetic data rather than a personal project or provider account.
 
 ## Scope and remaining validation
 

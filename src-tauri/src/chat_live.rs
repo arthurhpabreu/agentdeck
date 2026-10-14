@@ -31,6 +31,20 @@ impl LiveInput {
             && self.pending.is_empty()
             && (self.codex || self.claude_pending == 0)
     }
+    pub fn abort(&mut self) -> Vec<(String, &'static str)> {
+        self.writer.take();
+        let mut unconfirmed = Vec::new();
+        for message in self.queued.drain(..) {
+            unconfirmed.push((
+                message.id,
+                "This additional message was not sent. The conversation is preserved.",
+            ));
+        }
+        for (_, message) in self.pending.drain() {
+            unconfirmed.push((message.id, "The provider did not confirm this additional message. Check the native conversation before sending it again."));
+        }
+        unconfirmed
+    }
     pub fn new(stdin: ChildStdin, codex: bool, compacting: bool) -> Self {
         let mut input = Self::with_writer(Box::new(stdin), codex);
         input.compacting = compacting;
@@ -155,7 +169,21 @@ pub(super) struct LiveProtocol {
     compact_turn: Option<String>,
     last_compaction_item: Option<String>,
     compact_result_id: Option<String>,
+    phase: ProtocolPhase,
+    progress_revision: u64,
+    compact_items: std::collections::HashSet<(String, String)>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProtocolPhase {
+    Initializing,
+    LoadingThread,
+    Compacting,
+    StartingTurn,
+    Running,
+    Failed,
+}
+
 impl LiveProtocol {
     pub fn new(request: &ChatTurnRequest) -> Self {
         Self {
@@ -169,10 +197,25 @@ impl LiveProtocol {
             compact_turn: None,
             last_compaction_item: None,
             compact_result_id: None,
+            phase: if request.runner_type == "codex"
+                || (request.compact_before_turn && request.provider_session_id.is_some())
+            {
+                ProtocolPhase::Initializing
+            } else {
+                ProtocolPhase::StartingTurn
+            },
+            progress_revision: 0,
+            compact_items: Default::default(),
         }
     }
     pub fn compacting(&self) -> bool {
         self.compacting
+    }
+    pub fn phase(&self) -> ProtocolPhase {
+        self.phase
+    }
+    pub fn progress_revision(&self) -> u64 {
+        self.progress_revision
     }
     pub fn ingest(&mut self, line: &str, input: &mut LiveInput) -> Vec<String> {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
@@ -188,6 +231,7 @@ impl LiveProtocol {
         if let Err(error) = result {
             out.push(json!({"type":"error","message":error}));
             input.writer.take();
+            self.phase = ProtocolPhase::Failed;
         }
         out.into_iter().map(|v| v.to_string()).collect()
     }
@@ -197,6 +241,16 @@ impl LiveProtocol {
         input: &mut LiveInput,
         out: &mut Vec<Value>,
     ) -> Result<(), String> {
+        if record["parent_tool_use_id"].is_null()
+            && ((record["type"] == "system" && record["subtype"] == "init")
+                || matches!(record["type"].as_str(), Some("assistant" | "stream_event")))
+        {
+            self.phase = if self.compacting {
+                ProtocolPhase::Compacting
+            } else {
+                ProtocolPhase::Running
+            };
+        }
         if record["type"] == "result"
             && self.compact_result_id.as_deref() == record["uuid"].as_str()
             && self.compact_result_id.is_some()
@@ -204,6 +258,11 @@ impl LiveProtocol {
             return Ok(());
         }
         if self.compacting && record["parent_tool_use_id"].is_null() {
+            if matches!(record["type"].as_str(), Some("stream_event" | "assistant"))
+                || (record["type"] == "system" && record["subtype"] == "compact_boundary")
+            {
+                self.progress_revision += 1;
+            }
             if record["type"] == "system" && record["subtype"] == "compact_boundary" {
                 self.compact_confirmed = true;
                 return Ok(());
@@ -213,6 +272,7 @@ impl LiveProtocol {
                     return Err(format!("Context compaction was not confirmed. Your next request was not sent; the existing conversation is preserved. {}", record["result"].as_str().unwrap_or("Retry or adjust automatic compaction in the chat context settings.")));
                 }
                 self.compacting = false;
+                self.phase = ProtocolPhase::Running;
                 input.compacting = false;
                 self.compact_result_id = record["uuid"].as_str().map(str::to_owned);
                 for key in [
@@ -286,6 +346,7 @@ impl LiveProtocol {
                     return Err(error_message(record));
                 }
                 input.write(json!({"method":"initialized"}))?;
+                self.phase = ProtocolPhase::LoadingThread;
                 let mut params = json!({"cwd":self.request.workdir});
                 // Apply the chosen permissions to resumed threads as well as new ones.
                 if self.request.mode.as_deref() == Some("plan") {
@@ -299,6 +360,9 @@ impl LiveProtocol {
                 }
                 if let Some(thread) = &self.request.provider_session_id {
                     params["threadId"] = json!(thread);
+                    // Loading the complete transcript can exceed the JSONL frame
+                    // bound in large chats. Codex still restores its native context.
+                    params["excludeTurns"] = json!(true);
                 }
                 input.write(json!({"id":2,"method":if self.request.provider_session_id.is_some(){"thread/resume"}else{"thread/start"},"params":params}))?;
             } else if id == 2 {
@@ -318,6 +382,7 @@ impl LiveProtocol {
                 out.push(status);
                 if self.compacting {
                     input.write(json!({"id":4,"method":"thread/compact/start","params":{"threadId":input.thread}}))?;
+                    self.phase = ProtocolPhase::Compacting;
                 } else {
                     self.start_initial(input)?;
                 }
@@ -332,6 +397,7 @@ impl LiveProtocol {
                 }
                 input.turn = record["result"]["turn"]["id"].as_str().map(str::to_owned);
                 input.started = true;
+                self.phase = ProtocolPhase::Running;
                 if input.turn.is_none() {
                     return Err("Codex did not return an active turn ID".into());
                 }
@@ -341,6 +407,7 @@ impl LiveProtocol {
                 if record["error"].is_null() {
                     if let Some(turn) = record["result"]["turn"]["id"].as_str() {
                         input.turn = Some(turn.into());
+                        self.phase = ProtocolPhase::Running;
                         self.drain_steers(input)?;
                     }
                     out.push(json!({"type":"agentdeck.input","message_id":message.id,"status":"accepted"}));
@@ -358,6 +425,9 @@ impl LiveProtocol {
                 }
                 if input.turn.is_none() {
                     input.start_queued()?;
+                    if !input.pending.is_empty() {
+                        self.phase = ProtocolPhase::StartingTurn;
+                    }
                 }
             }
             return Ok(());
@@ -390,15 +460,51 @@ impl LiveProtocol {
             match record["method"].as_str().unwrap_or("") {
                 "thread/tokenUsage/updated" => {
                     let usage = &params["tokenUsage"]["last"];
-                    self.usage = json!({"input_tokens":usage["inputTokens"],"output_tokens":usage["outputTokens"],"cached_input_tokens":usage["cachedInputTokens"]});
+                    let updated = json!({"input_tokens":usage["inputTokens"],"output_tokens":usage["outputTokens"],"cached_input_tokens":usage["cachedInputTokens"]});
+                    if self.usage != updated {
+                        self.progress_revision += 1;
+                        self.usage = updated;
+                    }
+                    out.push(json!({"type":"agentdeck.context-window", "context_window":params["tokenUsage"]["modelContextWindow"]}));
                 }
                 "turn/started" => {
+                    if params["turn"]["id"].is_string()
+                        && self.compact_turn.as_deref() != params["turn"]["id"].as_str()
+                    {
+                        self.progress_revision += 1;
+                    }
                     self.compact_turn = params["turn"]["id"].as_str().map(str::to_owned)
                 }
-                "item/completed" if params["item"]["type"] == "contextCompaction" => {
-                    self.compact_confirmed = true
+                "item/started" | "item/completed"
+                    if params["item"]["type"] == "contextCompaction" =>
+                {
+                    if let Some(id) = params["item"]["id"].as_str() {
+                        if self.compact_items.len() < 128
+                            && self.compact_items.insert((
+                                id.to_owned(),
+                                record["method"].as_str().unwrap_or_default().to_owned(),
+                            ))
+                        {
+                            self.progress_revision += 1;
+                        }
+                    }
+                    if record["method"] == "item/completed" {
+                        self.compact_confirmed = true;
+                    }
                 }
-                "thread/compacted" => self.compact_confirmed = true,
+                "thread/compacted" => {
+                    if !self.compact_confirmed {
+                        self.progress_revision += 1;
+                    }
+                    self.compact_confirmed = true;
+                }
+                "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta"
+                    if params["delta"]
+                        .as_str()
+                        .is_some_and(|text| !text.is_empty()) =>
+                {
+                    self.progress_revision += 1
+                }
                 "turn/completed"
                     if self.compact_turn.as_deref() == params["turn"]["id"].as_str() =>
                 {
@@ -415,13 +521,14 @@ impl LiveProtocol {
                     );
                     self.start_initial(input)?;
                 }
+                "error" if params["willRetry"] == true => out.push(retry_warning(params)),
                 "error" => return Err(error_message(&json!({"error":params["error"]}))),
                 _ => {}
             }
             return Ok(());
         }
         match record["method"].as_str().unwrap_or("") {
-            "turn/started"=>{input.turn=params["turn"]["id"].as_str().map(str::to_owned);input.started=true;out.push(json!({"type":"turn.started"}));}
+            "turn/started"=>{input.turn=params["turn"]["id"].as_str().map(str::to_owned);input.started=true;self.phase=ProtocolPhase::Running;out.push(json!({"type":"turn.started"}));}
             "item/agentMessage/delta"=>{
                 let id=params["itemId"].as_str().unwrap_or("message");
                 // Send only the new text. Re-serializing the growing message on every
@@ -446,7 +553,7 @@ impl LiveProtocol {
             "thread/tokenUsage/updated"=>{
                 let usage=&params["tokenUsage"]["last"];
                 self.usage=json!({"input_tokens":usage["inputTokens"],"output_tokens":usage["outputTokens"],"cached_input_tokens":usage["cachedInputTokens"]});
-                out.push(json!({"type":"usage.updated","usage":sum_usage(&self.totals,&self.usage),"context_tokens":usage["inputTokens"].as_u64().unwrap_or(0)+usage["outputTokens"].as_u64().unwrap_or(0)}));
+                out.push(json!({"type":"usage.updated","usage":sum_usage(&self.totals,&self.usage),"context_tokens":usage["inputTokens"].as_u64().unwrap_or(0)+usage["outputTokens"].as_u64().unwrap_or(0),"context_window":params["tokenUsage"]["modelContextWindow"]}));
             }
             "turn/completed"=>{
                 if params["turn"]["status"]=="failed" {out.push(json!({"type":"error","message":params["turn"]["error"]["message"].as_str().unwrap_or("Codex turn failed")}));}
@@ -454,15 +561,19 @@ impl LiveProtocol {
                 out.push(json!({"type":"turn.completed","status":params["turn"]["status"],"usage":self.totals}));
                 if input.turn.as_deref()==params["turn"]["id"].as_str(){input.turn=None;}
                 input.start_queued()?;
+                if input.turn.is_none() && !input.pending.is_empty() {self.phase=ProtocolPhase::StartingTurn;}
             }
+            "error" if params["willRetry"] == true => out.push(retry_warning(params)),
             "error"=>out.push(json!({"type":"error","message":params["error"]["message"].as_str().unwrap_or("Codex protocol error")})),
             "thread/compacted"=>out.push(json!({"type":"context_compacted","id":self.last_compaction_item.as_deref().unwrap_or("automatic")})),
             _=>{}
         }
         Ok(())
     }
-    fn start_initial(&self, input: &mut LiveInput) -> Result<(), String> {
-        input.write(json!({"id":3,"method":"turn/start","params":{"threadId":input.thread,"input":codex_input(&self.request)?}}))
+    fn start_initial(&mut self, input: &mut LiveInput) -> Result<(), String> {
+        input.write(json!({"id":3,"method":"turn/start","params":{"threadId":input.thread,"input":codex_input(&self.request)?}}))?;
+        self.phase = ProtocolPhase::StartingTurn;
+        Ok(())
     }
     fn drain_steers(&mut self, input: &mut LiveInput) -> Result<(), String> {
         while let Some(message) = input.queued.pop_front() {
@@ -473,6 +584,9 @@ impl LiveProtocol {
         }
         Ok(())
     }
+}
+fn retry_warning(params: &Value) -> Value {
+    json!({"type":"agentdeck.warning", "status":"reconnecting", "message":params["error"]["message"].as_str().unwrap_or("Codex is retrying the connection. The conversation is preserved.")})
 }
 fn error_message(record: &Value) -> String {
     record["error"]["message"]
@@ -634,6 +748,167 @@ mod tests {
     fn written(bytes: &Arc<Mutex<Vec<u8>>>) -> String {
         String::from_utf8(bytes.lock().unwrap().clone()).unwrap()
     }
+    #[test]
+    fn resuming_large_threads_excludes_turn_payloads_without_changing_the_native_id() {
+        for resumed in [false, true] {
+            let mut req = super::super::tests::request("codex");
+            req.provider_session_id = resumed.then(|| "large-native-thread".into());
+            let bytes = Arc::new(Mutex::new(vec![]));
+            let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+            let mut protocol = LiveProtocol::new(&req);
+            protocol.ingest(r#"{"id":1,"result":{}}"#, &mut input);
+            let text = written(&bytes);
+            let rpc: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+            if resumed {
+                assert_eq!(rpc["method"], "thread/resume");
+                assert_eq!(rpc["params"]["threadId"], "large-native-thread");
+                assert_eq!(rpc["params"]["excludeTurns"], true);
+            } else {
+                assert!(rpc["params"].get("excludeTurns").is_none());
+            }
+            assert_eq!(protocol.phase(), ProtocolPhase::LoadingThread);
+        }
+    }
+
+    #[test]
+    fn claude_startup_and_compaction_have_separate_deadlines() {
+        for compacting in [false, true] {
+            let mut req = super::super::tests::request("claude-code");
+            req.provider_session_id = Some("existing".into());
+            req.compact_before_turn = compacting;
+            let mut input = LiveInput::with_writer(Box::new(Vec::new()), false);
+            let mut protocol = LiveProtocol::new(&req);
+            assert_eq!(
+                protocol.phase(),
+                if compacting {
+                    ProtocolPhase::Initializing
+                } else {
+                    ProtocolPhase::StartingTurn
+                }
+            );
+            protocol.ingest(
+                r#"{"type":"system","subtype":"init","model":"claude-main"}"#,
+                &mut input,
+            );
+            assert_eq!(
+                protocol.phase(),
+                if compacting {
+                    ProtocolPhase::Compacting
+                } else {
+                    ProtocolPhase::Running
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn native_retry_never_replays_the_request_or_fails_an_active_turn() {
+        let req = super::super::tests::request("codex");
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        let mut protocol = LiveProtocol::new(&req);
+        protocol.ingest(
+            r#"{"id":2,"result":{"thread":{"id":"native-thread"}}}"#,
+            &mut input,
+        );
+        assert_eq!(protocol.phase(), ProtocolPhase::StartingTurn);
+        protocol.ingest(
+            r#"{"id":3,"result":{"turn":{"id":"native-turn"}}}"#,
+            &mut input,
+        );
+        let before = written(&bytes);
+        let records = protocol.ingest(r#"{"method":"error","params":{"threadId":"native-thread","willRetry":true,"error":{"message":"Connection lost"}}}"#, &mut input);
+        let mut parser = super::super::protocol::ChatParser::new("session".into(), "turn".into());
+        let events = parser.parse("codex", &records[0]);
+        assert_eq!(events[0].status.as_deref(), Some("reconnecting"));
+        assert!(!parser.failed);
+        assert_eq!(written(&bytes), before);
+        assert_eq!(input.thread.as_deref(), Some("native-thread"));
+        assert_eq!(input.turn.as_deref(), Some("native-turn"));
+        assert!(input.writer.is_some());
+        assert_eq!(protocol.phase(), ProtocolPhase::Running);
+        let records = protocol.ingest(r#"{"method":"error","params":{"threadId":"native-thread","willRetry":false,"error":{"message":"Permanent connection failure"}}}"#, &mut input);
+        parser.parse("codex", &records[0]);
+        assert!(parser.failed);
+    }
+
+    #[test]
+    fn retries_and_unrelated_notifications_do_not_count_as_compaction_progress() {
+        let mut req = super::super::tests::request("codex");
+        req.provider_session_id = Some("native-thread".into());
+        req.compact_before_turn = true;
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        let mut protocol = LiveProtocol::new(&req);
+        protocol.ingest(
+            r#"{"id":2,"result":{"thread":{"id":"native-thread"}}}"#,
+            &mut input,
+        );
+        let initial = written(&bytes);
+        let records = protocol.ingest(r#"{"method":"error","params":{"threadId":"native-thread","willRetry":true,"error":{"message":"Retrying"}}}"#, &mut input);
+        assert!(records[0].contains("reconnecting"));
+        assert_eq!(protocol.progress_revision(), 0);
+        protocol.ingest(r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"other-thread","tokenUsage":{"last":{"inputTokens":123}}}}"#, &mut input);
+        protocol.ingest(
+            r#"{"method":"mcpServer/statusUpdated","params":{"status":"starting"}}"#,
+            &mut input,
+        );
+        assert_eq!(protocol.progress_revision(), 0);
+        assert_eq!(written(&bytes), initial);
+        assert_eq!(protocol.phase(), ProtocolPhase::Compacting);
+        assert!(input.writer.is_some());
+        protocol.ingest(r#"{"method":"item/reasoning/textDelta","params":{"threadId":"native-thread","itemId":"c","delta":"Working"}}"#, &mut input);
+        assert_eq!(protocol.progress_revision(), 1);
+        let usage = r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"native-thread","tokenUsage":{"last":{"inputTokens":123}}}}"#;
+        protocol.ingest(usage, &mut input);
+        assert_eq!(protocol.progress_revision(), 2);
+        protocol.ingest(usage, &mut input);
+        assert_eq!(protocol.progress_revision(), 2);
+    }
+
+    #[test]
+    fn context_updates_include_the_providers_actual_model_window() {
+        let req = super::super::tests::request("codex");
+        let mut input = LiveInput::with_writer(Box::new(Vec::new()), true);
+        let mut protocol = LiveProtocol::new(&req);
+        let records = protocol.ingest(r#"{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"inputTokens":320000,"outputTokens":10000},"modelContextWindow":400000}}}"#, &mut input);
+        let record: Value = serde_json::from_str(&records[0]).unwrap();
+        assert_eq!(record["context_tokens"], 330000);
+        assert_eq!(record["context_window"], 400000);
+        let mut req = req;
+        req.provider_session_id = Some("existing".into());
+        req.compact_before_turn = true;
+        let mut protocol = LiveProtocol::new(&req);
+        let records = protocol.ingest(r#"{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"inputTokens":320000,"outputTokens":10000},"modelContextWindow":400000}}}"#, &mut input);
+        let record: Value = serde_json::from_str(&records[0]).unwrap();
+        assert_eq!(record["type"], "agentdeck.context-window");
+        assert_eq!(record["context_window"], 400000);
+    }
+
+    #[test]
+    fn stopping_transport_distinguishes_unsent_and_unconfirmed_additional_input() {
+        let req = super::super::tests::request("codex");
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        input.submit(&req, "unsent").unwrap();
+        input.thread = Some("native-thread".into());
+        input.turn = Some("native-turn".into());
+        input.submit(&req, "unconfirmed").unwrap();
+        let before = written(&bytes);
+        let results = input.abort();
+        assert!(results
+            .iter()
+            .any(|(id, text)| id == "unsent" && text.contains("not sent")));
+        assert!(results
+            .iter()
+            .any(|(id, text)| id == "unconfirmed" && text.contains("before sending it again")));
+        assert_eq!(written(&bytes), before);
+        assert!(input.writer.is_none());
+        assert!(input.queued.is_empty());
+        assert!(input.pending.is_empty());
+        assert_eq!(input.thread.as_deref(), Some("native-thread"));
+    }
+
     #[test]
     fn codex_compaction_waits_for_confirmed_idle_turn_before_sending_original_input() {
         let mut req = super::super::tests::request("codex");
@@ -818,6 +1093,7 @@ mod tests {
         assert!(written.contains("Also test Portuguese"));
         protocol.ingest(&json!({"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"native-turn","status":"completed"}}}).to_string(),&mut input);
         assert!(input.writer.is_some());
+        assert_eq!(protocol.phase(), ProtocolPhase::StartingTurn);
         protocol.ingest(
             &json!({"id":101,"error":{"message":"No active turn"}}).to_string(),
             &mut input,
@@ -830,6 +1106,7 @@ mod tests {
             &mut input,
         );
         assert!(ack.iter().any(|line| line.contains("accepted")));
+        assert_eq!(protocol.phase(), ProtocolPhase::Running);
         protocol.ingest(&json!({"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"next-turn","status":"completed"}}}).to_string(),&mut input);
         assert!(input.writer.is_none());
     }

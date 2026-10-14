@@ -6,7 +6,7 @@ mod live;
 mod protocol;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -127,6 +127,79 @@ impl CompactionProgress {
         } else {
             None
         }
+    }
+}
+
+// Time out only protocol negotiation and pre-turn compaction. A silent model or
+// long-running tool may still be doing useful work and must not be replayed.
+struct ProtocolWatchdog {
+    phase: live::ProtocolPhase,
+    phase_since: Duration,
+    last_progress: Duration,
+    revision: u64,
+}
+
+impl ProtocolWatchdog {
+    fn new(phase: live::ProtocolPhase) -> Self {
+        Self {
+            phase,
+            phase_since: Duration::ZERO,
+            last_progress: Duration::ZERO,
+            revision: 0,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        phase: live::ProtocolPhase,
+        revision: u64,
+        elapsed: Duration,
+    ) -> Option<&'static str> {
+        if phase != self.phase {
+            self.phase = phase;
+            self.phase_since = elapsed;
+            self.last_progress = elapsed;
+        }
+        if revision != self.revision {
+            self.revision = revision;
+            self.last_progress = elapsed;
+        }
+        let phase_elapsed = elapsed.saturating_sub(self.phase_since);
+        match phase {
+            live::ProtocolPhase::Initializing | live::ProtocolPhase::LoadingThread
+                if phase_elapsed >= Duration::from_secs(120) => Some("The provider did not finish opening this conversation within two minutes. Your request was not sent; the existing conversation is preserved. Check the provider connection and MCP logins, then continue in this chat."),
+            live::ProtocolPhase::StartingTurn if phase_elapsed >= Duration::from_secs(120) => Some("The provider did not confirm whether it accepted this request within two minutes. The conversation is preserved. Check the native conversation and any work already performed before sending the request again; it will not be resent automatically."),
+            live::ProtocolPhase::Compacting
+                if elapsed.saturating_sub(self.last_progress) >= Duration::from_secs(300)
+                    || phase_elapsed >= Duration::from_secs(900) => Some("Context compaction stopped reporting progress or exceeded fifteen minutes. Your next request was not sent; the existing conversation is preserved. Check the provider connection, then retry compaction or continue with automatic compaction disabled."),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct CompletionShutdown {
+    confirmed_since: Option<Duration>,
+    cleaned: bool,
+}
+
+impl CompletionShutdown {
+    fn observe(&mut self, confirmed: bool, elapsed: Duration) -> bool {
+        if !confirmed {
+            self.confirmed_since = None;
+            self.cleaned = false;
+            return false;
+        }
+        let since = *self.confirmed_since.get_or_insert(elapsed);
+        if !self.cleaned && elapsed.saturating_sub(since) >= Duration::from_secs(10) {
+            self.cleaned = true;
+            return true;
+        }
+        false
+    }
+
+    fn successful_exit(&self, exited_successfully: bool, failed: bool, cancelled: bool) -> bool {
+        !failed && !cancelled && (self.cleaned || exited_successfully)
     }
 }
 
@@ -506,6 +579,7 @@ enum ProcessOutput {
     Stdout(String),
     Stderr(String),
     Warning(String),
+    Failure(String),
     Closed,
 }
 
@@ -587,6 +661,10 @@ fn emit_event(app: &tauri::AppHandle, provider: &str, event: ChatEvent) {
 
 fn terminate_process(process: &ChatProcess) {
     process.cancelled.store(true, Ordering::SeqCst);
+    kill_process(process);
+}
+
+fn kill_process(process: &ChatProcess) {
     if let Ok(mut child) = process.child.lock() {
         // Do not target a PID after it has already been reaped and could have been reused.
         if matches!(child.try_wait(), Ok(Some(_))) {
@@ -844,7 +922,7 @@ pub async fn start_chat_turn(
                 }
             });
         if let Err(error) = sent {
-            let _ = sender.send(ProcessOutput::Warning(format!(
+            let _ = sender.send(ProcessOutput::Failure(format!(
                 "Could not send the message to the provider: {error}"
             )));
         } else if guidance_provider != "codex" && !compacting_before_input {
@@ -866,14 +944,15 @@ pub async fn start_chat_turn(
         let launched_at = Instant::now();
         let mut last_heartbeat = launched_at;
         let mut compaction_progress = CompactionProgress::default();
+        let mut watchdog = ProtocolWatchdog::new(live.phase());
+        let mut connector_warnings = HashSet::new();
+        let mut termination_requested = false;
+        let mut completion_shutdown = CompletionShutdown::default();
         let mut notification_evidence =
             crate::notification::completion::CompletionEvidence::default();
         loop {
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(ProcessOutput::Stdout(line)) => {
-                    process
-                        .last_output_at
-                        .store(now_millis(), Ordering::Relaxed);
                     let lines = match process.input.lock() {
                         Ok(mut input) => live.ingest(&line, &mut input),
                         Err(_) => vec![
@@ -885,6 +964,9 @@ pub async fn start_chat_turn(
                         if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) {
                             notification_evidence.observe(&record);
                             if record["type"] == "agentdeck.initial-delivered" {
+                                process
+                                    .last_output_at
+                                    .store(now_millis(), Ordering::Relaxed);
                                 if delivered_guidance {
                                     crate::token_economy::mark_guidance_delivered(
                                         &request.runner_type,
@@ -897,6 +979,9 @@ pub async fn start_chat_turn(
                                 continue;
                             }
                             if record["type"] == "agentdeck.input" {
+                                process
+                                    .last_output_at
+                                    .store(now_millis(), Ordering::Relaxed);
                                 let mut event = parser.event("input");
                                 event.item_id = record["message_id"].as_str().map(str::to_owned);
                                 event.status = record["status"].as_str().map(str::to_owned);
@@ -939,6 +1024,19 @@ pub async fn start_chat_turn(
                             }
                         }
                         for event in parser.parse(&request.runner_type, &line) {
+                            if matches!(
+                                event.kind.as_str(),
+                                "session" | "text" | "tool" | "compaction"
+                            ) || event.model.is_some()
+                                || matches!(
+                                    event.status.as_deref(),
+                                    Some("running" | "finishing" | "reasoning")
+                                )
+                            {
+                                process
+                                    .last_output_at
+                                    .store(now_millis(), Ordering::Relaxed);
+                            }
                             if event.kind == "text" && event.parent_id.is_none() {
                                 let id = event.item_id.clone().unwrap_or_default();
                                 if let Some((_, text)) =
@@ -977,20 +1075,68 @@ pub async fn start_chat_turn(
                 }
                 Ok(ProcessOutput::Stderr(line)) => {
                     if !line.trim().is_empty() {
-                        process
-                            .last_output_at
-                            .store(now_millis(), Ordering::Relaxed);
-                        stderr_tail = bounded_text(&format!("{line}\n{stderr_tail}"), 8_192);
-                        let mut event = parser.message("status", &line);
-                        event.status = Some("diagnostic".into());
-                        emit_event(&app, &request.runner_type, event);
+                        let event = parser.stderr_event(&request.runner_type, &line);
+                        if event.status.as_deref() == Some("mcp-auth-warning") {
+                            if connector_warnings.len() < 32
+                                && connector_warnings.insert(event.text.clone().unwrap_or_default())
+                            {
+                                emit_event(&app, &request.runner_type, event);
+                            }
+                        } else {
+                            stderr_tail = bounded_text(&format!("{line}\n{stderr_tail}"), 8_192);
+                            emit_event(&app, &request.runner_type, event);
+                        }
                     }
                 }
                 Ok(ProcessOutput::Warning(text)) => {
                     emit_event(&app, &request.runner_type, parser.message("status", &text))
                 }
+                Ok(ProcessOutput::Failure(text)) => {
+                    parser.failed = true;
+                    emit_event(&app, &request.runner_type, parser.message("error", &text));
+                }
                 Ok(ProcessOutput::Closed) => closed += 1,
                 Err(_) => {}
+            }
+            if !parser.failed && !process.cancelled.load(Ordering::SeqCst) && exit.is_none() {
+                if let Some(reason) = watchdog.observe(
+                    live.phase(),
+                    live.progress_revision(),
+                    launched_at.elapsed(),
+                ) {
+                    parser.failed = true;
+                    let mut event = parser.message("error", reason);
+                    event.status = Some("recovery-required".into());
+                    emit_event(&app, &request.runner_type, event);
+                }
+            }
+            if parser.failed && !termination_requested && exit.is_none() {
+                termination_requested = true;
+                if let Ok(mut input) = process.input.lock() {
+                    for (id, reason) in input.abort() {
+                        let mut event = parser.message("input", reason);
+                        event.item_id = Some(id);
+                        event.status = Some("failed".into());
+                        emit_event(&app, &request.runner_type, event);
+                    }
+                }
+                kill_process(&process);
+            }
+            let drained = process
+                .input
+                .lock()
+                .map(|input| input.completion_drained())
+                .unwrap_or(false);
+            let completion_confirmed = !parser.failed
+                && !process.cancelled.load(Ordering::SeqCst)
+                && notification_evidence.confirmed(true, drained, live.compacting());
+            if completion_shutdown.observe(completion_confirmed, launched_at.elapsed()) {
+                if exit.is_none() && !termination_requested {
+                    // Completion is already confirmed by the native protocol;
+                    // only stop a transport that ignored the closed input pipe.
+                    termination_requested = true;
+                    kill_process(&process);
+                }
             }
             if let Some(notice) =
                 compaction_progress.observe(live.compacting(), launched_at.elapsed())
@@ -1017,7 +1163,7 @@ pub async fn start_chat_turn(
                             &request.runner_type,
                             parser.message("error", "Could not read provider process status."),
                         );
-                        terminate_process(&process);
+                        kill_process(&process);
                         break;
                     }
                     _ => {}
@@ -1037,7 +1183,12 @@ pub async fn start_chat_turn(
             }
         }
         let cancelled = process.cancelled.load(Ordering::SeqCst);
-        if !cancelled && exit.is_some_and(|status| !status.success()) && !parser.failed {
+        let successful_exit = completion_shutdown.successful_exit(
+            exit.is_some_and(|status| status.success()),
+            parser.failed,
+            cancelled,
+        );
+        if !cancelled && !successful_exit && !parser.failed {
             parser.failed = true;
             let detail = if stderr_tail.is_empty() {
                 "The provider exited without completing its response. Check its native login and model configuration.".to_owned()
@@ -1086,7 +1237,7 @@ pub async fn start_chat_turn(
             }
         }
         let mut done = parser.event("done");
-        if cancelled || parser.failed || !exit.is_some_and(|status| status.success()) {
+        if cancelled || parser.failed || !successful_exit {
             // A pipe write alone does not prove the model accepted the context (login/spawn errors).
             crate::memory_runtime::reset(
                 &app,
@@ -1095,7 +1246,7 @@ pub async fn start_chat_turn(
                 &request.runner_type,
             );
         }
-        if !cancelled && !parser.failed && exit.is_some_and(|status| status.success()) {
+        if !cancelled && !parser.failed && successful_exit {
             if let Some((_, answer)) = visible_messages.last() {
                 crate::memory_runtime::capture(
                     &app,
@@ -1138,7 +1289,7 @@ pub async fn start_chat_turn(
             .map(|input| input.completion_drained())
             .unwrap_or(false);
         let confirmed = notification_evidence.confirmed(
-            !cancelled && !parser.failed && exit.is_some_and(|status| status.success()),
+            !cancelled && !parser.failed && successful_exit,
             drained,
             live.compacting(),
         );
@@ -1265,6 +1416,89 @@ pub fn uses_workdir(app: &tauri::AppHandle, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn confirmed_completion_cleanup_waits_for_all_acknowledgements_and_preserves_failures() {
+        let mut shutdown = CompletionShutdown::default();
+        // A top-level completion with pending input has no confirmed completion.
+        assert!(!shutdown.observe(false, Duration::from_secs(3600)));
+        assert!(!shutdown.successful_exit(false, false, false));
+        assert!(!shutdown.observe(true, Duration::from_secs(3600)));
+        assert!(!shutdown.observe(true, Duration::from_secs(3609)));
+        assert!(shutdown.observe(true, Duration::from_secs(3610)));
+        assert!(shutdown.successful_exit(false, false, false));
+        assert!(!shutdown.successful_exit(false, true, false));
+        assert!(!shutdown.successful_exit(true, false, true));
+        // A late protocol failure or newly pending input invalidates cleanup.
+        assert!(!shutdown.observe(false, Duration::from_secs(3611)));
+        assert!(!shutdown.successful_exit(false, false, false));
+        assert!(!shutdown.observe(true, Duration::from_secs(3612)));
+        assert!(!shutdown.observe(true, Duration::from_secs(3621)));
+        assert!(shutdown.observe(true, Duration::from_secs(3622)));
+    }
+
+    #[test]
+    fn negotiation_deadlines_follow_each_stage_and_never_interrupt_active_work() {
+        use live::ProtocolPhase::*;
+        let mut watchdog = ProtocolWatchdog::new(Initializing);
+        assert!(watchdog
+            .observe(Initializing, 0, Duration::from_secs(119))
+            .is_none());
+        assert!(watchdog
+            .observe(Initializing, 0, Duration::from_secs(120))
+            .unwrap()
+            .contains("not sent"));
+        assert!(watchdog
+            .observe(LoadingThread, 0, Duration::from_secs(120))
+            .is_none());
+        assert!(watchdog
+            .observe(LoadingThread, 0, Duration::from_secs(240))
+            .is_some());
+        assert!(watchdog
+            .observe(StartingTurn, 0, Duration::from_secs(240))
+            .is_none());
+        let unknown = watchdog
+            .observe(StartingTurn, 0, Duration::from_secs(360))
+            .unwrap();
+        assert!(unknown.contains("before sending the request again"));
+        assert!(!unknown.contains("request was not sent"));
+        assert!(watchdog
+            .observe(Running, 0, Duration::from_secs(24 * 3600))
+            .is_none());
+        assert!(watchdog
+            .observe(Running, 0, Duration::from_secs(48 * 3600))
+            .is_none());
+    }
+
+    #[test]
+    fn compaction_watchdog_requires_progress_and_has_a_total_limit() {
+        use live::ProtocolPhase::Compacting;
+        let mut watchdog = ProtocolWatchdog::new(Compacting);
+        assert!(watchdog
+            .observe(Compacting, 0, Duration::from_secs(299))
+            .is_none());
+        assert!(watchdog
+            .observe(Compacting, 0, Duration::from_secs(300))
+            .is_some());
+        let mut watchdog = ProtocolWatchdog::new(Compacting);
+        assert!(watchdog
+            .observe(Compacting, 1, Duration::from_secs(299))
+            .is_none());
+        assert!(watchdog
+            .observe(Compacting, 1, Duration::from_secs(598))
+            .is_none());
+        assert!(watchdog
+            .observe(Compacting, 1, Duration::from_secs(599))
+            .is_some());
+        let mut watchdog = ProtocolWatchdog::new(Compacting);
+        for revision in 1..15 {
+            assert!(watchdog
+                .observe(Compacting, revision, Duration::from_secs(revision * 60))
+                .is_none());
+        }
+        assert!(watchdog
+            .observe(Compacting, 15, Duration::from_secs(900))
+            .is_some());
+    }
 
     #[test]
     fn prolonged_compaction_reports_progress_and_keeps_waiting() {

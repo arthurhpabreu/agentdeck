@@ -1,7 +1,5 @@
 # Agent Deck
 
-![Agent Deck chat workspace in English with a synthetic example conversation](docs/images/chat-workspace-en.png)
-
 A desktop workspace for running coding agents, understanding their tasks and exploring project knowledge in one place.
 
 Agent Deck brings official Codex, Claude Code and Gemini CLIs into a Windows-first Tauri workbench with chat, terminals, an editor, Git worktrees, diffs and local memory. Authentication stays with each provider's official client.
@@ -13,16 +11,6 @@ Downloads and version-specific changes are available in [Releases](https://githu
 - **Expandable knowledge graph:** folder clusters, note search, folder filters and one- to three-hop connections. Pan, zoom, fit and bound visible nodes to keep dense graphs readable.
 - **Agent flow map:** floating agent/task cards organized by session and delegation, animated connectors, a detailed inspector and a task board. Pause animations or use system reduced motion.
 - **Reproducible checkout:** pinned lockfiles, English documentation, hygiene checks and Windows CI. Personal state, credentials, historical transcripts and build output stay outside version control.
-
-<details>
-<summary>Preview the agent map and expanded knowledge graph</summary>
-
-Screenshots use synthetic test data. The interface shown is Portuguese; English and Spanish are also available.
-
-![Agent and task flow map](docs/images/agent-flow-map.png)
-![Expanded knowledge graph with folder clusters](docs/images/knowledge-expanded.png)
-
-</details>
 
 ## Get started
 
@@ -44,7 +32,7 @@ The repository is public and can be cloned without requesting access. No API key
 | Feature | Behavior |
 | --- | --- |
 | Agents | Flow map, session list, task board, tools and provider-reported subagent relationships. |
-| Conversations | Claude/Codex chat, follow-up input, attachments, model selection, planning and native terminals. Gemini uses its terminal. |
+| Conversations | Claude/Codex chat, automatic context compaction, new chats with archived context, follow-up input, attachments, model selection, planning and native terminals. Gemini uses its terminal. |
 | Commands and skills | Searchable suggestions in chat, native startup and follow-up inputs; metadata from installed providers and local definitions. |
 | Git | Independent worktrees, status, diffs, staging, conflict resolution and recovery of preserved session folders. |
 | Knowledge | Local Markdown/Obsidian sources, source health, searchable note graph and connected-note previews. |
@@ -56,7 +44,7 @@ The repository is public and can be cloned without requesting access. No API key
 
 In **Knowledge → Documents**, choose a source and click **Expand graph**. Use **Folders** for an overview, select a folder or search by title/path, then choose **Connections** to isolate a note's neighborhood. Drag to pan, use Ctrl + scroll or zoom buttons, and use **Fit graph** to reset. With the canvas focused, arrow keys pan, `+`/`-` zoom and `0` fits.
 
-The index supports up to 3,000 notes, 16 MB of text and 256 KB per note. Compact graphs show up to 120 notes; expanded note views show up to 150, 350 or 700 matches. Folder counts and note selection cover the complete indexed source. Graph browsing does not call a model.
+The index supports up to 3,000 notes, 16 MiB of text and 1 MiB per note. Compact graphs show up to 120 notes; expanded note views show up to 150, 350 or 700 matches. Folder counts and note selection cover the complete indexed source. Graph browsing does not call a model.
 
 In **Agents**, switch between **Flow map**, **Task board** and **List**. Filter by provider, status, text or session. Click an agent or task to inspect its tools and conversation. Connectors animate during reported active execution; native transcript states are labeled as recorded history. Missing telemetry remains explicit.
 

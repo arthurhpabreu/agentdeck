@@ -7,14 +7,15 @@ import { useSessionStore } from "./sessionStore";
 import { useWorkspaceStore } from "./workspaceStore";
 import { useAgentActivityStore } from "./agentActivityStore";
 import { useAgentObservabilityStore } from "./agentObservabilityStore";
-import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, messageTextSize, residentMessages, shouldCompact } from "../services/chatCompaction";
+import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, estimateChatInputTokens, getCompactionBudget, messageTextSize, residentMessages, shouldCompact } from "../services/chatCompaction";
 import { deleteChatHistory, readChatHistoryMessage, restoreChatHistory, saveChatHistory } from "../services/chatHistory";
 
 export interface ChatAttachment { name: string; path: string; mimeType: string; size: number }
 export interface ChatUsage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
+export interface ChatContinuation { sourceSessionId: string; sourceSessionName: string; archivePath: string; messageCount: number; createdAt: number }
 export interface ChatMessage { id: string; turnId: string; role: "user" | "assistant" | "tool"; text: string; at: number; order?: number; title?: string; status?: string; attachments?: ChatAttachment[]; parentId?: string; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
-export interface ChatThread { messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number }
-export interface ChatEvent { sessionId: string; turnId: string; kind: "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
+export interface ChatThread { messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation }
+export interface ChatEvent { sessionId: string; turnId: string; kind: "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; contextWindow?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
 export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number }
 interface BufferedChatEvent extends ChatEvent { textDelta?: boolean; outputDelta?: boolean; receivedAt?: number }
 const MESSAGE_TEXT_LIMIT = 524_288;
@@ -44,7 +45,7 @@ function restore(): Record<string, ChatThread> {
     return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value && Array.isArray((value as ChatThread).messages)).map(([id, value]) => {
       const thread = value as ChatThread;
       const messages = thread.messages.map((m, i) => restoreMessage({ ...m, order: m.order ?? i }));
-      return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + estimateTokens(m.text), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined }];
+      return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + (m.parentId ? 0 : estimateTokens(m.text + (m.output ?? "") + (m.command ?? ""))), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined }];
     }));
   } catch { return {}; }
 }
@@ -70,13 +71,18 @@ export const useChatStore = create<{
     const old = threads[e.sessionId];
     if (!old?.busy || old.turnId !== e.turnId) continue;
     const at = e.receivedAt ?? Date.now();
-    let next = e.kind === "heartbeat" ? { ...old, lastHeartbeatAt: at, ...(e.pid ? { pid: e.pid } : {}) } : { ...old, updatedAt: at, lastEventAt: at, ...(e.pid ? { pid: e.pid } : {}) };
+    const connectionNotice = e.kind === "status" && !e.parentId && (e.status === "mcp-auth-warning" || e.status === "reconnecting");
+    const passiveDiagnostic = e.kind === "status" && !e.parentId && e.status === "diagnostic";
+    let next = e.kind === "heartbeat" ? { ...old, lastHeartbeatAt: at, ...(e.pid ? { pid: e.pid } : {}) } : { ...old, updatedAt: at, ...(connectionNotice || passiveDiagnostic ? {} : { lastEventAt: at }), ...(e.pid ? { pid: e.pid } : {}) };
     if (e.kind === "heartbeat") {
       if (threads === s.threads) threads = { ...threads };
       threads[e.sessionId] = next;
       continue;
     }
-    if (!e.parentId && typeof e.contextTokens === "number" && Number.isFinite(e.contextTokens) && e.contextTokens >= 0) { next.contextTokens = e.contextTokens; next.contextTokensEstimated = false; }
+    if (!e.parentId && (e.kind === "text" || e.kind === "tool" || e.kind === "done" || e.kind === "status" && ["running", "started", "finishing"].includes(e.status ?? ""))) next.recoveryNotice = undefined;
+    const measuredContext = !e.parentId && typeof e.contextTokens === "number" && Number.isFinite(e.contextTokens) && e.contextTokens >= 0;
+    if (measuredContext) { next.contextTokens = e.contextTokens; next.contextTokensEstimated = false; }
+    if (!e.parentId && typeof e.contextWindow === "number" && Number.isFinite(e.contextWindow) && e.contextWindow > 0) next.contextWindow = e.contextWindow;
     const usage = !e.parentId ? normalizeChatUsage(e.usage) : undefined;
     if (usage) {
       // Final CLI reports may be repeated or corrected. Replace this turn's contribution
@@ -96,22 +102,33 @@ export const useChatStore = create<{
     }
     if (e.model && !e.parentId) next.resolvedModel = e.model;
     if (e.kind === "session") next.providerSessionId = e.providerSessionId;
-    if (e.kind === "status" && !e.parentId) {
+    if (connectionNotice) {
+      if (e.status === "mcp-auth-warning") next.mcpAuthWarning = e.text ?? old.mcpAuthWarning;
+      else next.recoveryNotice = e.text ?? old.recoveryNotice;
+    }
+    if (passiveDiagnostic && e.text && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
+    if (e.kind === "status" && !e.parentId && !connectionNotice && !passiveDiagnostic) {
       next.status = e.status ?? old.status;
       if (e.text && e.status !== "reasoning") next.activity = e.text.slice(0, 240);
       if (e.status === "compacting") next.compacting = true;
       if (e.text && e.status !== "reasoning" && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
-      if (next.status === old.status && next.diagnostic === old.diagnostic && !usage && e.contextTokens === undefined && !e.model && next.compacting === old.compacting && at - (old.lastEventAt ?? 0) < 1000) continue;
+      if (next.status === old.status && next.diagnostic === old.diagnostic && !usage && e.contextTokens === undefined && e.contextWindow === undefined && !e.model && next.compacting === old.compacting && at - (old.lastEventAt ?? 0) < 1000) continue;
     }
     const compactionId = e.itemId ?? `${e.turnId}:compact`;
     if (e.kind === "compaction" && !e.parentId && compactionId !== old.lastCompactionId) {
       next.compacting = false; next.lastCompactionId = compactionId; next.lastCompactedAt = Date.now(); next.compactionCount = (old.compactionCount ?? 0) + 1;
-      next.contextPrompts = e.status === "before-turn" ? 1 : 0; next.contextTokens = e.status === "before-turn" ? estimateTokens(old.messages.find(m => m.id === `${e.turnId}:user`)?.text ?? "") : 0; next.contextTokensEstimated = true;
+      next.contextPrompts = e.status === "before-turn" ? 1 : 0;
+      // Native compaction measurements include the retained summary. Keep them;
+      // zero is only a fallback when the provider has not reported the new size.
+      if (!measuredContext) {
+        next.contextTokens = e.status === "before-turn" ? old.turnInputTokens ?? estimateChatInputTokens(old.messages.find(m => m.id === `${e.turnId}:user`)?.text ?? "", old.messages.find(m => m.id === `${e.turnId}:user`)?.attachments) : 0;
+        next.contextTokensEstimated = true;
+      }
     }
-    if (e.kind === "error") next.error = e.text ?? "Agent error";
+    if (e.kind === "error") { next.error = e.text ?? "Agent error"; if (e.status === "recovery-required") next.recoveryRequired = true; }
     if (e.kind === "input") {
       const accepted = old.messages.find(m => m.id === `${e.itemId}:user`);
-      if (e.status === "accepted" && accepted && accepted.status !== "accepted") { next.contextPrompts = (old.contextPrompts ?? 0) + 1; next.contextTokens = (old.contextTokens ?? 0) + estimateTokens(accepted.text); next.contextTokensEstimated = true; }
+      if (e.status === "accepted" && accepted && accepted.status !== "accepted") { next.contextPrompts = (old.contextPrompts ?? 0) + 1; if (!measuredContext) { next.contextTokens = (old.contextTokens ?? 0) + estimateChatInputTokens(accepted.text, accepted.attachments); next.contextTokensEstimated = true; } }
       next.messages = old.messages.map(m => m.id === `${e.itemId}:user` ? { ...m, status: e.status, ...(e.text ? { title: e.text } : {}) } : m);
     }
     if (e.kind === "done") next = { ...next, busy: false, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), draft: old.compacting && e.status !== "completed" ? old.draft || old.messages.find(m => m.id === `${e.turnId}:user`)?.text || "" : old.draft, messages: next.messages.map(m => m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && [undefined, "running", "inProgress", "in_progress", "started", "pending", "queued"].includes(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
@@ -124,7 +141,7 @@ export const useChatStore = create<{
       const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? at, order: previous?.order ?? old.nextMessageOrder ?? 0, title: e.title ?? previous?.title, status: e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, command: e.command ?? previous?.command, output: output === undefined ? undefined : boundedOutput(output), cwd: e.cwd ?? previous?.cwd, exitCode: e.exitCode ?? previous?.exitCode, elapsedSeconds: e.elapsedSeconds ?? previous?.elapsedSeconds, text: boundedText(text) };
       if (!previous) next.nextMessageOrder = (old.nextMessageOrder ?? 0) + 1;
       const added = e.output !== undefined ? e.outputDelta ?? e.delta ? e.output : e.output.slice(previous?.output?.length ?? 0) : e.text !== undefined ? e.textDelta ?? e.delta ? e.text : e.text.slice(previous?.text.length ?? 0) : "";
-      if (added && !message.parentId) { next.contextTokens = (next.contextTokens ?? 0) + estimateTokens(added); next.contextTokensEstimated = true; }
+      if (added && !message.parentId && !measuredContext) { next.contextTokens = (next.contextTokens ?? 0) + estimateTokens(added); next.contextTokensEstimated = true; }
       if (!e.parentId) {
         if (e.kind === "tool") { next.activity = (message.command || message.title || message.text).slice(0, 240); next.status = message.status === "blocked" ? "blocked" : "tool"; }
         else { next.status = "responding"; next.activity = undefined; }
@@ -327,6 +344,9 @@ export function ensureChatEvents() {
   }).catch(error => { subscription = undefined; throw error; });
   return subscription;
 }
+function oversizedInputError(contextWindow?: number): string {
+  return `The estimated input size reaches the provider's ${contextWindow?.toLocaleString()} token context window. Your draft is preserved. Split the request or attach the text as a file to read in sections.`;
+}
 
 export async function sendChatTurn(sessionId: string, prompt: string, attachments: ChatAttachment[]): Promise<boolean> {
   await chatHistoryReady;
@@ -334,17 +354,25 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   const old = useChatStore.getState().threads[sessionId] ?? emptyThread;
   if (!session || usePtyRuntimeStore.getState().sessions[sessionId] || (!prompt.trim() && !attachments.length)) return false;
   if (old.busy) return sendChatSupplement(sessionId, prompt, attachments);
+  const providerSessionId = session.providerSessionId || old.providerSessionId || undefined;
+  const goal = old.goal?.trim() ?? "";
+  const nativeCommand = prompt.trimStart().startsWith("/");
+  const withGoal = () => goal ? `Conversation objective: ${goal}\n\n${prompt.trim()}` : `The previous conversation objective has been cleared. Follow the current request.\n\n${prompt.trim()}`;
+  let goalChanged = goal !== (old.lastSentGoal ?? "") && !nativeCommand;
+  let transmittedPrompt = goalChanged ? withGoal() : prompt.trim();
+  const compactBeforeTurn = session.runner.type !== "gemini" && shouldCompact(old, transmittedPrompt, providerSessionId, attachments);
+  if (compactBeforeTurn && goal && !nativeCommand) { goalChanged = true; transmittedPrompt = withGoal(); }
+  const budget = getCompactionBudget(old, transmittedPrompt, attachments);
+  if (!nativeCommand && budget.promptTooLarge) {
+    useChatStore.getState().patch(sessionId, { inputError: oversizedInputError(budget.contextWindow), draft: prompt });
+    return false;
+  }
   let releaseLaunch!: () => void;
   const launching = new Promise<void>(resolve => { releaseLaunch = resolve; });
   launches.set(sessionId, launching);
   const turnId = crypto.randomUUID();
-  const providerSessionId = session.providerSessionId || old.providerSessionId || undefined;
-  const compactBeforeTurn = session.runner.type !== "gemini" && shouldCompact(old, prompt, providerSessionId);
-  const goal = old.goal?.trim() ?? "";
-  const goalChanged = (compactBeforeTurn && !!goal || goal !== (old.lastSentGoal ?? "")) && !prompt.trimStart().startsWith("/");
-  const transmittedPrompt = goalChanged ? (goal ? `Conversation objective: ${goal}\n\n${prompt.trim()}` : `The previous conversation objective has been cleared. Follow the current request.\n\n${prompt.trim()}`) : prompt.trim();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments };
-  useChatStore.getState().patch(sessionId, { busy: true, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: (old.contextTokens ?? 0) + estimateTokens(prompt), contextTokensEstimated: true, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, diagnostic: undefined, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
+  useChatStore.getState().patch(sessionId, { busy: true, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
   useSessionStore.getState().updateSession(sessionId, { status: "running", currentTask: prompt.trim() });
   if (!old.messages.length) useSessionStore.getState().setAutomaticSessionName(sessionId, prompt.trim().slice(0, 44) || attachments[0]?.name || "");
   useAgentActivityStore.getState().record(sessionId, { phase: "starting", startedAt: Date.now(), endedAt: undefined, error: undefined, command: session.runner.type === "codex" ? "codex app-server" : "claude --print", pid: undefined }, "activity.starting");
@@ -375,9 +403,14 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
   const old=useChatStore.getState().threads[sessionId];
   const session=useSessionStore.getState().sessions.find(s=>s.id===sessionId);
   if (!old?.busy || !old.turnId || !session) return false;
+  const budget = getCompactionBudget(old, prompt.trim(), attachments);
+  if (budget.promptTooLarge) {
+    useChatStore.getState().patch(sessionId, { inputError: oversizedInputError(budget.contextWindow), draft: prompt });
+    return false;
+  }
   const messageId=crypto.randomUUID();
   const message:ChatMessage={id:`${messageId}:user`,turnId:old.turnId,role:"user",text:prompt.trim(),attachments,at:Date.now(),status:"sending"};
-  useChatStore.getState().patch(sessionId,{draft:"",messages:[...old.messages,message]});
+  useChatStore.getState().patch(sessionId,{draft:"",inputError:undefined,messages:[...old.messages,message]});
   try {
     await launches.get(sessionId);
     const current=useChatStore.getState().threads[sessionId];

@@ -7,6 +7,7 @@ import { compactionCases } from "./compaction-cases";
 import { chatActivityCases } from "./chat-activity-cases";
 import { chatReliabilityCases } from "./chat-reliability-cases";
 import { workspaceColorCases } from "./workspace-color-cases";
+import { continuityCases } from "./continuity-cases";
 
 effortCases(setup, openSession);
 commandCases(setup);
@@ -16,6 +17,7 @@ compactionCases(setup, openSession);
 chatActivityCases(setup, openSession);
 chatReliabilityCases(setup, openSession);
 workspaceColorCases(setup);
+continuityCases(setup, openSession);
 
 test("titlebar CLI indicator opens update management and follows confirmed results", async ({ page }) => {
   await setup(page);

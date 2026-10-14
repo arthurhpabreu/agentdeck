@@ -14,11 +14,25 @@ Either condition triggers compaction. The prompt limit accepts 5–100; the toke
 limit accepts 8,000–500,000. These are application thresholds, not a guarantee
 that every selected model supports that context size.
 
+When the provider reports its model context window, the effective token threshold
+is the lower of the configured limit and that window minus a reserve for replies,
+tool results and provider instructions. The next request's text, changed conversation
+goal and attachment paths count toward the estimate. Files are passed by path;
+their contents count when read by the agent. Image tokenization cannot be inferred
+reliably from file size. The context control shows the reported window, effective
+threshold, reserve and projected context including the current draft.
+
+A request whose text alone exceeds a known model window is kept in the composer
+without launching a turn. Attach reference text as a file to read in sections, or
+split the request. An unknown provider window remains explicitly unknown rather
+than being guessed from the model name.
+
 After a confirmed compaction, the token threshold waits until five new prompts
 have been accepted before it can trigger another application-requested compaction.
 This prevents compacting every request when a provider's summary or subsequent
-tool output remains above the configured limit. The prompt threshold still applies;
-provider-native automatic compaction remains independent of this interval.
+tool output remains above the configured limit. Pressure against a reported model
+window and substantial new input bypass this interval. The prompt threshold still
+applies; provider-native automatic compaction remains independent of this interval.
 
 The enabled old default pair (20 prompts / 64,000 tokens) migrates once to the new
 defaults. Other custom limits and explicit opt-out remain unchanged. Policies saved
@@ -44,7 +58,9 @@ by the provider's measured reading or main-agent output.
 
 ## Continuation and failures
 
-Codex resumes the same thread and requests `thread/compact/start`. Its scheduling
+Codex resumes the same thread with `excludeTurns: true`, retaining native model
+context while avoiding retransmission of its full transcript on every response.
+It requests `thread/compact/start`. Its scheduling
 acknowledgment is insufficient: Agent Deck waits for a confirmed compaction item
 and the successful completion of its turn before sending the user request.
 Claude Code receives `/compact` in its resumed streaming session; Agent Deck waits
@@ -56,12 +72,37 @@ remains available to the user.
 A failure, unsupported CLI command or a finished compaction without confirmation
 does not start a fresh provider conversation or send the pending task. The pending
 request is restored in the composer. After 180 seconds, an ongoing compaction
-reports that it is still waiting; elapsed time alone does not terminate it.
+reports that it is still waiting. Compaction stops after five minutes without
+meaningful protocol progress or fifteen minutes total, leaving the conversation
+and pending request available for recovery.
 Retry after correcting a provider error,
 or disable automatic compaction to continue using native context management.
 Stopping during compaction terminates the current provider process as it does
 during a normal response. Counters reset only on confirmed compaction. Lifetime
 usage remains cumulative and includes compaction usage when the provider reports it.
+
+## Starting a new chat with continuity
+
+Use **New chat with context** in the chat header or conversation-context control
+when a separate conversation is useful, or the existing thread cannot recover.
+The default for ongoing work remains compacting and resuming the existing thread.
+Opening a new chat is a deliberate user action and does not run a model request.
+
+Agent Deck first commits and reads the full locally stored transcript, then writes
+a continuation archive into its local attachment storage. It preserves message
+text, tool commands/results, attachment references, original session metadata,
+goal and pending draft. Large archives use binary parts with a JSON manifest so
+the UTF-8 transcript can be reconstructed without shortening it. Failed archive
+writes do not create a new chat or replace the original draft.
+
+The new chat uses the same provider, model, permissions, working directory and
+existing worktree, but gets a separate provider conversation ID on its first turn.
+Its editable continuation draft contains selected original and recent messages,
+the project goal and references to the complete local archive. It instructs the
+agent to consult that archive selectively, check existing results and resume
+unfinished work. The original conversation stays available from the continuation
+banner. This is an excerpt plus an accessible archive, not a promise that every
+old token fits into the new model window or that hidden provider state is copied.
 
 Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-server)
 and [Claude Agent SDK commands](https://code.claude.com/docs/en/agent-sdk/slash-commands).
@@ -80,6 +121,20 @@ A live process is not proof that a task is advancing. Quiet turns expose **Check
 process** and **Stop response** controls. Checking the native process can recover a
 completion event missed by the interface without launching another model request.
 
+Codex connection setup and thread loading each have a two-minute deadline. A
+missing turn-start acknowledgment reports uncertain acceptance; recovery prepares
+a follow-up draft instead of replaying the original request. Already running
+model turns and tools have no new inactivity deadline. Codex's native retry
+notifications remain recoverable while the provider retries the connection.
+After confirmed native completion and delivery of queued inputs, a transport
+that fails to exit is closed after ten seconds without discarding its result.
+
+An MCP OAuth refresh failure, such as a disconnected Miro login, is displayed as
+an integration warning with the connector name. It is separate from model errors
+and does not reset meaningful-activity timers or overwrite the current work state.
+Repair that connector's login in the native terminal. Compacting or starting a
+new chat does not repair an expired external login.
+
 ## Local chat archive
 
 Older chat messages migrate from `agentdeck-chat-v1` localStorage into the local
@@ -94,7 +149,11 @@ commands. Completed tools can also leave the live store during a long active tur
 the current input, latest assistant response and running tools remain resident.
 Late updates reload the archived item before applying new output, retaining its
 identity and order. The UI always
-displays at most 80 messages or search results. **View earlier messages** loads
+displays at most 80 messages or search results and bounds each page to roughly
+160,000 stored text characters, including tool output. The latest message stays
+complete even when it alone exceeds that budget. Large messages therefore use
+smaller pages instead of forcing the browser to lay out an entire batch of giant
+responses at once. **View earlier messages** loads
 another page; **Return to latest messages** restores the current conversation view.
 Search includes archived text, titles and attachment names. Markdown export includes
 the full transcript. Very large responses display as plain text, retaining copy

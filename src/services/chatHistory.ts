@@ -57,6 +57,16 @@ export async function readChatHistory(id: string, before?: number, limit = HISTO
     request.onsuccess = () => { const cursor = request.result; if (!cursor || result.length >= limit) { resolve(result.reverse()); return; } const { sessionId: _, ...message } = cursor.value; result.push(message); cursor.continue(); };
   });
 }
+/** Merge the committed transcript with the latest resident edits, never an incomplete archive. */
+export async function readCompleteChatHistory(id: string, resident: ChatMessage[], archivedCount = 0): Promise<ChatMessage[]> {
+  const archived = await readChatHistory(id, undefined, Number.MAX_SAFE_INTEGER).catch(error => {
+    if (archivedCount > 0) throw error;
+    return [];
+  });
+  const messages = [...new Map([...archived, ...resident].map(message => [message.id, message])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  if (messages.length < resident.length + archivedCount) throw new Error("The complete conversation archive is not available. The original chat is preserved; retry when local history storage is available.");
+  return messages;
+}
 /** Recover a committed item before applying a late update to an evicted active-turn message. */
 export async function readChatHistoryMessage(id: string, messageId: string): Promise<ChatMessage | undefined> {
   const db = await openDatabase();
