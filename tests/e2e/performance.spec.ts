@@ -45,23 +45,27 @@ test("slow native snapshots cannot overwrite a newer confirmed local revision", 
   await page.goto("/snapshot-fixture");
   const result = await page.evaluate(async () => {
     const writes: string[] = []; let release: (() => void) | undefined;
+    let firstReady!: () => void, secondFinished!: () => void;
+    const firstWrite = new Promise<void>(resolve => { firstReady = resolve; });
+    const secondWrite = new Promise<void>(resolve => { secondFinished = resolve; });
     const w = window as any;
     w.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
       if (command !== "save_ui_state") return null;
       writes.push(args.value);
-      if (writes.length === 1) await new Promise<void>(resolve => { release = resolve; });
+      if (writes.length === 1) await new Promise<void>(resolve => { release = resolve; firstReady(); });
+      else secondFinished();
       return null;
     } };
     const modulePath = "/src/store/persistStorage.ts";
     const { mirroredPersistStorage: storage } = await import(/* @vite-ignore */ modulePath);
     storage.setItem("snapshot-fixture", "revision-1");
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await firstWrite;
     storage.setItem("snapshot-fixture", "revision-2");
     storage.setItem("snapshot-fixture", "confirmed-revision-3");
     const immediate = localStorage.getItem("snapshot-fixture");
     const whileBlocked = [...writes];
     release!();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await secondWrite;
     return { immediate, whileBlocked, writes };
   });
   expect(result.immediate).toBe("confirmed-revision-3");
