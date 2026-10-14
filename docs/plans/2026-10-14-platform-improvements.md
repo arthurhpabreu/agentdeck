@@ -1,8 +1,10 @@
 # Plano de ajustes do Agent Deck e isolamento de conhecimento
 
-Base: Agent Deck 0.7.0. Data: 14 de outubro de 2026. Implementação do marco 0.8: versão 0.8.1, com validação e publicação em andamento.
+Base: Agent Deck 0.7.0. Data: 14 de outubro de 2026. Implementação do marco 0.8: versão 0.8.1, validada e publicada para Windows x64 e macOS universal.
 
 Os recursos deste plano foram implementados. Consulte [política de fontes](../source-policy.md), [inventário de reorganização](../presentation-order.md), [medições de performance](../validation/0.8.0-performance.md) e [notas da versão](../releases/0.8.1.md). O aviso de possível travamento passa a esperar quatro minutos sem atividade, conforme o ajuste solicitado durante a implementação.
+
+Entrega: [release 0.8.1 no GitHub](https://github.com/arthurhpabreu/agentdeck/releases/tag/v0.8.1), com quatro pacotes de instalação, licença e checksums. Os testes das três plataformas e a conferência dos downloads estão registrados na [validação da release](../validation/0.8.1-release.md).
 
 O plano reúne o cadastro de vaults globais selecionáveis, os seis ajustes escolhidos por Arthur, melhorias de performance e reorganização visual por arrastar em todas as listas de coleções. As entregas aproveitam worktrees, diffs, busca rápida, notificações, histórico e retomada já existentes.
 
