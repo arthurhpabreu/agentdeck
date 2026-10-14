@@ -529,20 +529,40 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn command_drains_both_pipes_and_reports_stderr_failure() {
-        let script = "[Console]::Out.Write(('x' * 262144)); [Console]::Error.Write(('y' * 262144)); [Console]::Error.WriteLine('ENOSPC'); exit 17";
+        let executable = std::env::current_exe().unwrap();
         let result = run_bounded(
-            "powershell.exe",
+            executable.to_str().unwrap(),
             &[
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                script.into(),
+                "--ignored".into(),
+                "--exact".into(),
+                "cli_updates::tests::pipe_output_fixture".into(),
+                "--nocapture".into(),
             ],
-            // Cold Windows PowerShell startup can exceed ten seconds on a
-            // shared CI runner. Keep the drain/error assertions unchanged.
             Duration::from_secs(20),
         );
         assert_eq!(result.unwrap_err(), "cli_disk_full:exit=17");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "Child helper invoked only by the bounded-output parent test"]
+    fn pipe_output_fixture() {
+        use std::io::Write;
+        let args: Vec<_> = std::env::args().collect();
+        if !args.iter().any(|arg| arg == "--exact")
+            || !args
+                .iter()
+                .any(|arg| arg == "cli_updates::tests::pipe_output_fixture")
+        {
+            return;
+        }
+        // Exceed both pipe capacities without shell startup or installed tools.
+        std::io::stdout().write_all(&vec![b'x'; 262144]).unwrap();
+        std::io::stderr().write_all(&vec![b'y'; 262144]).unwrap();
+        std::io::stderr().write_all(b"ENOSPC\n").unwrap();
+        std::io::stdout().flush().unwrap();
+        std::io::stderr().flush().unwrap();
+        std::process::exit(17);
     }
 
     #[test]
