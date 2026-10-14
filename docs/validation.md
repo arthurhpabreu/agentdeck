@@ -2,17 +2,23 @@
 
 ## 0.7.0
 
-Validated on October 14, 2026 with native Windows x64, macOS Apple Silicon and macOS Intel jobs in the [cross-platform preview](https://github.com/arthurhpabreu/agentdeck/actions/runs/38593418301).
+Validated on October 14, 2026 with native Windows x64, macOS Apple Silicon and macOS Intel jobs in the [cross-platform preview](https://github.com/arthurhpabreu/agentdeck/actions/runs/38603037958).
 
 | Check | Result |
 | --- | --- |
-| Frontend, translations, repository/version checks and Rust formatting | Passed on all three native runners; 474 EN/PT/ES translation keys. The four application manifests agree on 0.7.0. Existing Vite chunk-size and mixed-import warnings remain. |
-| Native Rust library suite | 205 passed, zero failures and six optional tests ignored on each platform. |
+| Frontend, translations, repository/version checks and Rust formatting | Passed on all three native runners; 475 EN/PT/ES translation keys. The four application manifests agree on 0.7.0. Existing Vite chunk-size and mixed-import warnings remain. |
+| Native Rust library suite | 211 passed, zero failures and six optional tests ignored on each platform. |
 | Windows Chromium interface suite | All 170 scenarios passed, including chat continuity, context controls, updater, terminal, navigation and authentication notice regressions. |
 | macOS WebKit interface smoke | All nine tagged scenarios passed on both Apple Silicon and Intel. Covers native platform precedence, login shells, Command shortcuts, clipboard Unicode/Ctrl+C, Mac controls, localized DMG updates, POSIX resume and missing `randomUUID`. |
 | Authentication notice lifecycle | Focused Chromium and WebKit checks passed: eight-second expiry, manual dismissal, duplicate suppression, new real errors, fatal-error retention and legacy localStorage/IndexedDB restoration without stale notices. |
 | Native Unix callbacks | Both Macs passed real socket Unicode delivery, fast sender disconnection, incomplete-peer deadlines, bounded reads and partial-write/backpressure tests. No ignored socket tests. |
 | Custom shell discovery | Both Macs passed literal fish argument and POSIX path tests, including spaces, apostrophes and shell metacharacters. |
+| Window placement | Eight native regression cases passed, including small displays, restored bounds, Retina, removed monitors and unavailable geometry. The public AppKit/Core Graphics inspection also passed in the [native diagnostic](https://github.com/arthurhpabreu/agentdeck/actions/runs/38602845720). |
+| Universal Mac bundle | The same packaged application passed native checks on Apple Silicon and Intel: bundle identifier/version, arm64+x86_64 slices, macOS 11.0 deployment target in both Mach-O slices, unchanged bundled LICENSE, strict code-signature validation and DMG verification. The signature is ad-hoc and the package is not notarized. |
+| Packaged Mac execution | Both machines ran the actual GUI for 20 seconds with a Finder/Dock reopen event, no fatal startup logs or crash reports. Native window geometry stayed within the menu/Dock work area; both desktop captures were visually inspected. Apple Silicon used a 1024×768 display and Intel used 1920×1080. |
+| Packaged native helpers | Both architectures passed Claude statusline/quota parsing, private-field sanitization, owner-only cache permissions and Unicode delivery through the Codex and Claude Unix-socket hook bridges. These checks use the real bundled executable with isolated fixtures. |
+| Windows installers | Both generated x64 installers passed read-only container and metadata checks: version 0.7.0, publisher, bundled application/license and unchanged MSI upgrade identity. No installer was executed. |
+| Preview package integrity | All four downloaded packages and LICENSE passed the staged SHA-256 manifest check. macOS archive gzip and DMG UDIF footer checks passed. The tagged release workflow creates its own aggregate manifest for the final packages. |
 
 Browser tests mock native commands, while the Rust suite exercises native process and socket fixtures. They do not authenticate provider accounts or send model requests. Native CI uses macOS 15; the deployment target is macOS 11.0 with a documented Safari/WebKit 16.4+ requirement. These checks do not establish operation on an unpatched Big Sur installation or an interactive clean-machine upgrade.
 
