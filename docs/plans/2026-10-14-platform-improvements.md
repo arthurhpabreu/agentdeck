@@ -1,8 +1,8 @@
 # Plano de ajustes do Agent Deck e isolamento de conhecimento
 
-Base: Agent Deck 0.7.0. Data: 14 de outubro de 2026. Implementação: versão 0.8.0, com validação e publicação em andamento.
+Base: Agent Deck 0.7.0. Data: 14 de outubro de 2026. Implementação do marco 0.8: versão 0.8.1, com validação e publicação em andamento.
 
-Os recursos deste plano foram implementados. Consulte [política de fontes](../source-policy.md), [inventário de reorganização](../presentation-order.md), [medições de performance](../validation/0.8.0-performance.md) e [notas da versão](../releases/0.8.0.md). O aviso de possível travamento passa a esperar quatro minutos sem atividade, conforme o ajuste solicitado durante a implementação.
+Os recursos deste plano foram implementados. Consulte [política de fontes](../source-policy.md), [inventário de reorganização](../presentation-order.md), [medições de performance](../validation/0.8.0-performance.md) e [notas da versão](../releases/0.8.1.md). O aviso de possível travamento passa a esperar quatro minutos sem atividade, conforme o ajuste solicitado durante a implementação.
 
 O plano reúne o cadastro de vaults globais selecionáveis, os seis ajustes escolhidos por Arthur, melhorias de performance e reorganização visual por arrastar em todas as listas de coleções. As entregas aproveitam worktrees, diffs, busca rápida, notificações, histórico e retomada já existentes.
 
@@ -29,7 +29,7 @@ Cada fonte terá modo **Desativada**, **Disponível para consulta** ou **Context
 
 ### Diagnóstico e correção de escopo
 
-O diagnóstico abaixo registra o comportamento da base 0.7.0, antes dos ajustes de isolamento implementados na 0.8.0.
+O diagnóstico abaixo registra o comportamento da base 0.7.0, antes dos ajustes de isolamento implementados no marco 0.8.
 
 Hoje, a recuperação pode combinar a fonte do projeto com o vault global. Selecionar um vault próprio ou desmarcar apenas Usar preferências globais aprovadas não bloqueia toda inclusão global. A curadoria também pode promover uma preferência considerada geral ou recorrente em dois projetos. Esse desenho permite que trechos OMA entrem em Critical FPS quando houver correspondência; identificar entregas anteriores exige conferir registros de fontes.
 

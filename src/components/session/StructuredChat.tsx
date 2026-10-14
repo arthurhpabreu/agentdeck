@@ -25,7 +25,6 @@ import { boundedChatMessages } from "../../services/chatCompaction";
 import { matchesChatMessage, readChatHistory, searchChatHistory } from "../../services/chatHistory";
 import { ChatToolCard } from "./ChatToolCard";
 import { ChatTurnActivity } from "./ChatTurnActivity";
-import { continuationNeedsSourceReview, createChatContinuation } from "../../services/chatContinuity";
 import { showSessionSurface } from "../../services/workbenchCommands";
 import { McpAuthNotice } from "./McpAuthNotice";
 import { ChatRecoveryControl } from "./ChatRecoveryControl";
@@ -131,7 +130,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   const continueChat = async () => {
     if (nativeLive || thread.busy || continuingRef.current || uploading || attachments.length || session.runner.type === "gemini") return;
     continuingRef.current = true; setContinuing(true); setError("");
-    try { if (await continuationNeedsSourceReview(session.id)) window.dispatchEvent(new CustomEvent("agentdeck-correct-sources", { detail: { sessionId: session.id } })); else { const id = await createChatContinuation(session.id, locale); showSessionSurface(id); } }
+    try { window.dispatchEvent(new CustomEvent("agentdeck-correct-sources", { detail: { sessionId: session.id } })); }
     catch (failure) { setError(String(failure)); }
     finally { continuingRef.current = false; setContinuing(false); }
   };

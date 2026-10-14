@@ -48,6 +48,54 @@ export function contextExcerpt(text: string, limit: number, omitted: string): st
   if (tail > 0 && /[\uD800-\uDBFF]/.test(text[tail - 1]) && /[\uDC00-\uDFFF]/.test(text[tail])) tail++;
   return `${text.slice(0, head)}\n${omitted}\n${text.slice(tail)}`;
 }
+function reviewedContextSanitizer(archivePaths: Set<string>): (text: string) => string {
+  const copies = [copy("en"), copy("pt"), copy("es")];
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const labels = ["Previous archive", ...copies.map(old => old.archive)].map(escape).join("|");
+  const archiveLine = new RegExp(`^\\s*(?:${labels})\\s*:`, "i");
+  const archiveMarker = new RegExp(`(?:${labels})\\s*:`, "i");
+  const pathPatterns = [...archivePaths].filter(Boolean).map(path => {
+    const windows = /^[a-z]:[/\\]|^[/\\]{2}/i.test(path);
+    const canonical = path.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "");
+    const prefix = /^[a-z]:/i.test(canonical) ? "(?:[/\\\\]+\\?[/\\\\]+)?" : canonical.startsWith("\\\\") ? "(?:[/\\\\]+\\?[/\\\\]+UNC)?" : "";
+    return { windows, pattern: new RegExp(prefix + canonical.split(/[/\\]+/).map(escape).join("[/\\\\]+"), windows ? "gi" : "g") };
+  });
+  const MAX_DEPTH = 8;
+  const clean = (text: string, depth = 0): string => {
+    // Match full known paths, including repeated JSON escapes, without removing similarly named files.
+    for (const old of copies) text = text.split(old.instructions).join("");
+    for (const { pattern, windows } of pathPatterns) text = text.replace(pattern, (match: string, offset: number, original: string) => {
+      const before = original[offset - 1], after = original[offset + match.length];
+      if (before && /[\p{L}\p{N}._~:-]/u.test(before) || !windows && before && /[/\\]/.test(before)) return match;
+      if (after && /[\p{L}\p{N}._~/-]/u.test(after) || after === "\\" && !/^\\+["']/.test(original.slice(offset + match.length))) return match;
+      return "";
+    });
+    return text.split(/\r?\n/).map(line => {
+      if (archiveLine.test(line)) return "";
+      const trimmed = line.trim();
+      if (!/^[\[{"]/.test(trimmed)) return line;
+      // Deep legacy wrappers cannot be safely relayed; unrelated text stays available for review.
+      if (depth >= MAX_DEPTH) return archiveMarker.test(line) ? "" : line;
+      try {
+        const value: unknown = JSON.parse(trimmed);
+        const result = cleanValue(value, depth + 1);
+        return result === value ? line : JSON.stringify(result);
+      } catch { return line; }
+    }).join("\n").trim();
+  };
+  const cleanValue = (value: unknown, depth: number): unknown => {
+    if (typeof value === "string") return clean(value, depth);
+    if (value === null || typeof value !== "object") return value;
+    if (depth >= MAX_DEPTH) return archiveMarker.test(JSON.stringify(value)) ? null : value;
+    if (Array.isArray(value)) {
+      const result = value.map(item => cleanValue(item, depth + 1));
+      return result.some((item, index) => item !== value[index]) ? result : value;
+    }
+    const entries = Object.entries(value), result = entries.map(([key, item]) => [key, cleanValue(item, depth + 1)] as const);
+    return result.some(([, item], index) => item !== entries[index][1]) ? Object.fromEntries(result) : value;
+  };
+  return text => clean(text);
+}
 /** Historical excerpts only enter a fresh provider after the user reviews this draft. */
 export async function prepareReviewedContext(sessionId: string, locale: string, checkpointThread?: ChatThread): Promise<string> {
   await persistChatHistory();
@@ -57,7 +105,14 @@ export async function prepareReviewedContext(sessionId: string, locale: string, 
   const main = messages.filter(message => !message.parentId && message.role !== "tool");
   const users = main.filter(message => message.role === "user"), assistants = main.filter(message => message.role === "assistant");
   const selected = new Set([users[0]?.id, ...users.slice(-3).map(message => message.id), ...assistants.slice(-2).map(message => message.id)]);
-  const c = copy(locale), excerpt = (text: string, limit: number) => contextExcerpt(text, limit, c.omitted);
+  const archivePaths = new Set<string>(); const seen = new Set<string>();
+  let ancestor: ChatThread | undefined = thread;
+  while (ancestor?.continuation && !seen.has(ancestor.continuation.sourceSessionId)) {
+    archivePaths.add(ancestor.continuation.archivePath); seen.add(ancestor.continuation.sourceSessionId);
+    ancestor = useChatStore.getState().threads[ancestor.continuation.sourceSessionId];
+  }
+  const clean = reviewedContextSanitizer(archivePaths);
+  const c = copy(locale), excerpt = (text: string, limit: number) => contextExcerpt(clean(text), limit, c.omitted);
   return [thread.goal ? `${c.objective}:\n${excerpt(thread.goal, 6000)}` : "", ...main.filter(message => selected.has(message.id)).map(message => JSON.stringify({ role: message.role, text: excerpt(message.text, 3000) })), thread.draft ? `${c.pending}:\n${excerpt(thread.draft, 12000)}` : ""].filter(Boolean).join("\n\n");
 }
 /** Extractive handoff: no model call, invented decisions or silent transcript loss. */
@@ -121,7 +176,7 @@ export async function createChatContinuation(sessionId: string, locale = getI18n
     let thread = useChatStore.getState().threads[sessionId] ?? emptyThread;
     if (!session) throw new Error(c.missing);
     if (thread.busy || usePtyRuntimeStore.getState().sessions[sessionId]) throw new Error(c.running);
-    if (!options && await continuationNeedsSourceReview(sessionId)) throw new Error(locale.startsWith("pt") ? "Revise o contexto antes de transferir esta conversa para as fontes atuais." : locale.startsWith("es") ? "Revisa el contexto antes de transferir esta conversación a las fuentes actuales." : "Review the context before transferring this conversation to the current sources.");
+    if (!options || typeof options.reviewedDraft !== "string") throw new Error(locale.startsWith("pt") ? "Revise o contexto antes de transferir esta conversa para as fontes atuais." : locale.startsWith("es") ? "Revisa el contexto antes de transferir esta conversación a las fuentes actuales." : "Review the context before transferring this conversation to the current sources.");
     await persistChatHistory();
     if (useChatStore.getState().storageError) throw new Error(c.failed);
     session = useSessionStore.getState().sessions.find(value => value.id === sessionId);
@@ -146,9 +201,9 @@ export async function createChatContinuation(sessionId: string, locale = getI18n
     useSessionStore.getState().markWorktreeReady(id);
     useSourceDeliveryStore.getState().start(id, { hasHistory: false });
     useChatStore.getState().patch(id, {
-      ...emptyThread, goal: options ? undefined : thread.goal, compactionPolicy: thread.compactionPolicy ? { ...thread.compactionPolicy } : undefined,
+      ...emptyThread, goal: undefined, compactionPolicy: thread.compactionPolicy ? { ...thread.compactionPolicy } : undefined,
       continuation: { sourceSessionId: sessionId, sourceSessionName: session.name, archivePath, messageCount: messages.length, createdAt, ...(options ? { reviewedContext: true } : {}) },
-      draft: options ? options.reviewedDraft : buildContinuityDraft(session, thread, messages, archivePath, locale),
+      draft: options.reviewedDraft,
       ...(options?.checkpointThread ? { messages: options.checkpointThread.messages.map(message => ({ ...message })), archivedCount: 0 } : {}),
       contextPrompts: 0, contextTokens: 0, contextTokensEstimated: true,
     });

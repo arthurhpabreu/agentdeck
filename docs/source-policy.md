@@ -14,6 +14,8 @@ The sources panel follows the conversation owner and shows prepared versus deliv
 
 Legacy global preferences initially have no universal approval. In Shared memory → Global, open a note's History and applicability controls and explicitly confirm universal personal scope. Selecting a stack restriction revokes that approval. The confirmation preserves the original note ID, origin and revision history; a project/conversation must also opt into personal preferences before retrieval.
 
+Every context transfer into a new conversation uses a reviewed textual draft. Known-source evidence does not automatically forward the archived transcript; legacy archive-reading instructions and known archive references are removed from the proposed draft. The original files and transcript remain available locally. Source selection does not rewrite historical project notes; existing memories can be inspected and corrected through the memory panel.
+
 ## Migration and rollback
 
 Knowledge configuration uses schema version 2. Migration makes a verified, durable `v1.backup.json` sibling before replacing associations atomically. Legacy explicitly configured project roots retain their association; the former global root becomes a catalog item awaiting selection. A partial or mismatched existing backup stops migration rather than overwriting evidence.
