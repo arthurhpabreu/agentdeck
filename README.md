@@ -117,6 +117,3 @@ If Agent Deck is useful to you, you can support its development with a coffee.
 <a href="https://buymeacoffee.com/tuxao">
   <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="40" width="144">
 </a>
-- **Selectable knowledge vaults:** project defaults and custom conversation sources, explicit shared collections and universal preference approval. Source changes retain delivery evidence and offer a fresh conversation with reviewed context.
-- **Organize and act:** persistent dragging across collections, a Needs you inbox, batched diff comments, contextual file/favorite navigation and recoverable checkpoints.
-- **Streaming performance:** deduplicated durable saves, bounded terminal flow and inactive view retention preserve input, cancellation and conversation continuity under load.
