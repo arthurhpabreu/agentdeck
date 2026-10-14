@@ -1,5 +1,21 @@
 # Validation evidence
 
+## 0.7.0
+
+Validated on October 14, 2026 with native Windows x64, macOS Apple Silicon and macOS Intel jobs in the [cross-platform preview](https://github.com/arthurhpabreu/agentdeck/actions/runs/38593418301).
+
+| Check | Result |
+| --- | --- |
+| Frontend, translations, repository/version checks and Rust formatting | Passed on all three native runners; 474 EN/PT/ES translation keys. The four application manifests agree on 0.7.0. Existing Vite chunk-size and mixed-import warnings remain. |
+| Native Rust library suite | 205 passed, zero failures and six optional tests ignored on each platform. |
+| Windows Chromium interface suite | All 170 scenarios passed, including chat continuity, context controls, updater, terminal, navigation and authentication notice regressions. |
+| macOS WebKit interface smoke | All nine tagged scenarios passed on both Apple Silicon and Intel. Covers native platform precedence, login shells, Command shortcuts, clipboard Unicode/Ctrl+C, Mac controls, localized DMG updates, POSIX resume and missing `randomUUID`. |
+| Authentication notice lifecycle | Focused Chromium and WebKit checks passed: eight-second expiry, manual dismissal, duplicate suppression, new real errors, fatal-error retention and legacy localStorage/IndexedDB restoration without stale notices. |
+| Native Unix callbacks | Both Macs passed real socket Unicode delivery, fast sender disconnection, incomplete-peer deadlines, bounded reads and partial-write/backpressure tests. No ignored socket tests. |
+| Custom shell discovery | Both Macs passed literal fish argument and POSIX path tests, including spaces, apostrophes and shell metacharacters. |
+
+Browser tests mock native commands, while the Rust suite exercises native process and socket fixtures. They do not authenticate provider accounts or send model requests. Native CI uses macOS 15; the deployment target is macOS 11.0 with a documented Safari/WebKit 16.4+ requirement. These checks do not establish operation on an unpatched Big Sur installation or an interactive clean-machine upgrade.
+
 ## 0.6.8
 
 Validated locally on Windows on October 14, 2026.

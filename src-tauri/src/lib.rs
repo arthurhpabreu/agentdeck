@@ -101,10 +101,16 @@ pub fn run() {
             }
 
             // Precreate a hidden popup so the WebView can load in the background.
-            // Restore saved dimensions, falling back to defaults.
+            // Restore dimensions within the macOS visible area before creating the WebView.
+            #[cfg(target_os = "macos")]
+            let ((popup_w, popup_h), (popup_min_w, popup_min_h)) =
+                window::initial_popup_geometry(app.handle());
+            #[cfg(not(target_os = "macos"))]
             let (popup_w, popup_h) = window::load_bounds(app.handle())
                 .map(|b| (b.width.max(1000.0), b.height.max(680.0)))
                 .unwrap_or((1360.0, 900.0));
+            #[cfg(not(target_os = "macos"))]
+            let (popup_min_w, popup_min_h) = (940.0, 640.0);
             let window_builder = WebviewWindowBuilder::new(
                 app.handle(),
                 "popup",
@@ -115,7 +121,7 @@ pub fn run() {
             .decorations(false)
             .always_on_top(false)
             .shadow(true)
-            .min_inner_size(940.0, 640.0)
+            .min_inner_size(popup_min_w, popup_min_h)
             .resizable(true)
             .skip_taskbar(false)
             .visible(false);

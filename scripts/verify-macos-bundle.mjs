@@ -146,6 +146,18 @@ if (process.argv.includes("--smoke")) {
     for (const name of newReports) fs.copyFileSync(path.join(crashDirectory, name), path.join(reportDirectory, name));
     if (newReports.length) throw new Error(`Packaged GUI generated crash reports: ${newReports.join(", ")}`);
     const screenshot = spawnSync("/usr/sbin/screencapture", ["-x", path.join(reportDirectory, "desktop.png")], { timeout: 10_000, encoding: "utf8" });
+    const geometry = JSON.parse(capture("/usr/bin/osascript", ["-l", "JavaScript", path.join(repositoryRoot, "scripts/inspect-macos-window.js"), String(child.pid)]));
+    fs.writeFileSync(path.join(reportDirectory, "window-geometry.json"), `${JSON.stringify(geometry, null, 2)}\n`);
+    if (!geometry.windows.length) throw new Error("The packaged workbench has no visible native window; inspect window-geometry.json.");
+    const tolerance = 2; // Allow subpixel rounding of native frame coordinates.
+    for (const window of geometry.windows) {
+      const contained = geometry.screens.some(({ workArea }) => window.bounds.x >= workArea.x - tolerance
+        && window.bounds.y >= workArea.y - tolerance
+        && window.bounds.x + window.bounds.width <= workArea.x + workArea.width + tolerance
+        && window.bounds.y + window.bounds.height <= workArea.y + workArea.height + tolerance);
+      if (!contained) throw new Error(`Native window ${window.id} extends beyond every display work area; inspect window-geometry.json.`);
+    }
+    metadata.windowGeometry = geometry;
     metadata.smoke = { startupSeconds: 20, runnerArchitecture: process.arch, alive: true, screenshotCaptured: screenshot.status === 0 };
     fs.writeFileSync(path.join(reportDirectory, "bundle-validation.json"), `${JSON.stringify(metadata, null, 2)}\n`);
     console.log(`Packaged GUI stayed alive for 20 seconds without fatal logs/crash reports; screenshot ${metadata.smoke.screenshotCaptured ? "captured" : "unavailable on this runner"}.`);

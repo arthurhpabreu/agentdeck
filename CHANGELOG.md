@@ -17,6 +17,7 @@
 - Portable Node build/dev wrappers replace shell-dependent command invocation.
 - SemVer synchronization, tag validation and aggregate release checksums ensure one consistent version across platforms.
 - Integration authentication notices appear briefly for a new error and then disappear; duplicate events and restored history do not keep the banner visible.
+- macOS startup and restored window bounds fit the display's visible work area, keeping controls clear of the menu bar and Dock on smaller screens.
 
 ## 0.6.8 — 2026-10-14
 

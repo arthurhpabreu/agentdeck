@@ -49,7 +49,7 @@ The React workspace and Rust domain logic are shared across platforms. OS differ
 | Installer discovery and verification | One update service selects EXE/MSI on Windows or universal DMG on macOS, checks SHA-256 and package structure, and opens the OS installer. DMG installation is manual. |
 | Build configuration | `tauri.conf.json` carries shared identity/version; `tauri.windows.conf.json` and `tauri.macos.conf.json` contain target-specific packaging settings. macOS-only Rust features are target dependencies. |
 
-The application identifier is stable across releases. Preferences and histories are per-user, outside the repository; CLI credentials remain with the official provider. Custom shell startup scripts are not sourced during desktop environment discovery.
+The application identifier is stable across releases. Preferences and histories are per-user, outside the repository; CLI credentials remain with the official provider. The startup PATH adapter adds conventional locations directly. CLI detection additionally supports a login-shell fallback for custom paths, using argument-separated POSIX or fish scripts.
 
 ## Versioning and releases
 

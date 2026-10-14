@@ -15,7 +15,7 @@ macro_rules! popup_log {
 
 // Persisted popup position and size
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PopupBounds {
     pub x: f64,
     pub y: f64,
@@ -43,6 +43,227 @@ impl PopupBounds {
             && self.width >= MIN_POPUP_WIDTH
             && self.height >= MIN_POPUP_HEIGHT
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+const WORKBENCH_MIN_SIZE: (f64, f64) = (940.0, 640.0);
+#[cfg(any(target_os = "macos", test))]
+const WORKBENCH_DEFAULT_SIZE: (f64, f64) = (1360.0, 900.0);
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LogicalWorkArea {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl LogicalWorkArea {
+    // AppKit screen frames are already logical points, including on Retina displays.
+    // Convert the global bottom-left origin to Tauri's global top-left origin.
+    fn from_visible_frame(primary_top: f64, frame: (f64, f64, f64, f64)) -> Self {
+        Self {
+            x: frame.0,
+            y: primary_top - frame.1 - frame.3,
+            width: frame.2,
+            height: frame.3,
+        }
+    }
+
+    fn is_usable(self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|value| value.is_finite())
+            && self.width > 0.0
+            && self.height > 0.0
+    }
+
+    fn overlap(self, bounds: &PopupBounds) -> f64 {
+        let width = (bounds.x + bounds.width).min(self.x + self.width) - bounds.x.max(self.x);
+        let height = (bounds.y + bounds.height).min(self.y + self.height) - bounds.y.max(self.y);
+        width.max(0.0) * height.max(0.0)
+    }
+
+    fn contains(self, bounds: &PopupBounds) -> bool {
+        bounds.x >= self.x
+            && bounds.y >= self.y
+            && bounds.x + bounds.width <= self.x + self.width
+            && bounds.y + bounds.height <= self.y + self.height
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug)]
+struct FittedPopupFrame {
+    bounds: PopupBounds,
+    min_size: (f64, f64),
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn fit_popup_to_work_areas(
+    saved: Option<&PopupBounds>,
+    default_size: (f64, f64),
+    work_areas: &[LogicalWorkArea],
+) -> Option<FittedPopupFrame> {
+    let areas: Vec<_> = work_areas
+        .iter()
+        .copied()
+        .filter(|area| area.is_usable())
+        .collect();
+    let primary = *areas.first()?;
+    let saved = saved.filter(|bounds| bounds.is_usable_size());
+    // Keep a valid restored frame on its original display, including secondary displays.
+    // If that display vanished, recover on the primary display rather than an edge off-screen.
+    let area = saved
+        .and_then(|bounds| {
+            areas
+                .iter()
+                .find(|area| area.contains(bounds))
+                .copied()
+                .or_else(|| {
+                    areas
+                        .iter()
+                        .copied()
+                        .filter(|area| area.overlap(bounds) > 0.0)
+                        .max_by(|left, right| {
+                            left.overlap(bounds).total_cmp(&right.overlap(bounds))
+                        })
+                })
+        })
+        .unwrap_or(primary);
+    let min_size = (
+        WORKBENCH_MIN_SIZE.0.min(area.width),
+        WORKBENCH_MIN_SIZE.1.min(area.height),
+    );
+    let requested = saved
+        .map(|bounds| (bounds.width, bounds.height))
+        .unwrap_or(default_size);
+    let width = requested.0.clamp(min_size.0, area.width);
+    let height = requested.1.clamp(min_size.1, area.height);
+    let (x, y) = if let Some(bounds) = saved.filter(|bounds| area.overlap(bounds) > 0.0) {
+        (
+            bounds.x.clamp(area.x, area.x + area.width - width),
+            bounds.y.clamp(area.y, area.y + area.height - height),
+        )
+    } else {
+        (
+            area.x + (area.width - width) * 0.5,
+            area.y + (area.height - height) * 0.5,
+        )
+    };
+    Some(FittedPopupFrame {
+        bounds: PopupBounds {
+            x,
+            y,
+            width,
+            height,
+        },
+        min_size,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_work_areas(app: &tauri::AppHandle) -> Vec<LogicalWorkArea> {
+    use objc::{class, msg_send, sel, sel_impl};
+
+    // NSScreen must be read on the AppKit thread. Tauri 2.10's work_area reports the
+    // visible size but omits the top inset, so use the public visibleFrame directly.
+    fn read_screens() -> Vec<LogicalWorkArea> {
+        use cocoa::base::{id, nil};
+        use cocoa::foundation::NSRect;
+        use objc::{class, msg_send, sel, sel_impl};
+        unsafe {
+            let screens: id = msg_send![class!(NSScreen), screens];
+            if screens == nil {
+                return Vec::new();
+            }
+            let count: usize = msg_send![screens, count];
+            if count == 0 {
+                return Vec::new();
+            }
+            // Apple's screens array begins with the primary screen containing the menu bar.
+            let primary: id = msg_send![screens, objectAtIndex: 0_usize];
+            let primary_frame: NSRect = msg_send![primary, frame];
+            let primary_top = primary_frame.origin.y + primary_frame.size.height;
+            (0..count)
+                .filter_map(|index| {
+                    let screen: id = msg_send![screens, objectAtIndex: index];
+                    let visible: NSRect = msg_send![screen, visibleFrame];
+                    let area = LogicalWorkArea::from_visible_frame(
+                        primary_top,
+                        (
+                            visible.origin.x,
+                            visible.origin.y,
+                            visible.size.width,
+                            visible.size.height,
+                        ),
+                    );
+                    area.is_usable().then_some(area)
+                })
+                .collect()
+        }
+    }
+
+    let is_main_thread: cocoa::base::BOOL = unsafe { msg_send![class!(NSThread), isMainThread] };
+    if is_main_thread != cocoa::base::NO {
+        return read_screens();
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    if app
+        .run_on_main_thread(move || {
+            let _ = sender.send(read_screens());
+        })
+        .is_err()
+    {
+        return Vec::new();
+    }
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+pub fn initial_popup_geometry(app: &tauri::AppHandle) -> ((f64, f64), (f64, f64)) {
+    let saved = load_bounds(app);
+    if let Some(frame) = fit_popup_to_work_areas(
+        saved.as_ref(),
+        WORKBENCH_DEFAULT_SIZE,
+        &macos_work_areas(app),
+    ) {
+        return ((frame.bounds.width, frame.bounds.height), frame.min_size);
+    }
+    (WORKBENCH_DEFAULT_SIZE, WORKBENCH_MIN_SIZE)
+}
+
+#[cfg(target_os = "macos")]
+fn fit_visible_popup(
+    app: &tauri::AppHandle,
+    win: &tauri::WebviewWindow,
+    saved: Option<&PopupBounds>,
+) -> bool {
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let current_size = win
+        .inner_size()
+        .map(|size| size.to_logical::<f64>(scale))
+        .map(|size| (size.width, size.height))
+        .unwrap_or(WORKBENCH_DEFAULT_SIZE);
+    let Some(frame) = fit_popup_to_work_areas(saved, current_size, &macos_work_areas(app)) else {
+        return false;
+    };
+    // Lower the minimum before resizing if a display is smaller than the normal workbench.
+    let _ = win.set_min_size(Some(tauri::LogicalSize::new(
+        frame.min_size.0,
+        frame.min_size.1,
+    )));
+    let _ = win.set_size(tauri::LogicalSize::new(
+        frame.bounds.width,
+        frame.bounds.height,
+    ));
+    let _ = win.set_position(tauri::LogicalPosition::new(frame.bounds.x, frame.bounds.y));
+    popup_log!("[popup] fitted to visible work area => {:?}", frame.bounds);
+    true
 }
 
 /// Whether enough of `bounds` lies on a connected monitor for the user to see and drag it.
@@ -136,6 +357,10 @@ pub fn load_popup_bounds(app: tauri::AppHandle) -> Option<PopupBounds> {
 // Popup positioning: use saved bounds when available, otherwise center the window.
 
 pub fn position_popup(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if fit_visible_popup(app, win, load_bounds(app).as_ref()) {
+        return;
+    }
     if let Some(bounds) = load_bounds(app).filter(|b| is_on_screen(win, b)) {
         let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition {
             x: bounds.x,
@@ -379,6 +604,9 @@ pub fn show_popup_only(app: tauri::AppHandle) {
 }
 
 fn create_popup(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let ((default_w, default_h), (min_w, min_h)) = initial_popup_geometry(app);
+    #[cfg(not(target_os = "macos"))]
     let (default_w, default_h) = load_bounds(app)
         .map(|b| (b.width, b.height))
         .unwrap_or((700.0, 600.0));
@@ -395,6 +623,8 @@ fn create_popup(app: &tauri::AppHandle) {
             .visible(false);
     #[cfg(not(target_os = "macos"))]
     let window_builder = window_builder.transparent(true);
+    #[cfg(target_os = "macos")]
+    let window_builder = window_builder.min_inner_size(min_w, min_h);
     let win = window_builder
         .build()
         .expect("Failed to create popup window");
@@ -679,7 +909,9 @@ pub fn restore_popup_bounds(app: tauri::AppHandle, window: tauri::WebviewWindow)
             snap.h
         );
         (snap.x, snap.y, snap.w, snap.h)
-    } else if let Some(disk) = load_bounds(&app).filter(|b| is_on_screen(&window, b)) {
+    } else if let Some(disk) =
+        load_bounds(&app).filter(|b| cfg!(target_os = "macos") || is_on_screen(&window, b))
+    {
         // Fall back to saved disk bounds.
         popup_log!(
             "[popup] restore: disk fallback ({:.0},{:.0}) {:.0}×{:.0}",
@@ -694,6 +926,20 @@ pub fn restore_popup_bounds(app: tauri::AppHandle, window: tauri::WebviewWindow)
         popup_log!("[popup] restore: using defaults");
         return; // Keep the current position when no saved bounds are available.
     };
+
+    #[cfg(target_os = "macos")]
+    if fit_visible_popup(
+        &app,
+        &window,
+        Some(&PopupBounds {
+            x,
+            y,
+            width: w,
+            height: h,
+        }),
+    ) {
+        return;
+    }
 
     // Apply position and size directly.
     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
@@ -798,6 +1044,117 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_frame_fits_the_menu_and_dock_visible_area() {
+        // The 1024×768 CI desktop has a 24-point menu bar and a 70-point Dock.
+        let area = LogicalWorkArea::from_visible_frame(768.0, (0.0, 70.0, 1024.0, 674.0));
+        let frame = fit_popup_to_work_areas(None, WORKBENCH_DEFAULT_SIZE, &[area]).unwrap();
+        assert_eq!(
+            frame.bounds,
+            PopupBounds {
+                x: 0.0,
+                y: 24.0,
+                width: 1024.0,
+                height: 674.0,
+            }
+        );
+        assert_eq!(frame.min_size, WORKBENCH_MIN_SIZE);
+        assert!(area.contains(&frame.bounds));
+    }
+
+    #[test]
+    fn oversized_restored_frame_is_resized_and_repositioned() {
+        let area = LogicalWorkArea::from_visible_frame(768.0, (0.0, 70.0, 1024.0, 674.0));
+        let saved = PopupBounds {
+            x: -168.0,
+            y: -66.0,
+            width: 1360.0,
+            height: 900.0,
+        };
+        let frame = fit_popup_to_work_areas(Some(&saved), WORKBENCH_DEFAULT_SIZE, &[area]).unwrap();
+        assert!(area.contains(&frame.bounds));
+        assert_eq!((frame.bounds.x, frame.bounds.y), (0.0, 24.0));
+        assert_eq!((frame.bounds.width, frame.bounds.height), (1024.0, 674.0));
+    }
+
+    #[test]
+    fn valid_secondary_retina_frame_keeps_its_logical_coordinates() {
+        let primary = LogicalWorkArea::from_visible_frame(1080.0, (0.0, 70.0, 1920.0, 986.0));
+        // AppKit supplies points on the 2× Retina display, so its 2880 physical pixels
+        // must remain 1440 logical points, with a negative position above the primary.
+        let secondary =
+            LogicalWorkArea::from_visible_frame(1080.0, (-1440.0, 1080.0, 1440.0, 876.0));
+        let saved = PopupBounds {
+            x: -1300.0,
+            y: -800.0,
+            width: 1000.0,
+            height: 680.0,
+        };
+        let frame =
+            fit_popup_to_work_areas(Some(&saved), WORKBENCH_DEFAULT_SIZE, &[primary, secondary])
+                .unwrap();
+        assert_eq!(frame.bounds, saved);
+        assert_eq!((secondary.x, secondary.y), (-1440.0, -876.0));
+    }
+
+    #[test]
+    fn removed_monitor_frame_recovers_centered_on_the_primary() {
+        let primary = LogicalWorkArea {
+            x: 0.0,
+            y: 24.0,
+            width: 1920.0,
+            height: 1032.0,
+        };
+        let saved = PopupBounds {
+            x: 3000.0,
+            y: -1500.0,
+            width: 1000.0,
+            height: 680.0,
+        };
+        let frame =
+            fit_popup_to_work_areas(Some(&saved), WORKBENCH_DEFAULT_SIZE, &[primary]).unwrap();
+        assert_eq!((frame.bounds.x, frame.bounds.y), (460.0, 200.0));
+        assert_eq!((frame.bounds.width, frame.bounds.height), (1000.0, 680.0));
+        assert!(primary.contains(&frame.bounds));
+    }
+
+    #[test]
+    fn small_display_also_lowers_the_minimum_window_size() {
+        let area = LogicalWorkArea {
+            x: -800.0,
+            y: 24.0,
+            width: 800.0,
+            height: 540.0,
+        };
+        let frame = fit_popup_to_work_areas(None, WORKBENCH_DEFAULT_SIZE, &[area]).unwrap();
+        assert_eq!(frame.min_size, (800.0, 540.0));
+        assert_eq!((frame.bounds.width, frame.bounds.height), (800.0, 540.0));
+        assert!(area.contains(&frame.bounds));
+    }
+
+    #[test]
+    fn invalid_saved_geometry_and_empty_displays_do_not_panic() {
+        let saved = PopupBounds {
+            x: f64::NAN,
+            y: 80.0,
+            width: 1000.0,
+            height: 680.0,
+        };
+        let area = LogicalWorkArea {
+            x: 0.0,
+            y: 24.0,
+            width: 1920.0,
+            height: 1032.0,
+        };
+        let frame = fit_popup_to_work_areas(Some(&saved), WORKBENCH_DEFAULT_SIZE, &[area]).unwrap();
+        assert!(area.contains(&frame.bounds));
+        assert_eq!(
+            (frame.bounds.width, frame.bounds.height),
+            WORKBENCH_DEFAULT_SIZE
+        );
+        assert!(fit_popup_to_work_areas(None, WORKBENCH_DEFAULT_SIZE, &[]).is_none());
+    }
 
     #[test]
     fn minimized_window_placeholder_is_never_restored() {

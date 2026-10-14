@@ -43,7 +43,7 @@ Install at least one supported official CLI and sign in through its interactive 
 | [Claude Code](https://code.claude.com/docs/en/setup#install-with-npm) | `claude` | `npm install --global @anthropic-ai/claude-code` |
 | [Google Gemini](https://geminicli.com/docs/get-started/installation/) | `gemini` | `npm install --global @google/gemini-cli` |
 
-Native installations are also supported. Restart the app after changing PATH. On macOS, the desktop initializes common Homebrew and user CLI locations and supplies the resolved executable/Node paths to child processes. It does not execute shell startup scripts to discover tools. Terminals use the native default login shell, and shortcuts use Command while terminal Ctrl+C still interrupts the process. Settings exposes detected CLI versions, native model catalogues and update actions. Capabilities depend on the installed provider and account.
+Native installations are also supported. Restart the app after changing PATH. On macOS, the desktop initializes common Homebrew and user CLI locations and supplies the resolved executable/Node paths to child processes. CLI detection can query the user's login shell as a fallback for custom installation paths, including fish. Terminals use the native default login shell, and shortcuts use Command while terminal Ctrl+C still interrupts the process. Settings exposes detected CLI versions, native model catalogues and update actions. Capabilities depend on the installed provider and account.
 
 Claude Code normally keeps its macOS credentials in Keychain. Agent Deck leaves authentication there and can show usage reported by the provider/statusline; a missing credentials file does not imply that the user signed out.
 
