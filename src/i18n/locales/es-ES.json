@@ -394,6 +394,7 @@
   "activity.exitCode": "Código de salida",
   "activity.explanation": "Los eventos y la salida del proceso se miden localmente. Herramientas, aprobaciones y respuestas aparecen en el terminal en vivo; un proceso abierto por sí solo no confirma progreso del modelo.",
   "workspace.pathPlaceholder": "C:\\Proyectos\\mi-proyecto",
+  "workspace.pathPlaceholderPosix": "/Users/tu/Proyectos/mi-proyecto",
   "workspace.title": "Proyectos",
   "errors.operationFailed": "No se pudo completar la operación",
   "errors.details": "Detalles técnicos",

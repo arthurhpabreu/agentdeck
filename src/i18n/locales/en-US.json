@@ -394,6 +394,7 @@
   "activity.exitCode": "Exit code",
   "activity.explanation": "Process events and output are measured locally. Tool calls, approvals and responses appear in the live terminal; a running process alone does not confirm model progress.",
   "workspace.pathPlaceholder": "C:\\Projects\\my-project",
+  "workspace.pathPlaceholderPosix": "/Users/you/Projects/my-project",
   "workspace.title": "Projects",
   "errors.operationFailed": "Operation failed",
   "errors.details": "Technical details",

@@ -4,17 +4,33 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      native_diagnostics_only:
+        description: Query public macOS window/display geometry without building
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-release-${{ github.ref }}-${{ inputs.native_diagnostics_only && 'diagnostics' || 'build' }}
   cancel-in-progress: false
 
 jobs:
   validate:
+    if: ${{ !inputs.native_diagnostics_only }}
     uses: ./.github/workflows/ci.yml
+
+  native-diagnostics:
+    name: Inspect public macOS display geometry
+    if: github.event_name == 'workflow_dispatch' && inputs.native_diagnostics_only
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query Core Graphics and AppKit geometry
+        run: /usr/bin/osascript -l JavaScript scripts/inspect-macos-window.js "$$"
 
   windows:
     name: Build Windows x64 installers

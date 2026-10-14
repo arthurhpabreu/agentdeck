@@ -146,7 +146,13 @@ if (process.argv.includes("--smoke")) {
     for (const name of newReports) fs.copyFileSync(path.join(crashDirectory, name), path.join(reportDirectory, name));
     if (newReports.length) throw new Error(`Packaged GUI generated crash reports: ${newReports.join(", ")}`);
     const screenshot = spawnSync("/usr/sbin/screencapture", ["-x", path.join(reportDirectory, "desktop.png")], { timeout: 10_000, encoding: "utf8" });
-    const geometry = JSON.parse(capture("/usr/bin/osascript", ["-l", "JavaScript", path.join(repositoryRoot, "scripts/inspect-macos-window.js"), String(child.pid)]));
+    const geometryQuery = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", path.join(repositoryRoot, "scripts/inspect-macos-window.js"), String(child.pid)], { timeout: 30_000, encoding: "utf8" });
+    const geometryError = Buffer.from(geometryQuery.stderr || "").subarray(0, 2048).toString("utf8").trim();
+    fs.writeFileSync(path.join(reportDirectory, "geometry-diagnostic.log"), `${geometryError || "Public geometry query completed without stderr."}\n`);
+    if (geometryQuery.error || geometryQuery.status !== 0) {
+      throw new Error(`Public macOS geometry query failed (${geometryQuery.signal || geometryQuery.status}): ${geometryQuery.error?.message || geometryError}`);
+    }
+    const geometry = JSON.parse(geometryQuery.stdout.trim());
     fs.writeFileSync(path.join(reportDirectory, "window-geometry.json"), `${JSON.stringify(geometry, null, 2)}\n`);
     if (!geometry.windows.length) throw new Error("The packaged workbench has no visible native window; inspect window-geometry.json.");
     const tolerance = 2; // Allow subpixel rounding of native frame coordinates.
