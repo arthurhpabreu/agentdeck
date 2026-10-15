@@ -16,6 +16,9 @@ mod memory_gemini;
 mod memory_intelligence_runtime;
 mod memory_retrieval;
 pub mod memory_runtime;
+mod multi_agent;
+mod multi_agent_guidance;
+mod multi_agent_terminal;
 pub mod native_bridge;
 mod notification;
 mod platform;
@@ -198,6 +201,9 @@ pub fn run() {
             window::close_popup,
             window::exit_app,
             agent_models::list_agent_models,
+            multi_agent::get_multi_agent_status,
+            multi_agent::get_multi_agent_enabled,
+            multi_agent::set_multi_agent_enabled,
             agent_catalog::list_agent_commands,
             cli_updates::check_cli_update,
             app_updates::check_app_update,

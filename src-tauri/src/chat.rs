@@ -765,7 +765,26 @@ pub async fn start_chat_turn(
         &request.session_id,
         &request.prompt,
     );
+    let multi_agent = crate::multi_agent::prepare(
+        &app,
+        &request.runner_type,
+        &request.cli_path,
+        &request.workdir,
+        request.model.as_deref(),
+        request.effort.as_deref(),
+    )
+    .await?;
     let mut arguments = build_arguments(&request);
+    let multi_agent_env = if let Some(profile) = &multi_agent {
+        crate::multi_agent::configure(
+            profile,
+            &request.runner_type,
+            &request.workdir,
+            &mut arguments,
+        )?
+    } else {
+        Vec::new()
+    };
     let economy = crate::token_economy::prepare_launch(
         &app,
         &request.runner_type,
@@ -789,6 +808,16 @@ pub async fn start_chat_turn(
     let delivered_guidance =
         !economy.guidance.is_empty() && !request.prompt.trim_start().starts_with('/');
     crate::token_economy::append_guidance(&mut request.prompt, &economy.guidance);
+    let multi_agent_guidance = crate::multi_agent_guidance::prepare(
+        multi_agent.as_ref(),
+        &request.runner_type,
+        &request.session_id,
+        request.provider_session_id.is_none() || request.compact_before_turn,
+        original_prompt.trim_start().starts_with('/'),
+    );
+    if let Some(delivery) = &multi_agent_guidance {
+        crate::token_economy::append_guidance(&mut request.prompt, &delivery.text);
+    }
     let input = live::initial_input(&request)?;
     let executable = find_cli_path(&request.runner_type, &request.cli_path);
     let (executable, arguments) = resolve_windows_pty_command(&executable, &arguments);
@@ -838,6 +867,7 @@ pub async fn start_chat_turn(
         ),
     );
     command.envs(economy.env.iter().cloned());
+    command.envs(multi_agent_env);
     // Use the official account login, consistently with the existing native terminal transport.
     for key in [
         "ANTHROPIC_API_KEY",
@@ -957,7 +987,7 @@ pub async fn start_chat_turn(
         let mut last_heartbeat = launched_at;
         let mut compaction_progress = CompactionProgress::default();
         let mut watchdog = ProtocolWatchdog::new(live.phase());
-        let mut connector_warnings = HashSet::new();
+        let mut connector_diagnostics = HashSet::new();
         let mut termination_requested = false;
         let mut completion_shutdown = CompletionShutdown::default();
         let mut notification_evidence =
@@ -999,6 +1029,13 @@ pub async fn start_chat_turn(
                                     crate::token_economy::mark_guidance_delivered(
                                         &request.runner_type,
                                         &request.session_id,
+                                    );
+                                }
+                                if let Some(delivery) = &multi_agent_guidance {
+                                    crate::multi_agent_guidance::commit(
+                                        &request.runner_type,
+                                        &request.session_id,
+                                        delivery,
                                     );
                                 }
                                 if let Some(memory) = &memory {
@@ -1104,14 +1141,21 @@ pub async fn start_chat_turn(
                 Ok(ProcessOutput::Stderr(line)) => {
                     if !line.trim().is_empty() {
                         let event = parser.stderr_event(&request.runner_type, &line);
-                        if event.status.as_deref() == Some("mcp-auth-warning") {
-                            if connector_warnings.len() < 32
-                                && connector_warnings.insert(event.text.clone().unwrap_or_default())
-                            {
-                                emit_event(&app, &request.runner_type, event);
+                        let optional_connector = event.status.as_deref() == Some("diagnostic")
+                            && event.title.as_deref() == Some("MCP login");
+                        if !optional_connector
+                            || connector_diagnostics.len() < 32
+                                && connector_diagnostics
+                                    .insert(event.text.clone().unwrap_or_default())
+                        {
+                            if !optional_connector {
+                                // Use sanitized text if stderr later explains a
+                                // fatal exit. Optional refresh logs alone do not
+                                // identify the cause of a conversation failure.
+                                let detail = event.text.as_deref().unwrap_or_default();
+                                stderr_tail =
+                                    bounded_text(&format!("{detail}\n{stderr_tail}"), 8_192);
                             }
-                        } else {
-                            stderr_tail = bounded_text(&format!("{line}\n{stderr_tail}"), 8_192);
                             emit_event(&app, &request.runner_type, event);
                         }
                     }

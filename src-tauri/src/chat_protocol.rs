@@ -218,17 +218,26 @@ impl ChatParser {
         let lower = line.to_ascii_lowercase();
         let marker = "failed to refresh oauth tokens for server ";
         if provider == "codex" && lower.contains(marker) {
-            let start = lower.find(marker).unwrap() + marker.len();
-            let connector = line[start..]
-                .split(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '-' | '_' | '.'))
-                .next()
-                .filter(|name| !name.is_empty() && name.len() <= 64)
-                .unwrap_or("unknown");
-            // OAuth failures can include credential responses. Surface a clear
-            // connector warning without copying the authentication payload.
-            let mut event = self.message("status", &format!("MCP connector {connector} could not refresh its login. Reconnect this connector in Codex. This warning alone does not mean the conversation failed."));
-            event.title = Some("MCP login".into());
-            event.status = Some("mcp-auth-warning".into());
+            static REFRESH_LOG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let pattern = REFRESH_LOG.get_or_init(|| regex::Regex::new(
+                r"(?i)^(?:\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+Z-]+)?\s+)?(?:ERROR|WARN)\s+codex_rmcp_client::oauth::refresh_transaction:\s+(?:error=)?failed to refresh oauth tokens for server (?P<connector>[a-z0-9_.-]{1,64})(?:[:\s]|$)"
+            ).expect("valid Codex OAuth log pattern"));
+            // Optional connectors refresh during startup even when the requested
+            // conversation succeeds. Keep this in details, never infer an
+            // actionable chat warning from stderr. OAuth payloads stay redacted,
+            // including when a prompt/history excerpt quotes such a log line.
+            let mut event = if let Some(captures) = pattern.captures(line.trim()) {
+                let connector = &captures["connector"];
+                let mut event = self.message("status", &format!("Optional MCP connector {connector} could not refresh its login. The conversation can continue. Reconnect this connector in Codex if you need to use it."));
+                event.title = Some("MCP login".into());
+                event
+            } else {
+                self.message(
+                    "status",
+                    "Quoted OAuth refresh log text (authentication payload omitted).",
+                )
+            };
+            event.status = Some("diagnostic".into());
             return event;
         }
         let mut event = self.message("status", line);
@@ -775,20 +784,89 @@ mod tests {
     }
 
     #[test]
-    fn mcp_oauth_warning_is_nonfatal_and_does_not_expose_authentication_payloads() {
+    fn optional_mcp_oauth_refresh_is_a_sanitized_diagnostic_not_a_chat_warning() {
         let parser = parser();
         let event = parser.stderr_event("codex", "2026-10-14 ERROR codex_rmcp_client::oauth::refresh_transaction: error=failed to refresh OAuth tokens for server miro: OAuth refresh_token=private-token");
         assert_eq!(event.kind, "status");
-        assert_eq!(event.status.as_deref(), Some("mcp-auth-warning"));
+        assert_eq!(event.status.as_deref(), Some("diagnostic"));
         assert_eq!(event.title.as_deref(), Some("MCP login"));
         assert!(event.text.as_deref().unwrap().contains("miro"));
+        assert!(event
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("conversation can continue"));
         assert!(!event.text.as_deref().unwrap().contains("private-token"));
+        assert!(!serde_json::to_string(&event)
+            .unwrap()
+            .contains("refresh_token"));
         assert!(!parser.failed);
         for line in ["Connected to Codex", "ERROR connection refused"] {
             let event = parser.stderr_event("codex", line);
             assert_eq!(event.status.as_deref(), Some("diagnostic"));
             assert_eq!(event.text.as_deref(), Some(line));
         }
+    }
+
+    #[test]
+    fn quoted_oauth_logs_never_become_authentication_notices_or_leak_credentials() {
+        let parser = parser();
+        let log = "ERROR codex_rmcp_client::oauth::refresh_transaction: error=failed to refresh OAuth tokens for server miro: refresh_token=private-token";
+        for line in [
+            format!("User prompt quoted: {log}"),
+            format!("History excerpt: {log}"),
+            serde_json::json!({"type":"agent_message","text":log}).to_string(),
+            format!("INFO quoted log: failed to refresh OAuth tokens for server miro: refresh_token=private-token"),
+        ] {
+            let event = parser.stderr_event("codex", &line);
+            assert_eq!(event.status.as_deref(), Some("diagnostic"));
+            assert!(event.title.is_none());
+            assert!(!event.text.as_deref().unwrap().contains("private-token"));
+        }
+        for line in [
+            "2026-10-15T16:22:08.123Z ERROR codex_rmcp_client::oauth::refresh_transaction: error=failed to refresh OAuth tokens for server miro: private response",
+            "WARN codex_rmcp_client::oauth::refresh_transaction: failed to refresh OAuth tokens for server miro: private response",
+        ] {
+            let event = parser.stderr_event("codex", line);
+            assert_eq!(event.status.as_deref(), Some("diagnostic"));
+            assert_eq!(event.title.as_deref(), Some("MCP login"));
+            assert!(!event.text.as_deref().unwrap().contains("private response"));
+        }
+    }
+
+    #[test]
+    fn oauth_text_in_responses_prompts_history_and_success_stays_conversation_content() {
+        let mut parser = parser();
+        let quote = "The history quoted: failed to refresh OAuth tokens for server miro. This request succeeded.";
+        let records = [
+            serde_json::json!({"type":"item.completed","item":{"id":"answer","type":"agent_message","text":quote}}),
+            serde_json::json!({"type":"item.completed","item":{"id":"read-history","type":"command_execution","command":"read history","aggregated_output":quote,"exit_code":0}}),
+            serde_json::json!({"type":"user_message","message":quote}),
+            serde_json::json!({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}),
+        ];
+        let events = records
+            .iter()
+            .flat_map(|record| parser.parse("codex", &record.to_string()))
+            .collect::<Vec<_>>();
+        assert!(events
+            .iter()
+            .all(|event| event.kind != "error"
+                && event.status.as_deref() != Some("mcp-auth-warning")));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "text" && event.text.as_deref() == Some(quote)));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "tool" && event.output.as_deref() == Some(quote)));
+        assert!(!parser.failed);
+        let error = parser.parse("codex", r#"{"type":"turn.failed","error":{"message":"Miro authentication required for the requested action"}}"#);
+        assert!(parser.failed);
+        assert_eq!(error[0].kind, "error");
+        assert!(error[0]
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("Miro authentication required"));
     }
 
     #[test]

@@ -95,6 +95,7 @@ async function setupMemory(page: Page) {
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Conhecimento local", exact: true }).click();
+  await page.getByRole("tab", { name: "Memória compartilhada", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Memória compartilhada", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Memória compartilhada", exact: true }).getByText("Routing decision", { exact: true })).toBeVisible();
 }

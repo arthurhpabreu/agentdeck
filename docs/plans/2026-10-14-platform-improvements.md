@@ -155,6 +155,49 @@ Casos de regressão obrigatórios:
 
 Os testes usam fixtures sem prompts pagos ou notas privadas. Cada implementação passa pelos checks adequados e pelo CI nativo existente. Manter uma versão SemVer sincronizada para Windows/macOS; novos fluxos e catálogo de vaults são funcionalidades minor, e correções/otimizações compatíveis podem ser patch. Mudanças de esquema exigem migração e compatibilidade documentadas.
 
+## Revisão de usabilidade e distribuição de modelos — 15 de outubro de 2026
+
+O estudo desta revisão usou a tela existente, os fluxos de seleção de fontes e capturas com dados sintéticos em temas claro/escuro, lateral de 330 px e janelas de 1360×900 e 1024×768. A dificuldade principal era a mistura de cadastro, autorização, consulta e diagnóstico na mesma sequência. O cadastro global continuava necessário como catálogo reutilizável; o nome “Global” induzia a interpretar que as fontes seriam usadas em todas as conversas.
+
+| Problema observado | Decisão implementada |
+| --- | --- |
+| Alças pontilhadas exigiam acertar um alvo pequeno. | Segurar o corpo do item inicia o arraste. Clique, seleção de texto, campos, links e ações mantêm sua função. Toque permite rolar antes da ativação; teclado, cancelamento e desfazer continuam disponíveis. |
+| A lateral tinha um limite fixo de 560 px. | O limite acompanha metade da janela, com redimensionamento por mouse ou teclado e preferência salva ao concluir o gesto. |
+| A área inicial de Conhecimento priorizava memória e explicações técnicas. | Documentos passa a ser a entrada inicial. A aba escolhida permanece ao reabrir o painel durante a sessão. |
+| “Global” misturava cadastro com fontes autorizadas. | Documentos separa **Fontes** da conversa/projeto e **Catálogo de vaults**. Cadastrar um vault não o seleciona; herança e seleção vazia continuam explícitas. |
+| Caminhos, revisões, restrições, coleções e diagnóstico ocupavam a primeira leitura. | Metadados e configurações ficam em detalhes. Busca fica antes de grafo/diagnóstico, que só são carregados quando abertos. |
+| Mensagens de renovação OAuth do Miro eram promovidas a avisos de login. | Renovação opcional de inicialização vira diagnóstico sanitizado, consultável em Detalhes da execução. Erros explícitos de autenticação continuam acionáveis. |
+
+Na fixture de comparação, o primeiro checkbox de vault passou de aproximadamente 630 px para 475 px de altura; a busca passou a aparecer na janela de 1360×900. As capturas locais de antes/depois ficam em `.local/knowledge-ui`, sem dados privados incluídos no repositório. As mudanças de apresentação não alteram IDs, autorização de fontes, herança, migração ou o significado de uma seleção vazia.
+
+### Modo econômico com vários modelos
+
+O painel **Economia de tokens**, que já reúne RTK e uso reportado pelo provedor, ganhou a opção independente **Distribuir tarefas entre modelos**, desativada inicialmente. Ela funciona sem instalar RTK. No ajuste de comportamento de 15/10, as próximas execuções preservam o modelo, o esforço e as opções Fast e Ultra escolhidos pelo usuário; os controles existentes continuam utilizáveis. A economia se aplica às tarefas auxiliares delegadas a Luna/Haiku, com assessoria forte pontual. A opção não muda processos já em andamento.
+
+| Provedor | Coordenação | Exploração delimitada | Assessoria pontual |
+| --- | --- | --- | --- |
+| Codex | Modelo escolhido pelo usuário. | Luna disponível, esforço baixo; até três subagentes simultâneos como limite nativo. | Astra ou Sol disponível compatível, esforço alto, para consultas pontuais. |
+| Claude Code | Modelo escolhido pelo usuário. | Haiku resolvido, agente de consulta sem ferramentas de edição, até oito turnos; esforço baixo quando suportado. | Opus: assessor nativo apenas em pares explicitamente selecionados e conhecidos como compatíveis; nos demais casos, subagente de revisão somente leitura. |
+
+A escolha dos auxiliares usa o catálogo real do CLI, sem enviar prompts pagos para descobri-lo. O catálogo é cacheado por CLI e contexto de execução, independentemente do modelo escolhido; o perfil é resolvido por sessão. Os controles nativos atuais foram conferidos nas versões instaladas Codex 0.162.1 e Claude Code 2.1.300; versões anteriores não são declaradas compatíveis por suposição. Configurações ficam nos argumentos/ambiente de cada processo. Arquivos globais dos provedores, permissões, sandbox e configuração MCP do usuário são preservados. A orientação é evitar delegação em tarefas simples, usar investigações independentes com resumos curtos e reservar o assessor para decisões importantes ou falhas recorrentes. No chat, a orientação só é registrada como entregue depois da confirmação do provedor, sem repetição a cada mensagem; desativar revoga apenas as instruções de distribuição do Agentdeck.
+
+No Claude Code, Fable, modelos customizados e a escolha padrão (`default`) usam um subagente Opus de revisão somente leitura, com um brief curto contendo apenas o contexto necessário à consulta. O recurso nativo `--advisor` fica restrito aos pares explicitamente selecionados e cuja compatibilidade seja conhecida. O modelo principal escolhido pelo usuário é preservado em todos esses caminhos.
+
+As funções dos modelos seguem a [orientação oficial de seleção da OpenAI](https://learn.chatgpt.com/docs/model-selection) e os [controles de subagentes do Codex](https://learn.chatgpt.com/docs/agent-configuration/subagents). Para Claude, são usados os controles documentados de [subagentes](https://code.claude.com/docs/en/sub-agents) e [advisor](https://code.claude.com/docs/en/advisor), sem presumir que `--subagents` seja um argumento aceito.
+
+No terminal nativo, um sufixo de instruções do processo mantém a orientação disponível para digitação direta e depois de `/clear` ou `/compact`, sem criar um turno pago de inicialização. Claude preserva o sufixo existente, inclusive quando veio de arquivo; Codex consulta apenas `config/read` para preservar o valor efetivo de `developer_instructions` antes de acrescentar o novo trecho. Perfis nativos explícitos, troca de diretório por flags, execução remota ou configurações cujo resultado não possa ser comprovado não recebem uma substituição presumida: o modo ligado solicita usar a conversa legível ou retirar a combinação incompatível. Desligar o modo mantém a possibilidade de lançar esses terminais e conserva a revogação pendente para o próximo envio pela interface.
+
+Distribuir tarefas entre modelos não comprova redução da quantidade de tokens. Por isso, a interface mantém as estimativas medidas pelo RTK separadas do uso informado pelo provedor e mostra a economia da distribuição como **sem estimativa** até existir uma comparação confiável. O assessor nativo Claude depende da disponibilidade do provedor e suas consultas acrescentam consumo; o [advisor processa o histórico completo sem reutilizar cache próprio](https://code.claude.com/docs/en/advisor#impact-on-prompt-caching). Preços de API também não são convertidos em economia de assinatura, conforme a [documentação de uso e preços do Codex](https://learn.chatgpt.com/docs/pricing).
+
+### Validação desta revisão
+
+- Backend Windows: **263 testes aprovados**, nenhum erro e sete testes opcionais ignorados. Inclui preservação de permissões/instruções, modelo/esforço/Fast/Ultra principais em execuções novas e retomadas, flags antes do separador de prompt, seleção de auxiliares, deduplicação/revogação, compactação e classificação OAuth.
+- Interface Chromium: a rodada completa aprovou **224 de 228** casos. Os quatro restantes excederam o prazo ao carregar módulos lazy sob pressão de recursos, antes de executar as ações avaliadas. A repetição com um único runner aprovou **20 de 20**, incluindo todos os 17 casos de ordenação e os três fluxos restantes, sem aumentar timeouts nem retirar asserções. A cobertura total compreende **229 cenários distintos**, incluindo a regressão adicional de arraste de label sem alterar seu checkbox.
+- TypeScript, build de produção, traduções EN/PT/ES, higiene do repositório, versões sincronizadas, formatação Rust e `git diff --check` verificados. Os avisos já existentes de tamanho de chunks/importação mista do Vite permanecem.
+- Inicialização e metadados dos CLIs reais validados sem `thread/start`, sem `turn/start` e sem prompts pagos. Isto valida compatibilidade da configuração; não mede economia financeira nem garante acesso ao assessor no provedor.
+- Após o ajuste de preservação do modelo principal, **14 de 14 testes Chromium** passaram: nove de economia e cinco de seleção/esforço/velocidade, incluindo a requisição efetiva com economia ligada e troca de modelo. Metadados dos CLIs reais aceitaram Astra com Ultra/Fast e explorador Luna baixo, Opus com Max/Fast/Ultracode e assessor nativo, e Fable com Max/Fast/Ultracode e assessor por subagente; nenhum turno de modelo foi enviado. Relatório: `.local/validation/economy-selection-report.json`; captura: `.local/validation/economy-main-selection.png`.
+- Capturas de Conhecimento, economia e detalhes de execução inspecionadas; laterais de 800 px em janela de 1600 px e de 250 px em janela de 500 px conferidas. Relatórios sintéticos locais: `.local/validation/final-ui-report.json` e `.local/validation/final-focus-report.json`.
+
 ## Referências
 
 - Orca: [revisão em lote](https://www.onorca.dev/docs/review/annotate-ai-diff), [atenção](https://www.onorca.dev/docs/notifications), [navegação](https://www.onorca.dev/docs/model/quick-open), [persistência serializada](https://github.com/stablyai/orca/blob/38255300d90059631996e4d836acaf220958058e/src/main/persistence/atomic-snapshot-writer.ts).

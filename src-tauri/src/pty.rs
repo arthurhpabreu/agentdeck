@@ -318,6 +318,41 @@ pub async fn start_pty_session(
         });
 
     let mut args = args;
+    let (selected_model, selected_effort) = crate::multi_agent::selection(&runner_type, &args);
+    let multi_agent = crate::multi_agent::prepare(
+        &app,
+        &runner_type,
+        &resolve_command_path(&command),
+        &expanded,
+        selected_model.as_deref(),
+        selected_effort.as_deref(),
+    )
+    .await?;
+    let multi_agent_env = if let Some(profile) = &multi_agent {
+        crate::multi_agent::configure(profile, &runner_type, &expanded, &mut args)?
+    } else {
+        Vec::new()
+    };
+    let mut multi_agent_guidance = multi_agent
+        .as_ref()
+        .map(|profile| crate::multi_agent::guidance(profile, &runner_type))
+        .unwrap_or_else(|| {
+            if matches!(runner_type.as_str(), "codex" | "claude-code")
+                && env.as_ref().is_some_and(|pairs| {
+                    pairs.iter().any(|(key, value)| {
+                        key == "AGENTDECK_PROVIDER_SESSION_ID" && !value.trim().is_empty()
+                    })
+                })
+            {
+                crate::multi_agent_guidance::disabled_guidance().to_owned()
+            } else {
+                String::new()
+            }
+        });
+    let multi_agent_guidance_delivered = !multi_agent_guidance.is_empty()
+        && initial_prompt.as_ref().is_some_and(|prompt| {
+            !prompt.trim().is_empty() && !prompt.trim_start().starts_with('/')
+        });
     if matches!(runner_type.as_str(), "claude-code" | "codex" | "gemini")
         && !env.as_ref().is_some_and(|pairs| {
             pairs.iter().any(|(key, value)| {
@@ -361,6 +396,23 @@ pub async fn start_pty_session(
         );
         Default::default()
     });
+    match crate::multi_agent_terminal::configure(
+        &runner_type,
+        &resolve_command_path(&command),
+        &expanded,
+        &mut args,
+        &multi_agent_guidance,
+    )
+    .await
+    {
+        // The process suffix survives native /clear and /compact, including
+        // input typed directly into the terminal. Do not repeat it in prompts.
+        Ok(true) => multi_agent_guidance.clear(),
+        Err(error) if multi_agent.is_some() => return Err(error),
+        // Disabling must not break older CLIs or custom native profiles. Keep
+        // app-managed revocation pending if an additive suffix cannot be proven.
+        _ => {}
+    }
     let mut turn_memory = None;
     let mut delivered_guidance = false;
     if let Some(mut prompt) = initial_prompt.filter(|p| !p.trim().is_empty()) {
@@ -389,6 +441,7 @@ pub async fn start_pty_session(
             .unwrap_or("");
         delivered_guidance = !economy.guidance.is_empty() && !prompt.trim_start().starts_with('/');
         crate::token_economy::append_guidance(&mut prompt, &economy.guidance);
+        crate::token_economy::append_guidance(&mut prompt, &multi_agent_guidance);
         if runner_type == "gemini" {
             args.push("--prompt-interactive".to_string());
         }
@@ -490,6 +543,9 @@ pub async fn start_pty_session(
     for (key, value) in economy.env {
         cmd.env(key, value);
     }
+    for (key, value) in multi_agent_env {
+        cmd.env(key, value);
+    }
     for (key, value) in memory_launch.env {
         cmd.env(key, value);
     }
@@ -563,6 +619,8 @@ pub async fn start_pty_session(
                 runner_type,
                 workdir: expanded.clone(),
                 project_path,
+                multi_agent_guidance,
+                multi_agent_guidance_delivered,
             },
         );
     }
@@ -760,6 +818,14 @@ pub async fn send_pty_query(
         .and_then(|metadata| metadata.get(&session_id).cloned())
         .unwrap_or_default();
     let provider = metadata.runner_type;
+    let resets_guidance = matches!(query.split_whitespace().next(), Some("/compact" | "/clear"));
+    if resets_guidance {
+        if let Ok(mut entries) = pty_session_meta_map(&app).lock() {
+            if let Some(current) = entries.get_mut(&session_id) {
+                current.multi_agent_guidance_delivered = false;
+            }
+        }
+    }
     let app_for_search = app.clone();
     let (query_for_search, memory_session, memory_provider) =
         (query.clone(), session_id.clone(), provider.clone());
@@ -784,6 +850,12 @@ pub async fn send_pty_query(
     let guidance = crate::token_economy::followup_guidance(&app, &provider, &session_id);
     let delivered_guidance = !guidance.is_empty() && !query.trim_start().starts_with('/');
     crate::token_economy::append_guidance(&mut query, &guidance);
+    let deliver_multi_agent = !metadata.multi_agent_guidance_delivered
+        && !metadata.multi_agent_guidance.is_empty()
+        && !query.trim_start().starts_with('/');
+    if deliver_multi_agent {
+        crate::token_economy::append_guidance(&mut query, &metadata.multi_agent_guidance);
+    }
     let writer = pty_writer_map(&app)
         .lock()
         .unwrap()
@@ -815,6 +887,13 @@ pub async fn send_pty_query(
         .await
         .map_err(|error| error.to_string())??;
         crate::notification::completion::begin_terminal(&session_id, Some(&notification_prompt));
+        if deliver_multi_agent {
+            if let Ok(mut entries) = pty_session_meta_map(&app).lock() {
+                if let Some(current) = entries.get_mut(&session_id) {
+                    current.multi_agent_guidance_delivered = true;
+                }
+            }
+        }
         if delivered_guidance {
             crate::token_economy::mark_guidance_delivered(&provider, &session_id);
         }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAttentionStore } from "./store/attentionStore";
 import { useNavigationStore } from "./store/navigationStore";
@@ -664,28 +664,61 @@ export default function App() {
     useWorkbenchStore.getState().resetWorkbenchMode();
   }, [sidebarSection, workbenchSession]);
 
-  const splitSidebarWidth = settings.splitPaneSidebarWidth;
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [resizingSidebarWidth, setResizingSidebarWidth] = useState<number | null>(null);
+  const sidebarResizeCleanup = useRef<(() => void) | null>(null);
+  // Finish StrictMode's mount cleanup before the user can begin a gesture.
+  useLayoutEffect(() => () => sidebarResizeCleanup.current?.(), []);
+  useEffect(() => {
+    const resize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+  const maxSidebarWidth = Math.floor(viewportWidth / 2);
+  const minSidebarWidth = Math.min(280, maxSidebarWidth);
+  const splitSidebarWidth = Math.min(maxSidebarWidth, Math.max(minSidebarWidth, resizingSidebarWidth ?? settings.splitPaneSidebarWidth));
 
   const handleSplitPanePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary || sidebarResizeCleanup.current) return;
     event.preventDefault();
+    const separator = event.currentTarget, pointerId = event.pointerId;
+    separator.setPointerCapture(pointerId);
     const startX = event.clientX;
     const startWidth = splitSidebarWidth;
-    const minWidth = 280;
-    const maxWidth = 560;
+    let nextWidth = startWidth;
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth + moveEvent.clientX - startX)));
-      patchSettings({ splitPaneSidebarWidth: nextWidth });
+      if (moveEvent.pointerId !== pointerId) return;
+      const maxWidth = Math.floor(window.innerWidth / 2);
+      nextWidth = Math.min(maxWidth, Math.max(Math.min(280, maxWidth), Math.round(startWidth + (moveEvent.clientX - startX) * (direction === "rtl" ? -1 : 1))));
+      setResizingSidebarWidth(nextWidth);
     };
 
-    const handlePointerUp = () => {
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      patchSettings({ splitPaneSidebarWidth: nextWidth });
+      cleanup();
+    };
+    const cancel = (cancelEvent: PointerEvent) => { if (cancelEvent.pointerId === pointerId) cleanup(); };
+    const keydown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key === "Escape") { keyEvent.preventDefault(); cleanup(); }
+    };
+    const cleanup = () => {
+      sidebarResizeCleanup.current = null;
+      if (separator.hasPointerCapture(pointerId)) separator.releasePointerCapture(pointerId);
+      setResizingSidebarWidth(null);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", keydown);
     };
 
+    sidebarResizeCleanup.current = cleanup;
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
-  }, [patchSettings, splitSidebarWidth]);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", keydown);
+  }, [patchSettings, splitSidebarWidth, direction]);
 
   const menuContent = (
     <div style={{
@@ -863,8 +896,11 @@ export default function App() {
                 }
               >
                 <div style={{ display: "flex", flex: 1, minHeight: 0, position: "relative" }}>
-                  <div style={{
+                  <div data-testid="workbench-sidebar" style={{
                     width: splitSidebarWidth,
+                    maxWidth: "50vw",
+                    minWidth: 0,
+                    containerType: "inline-size",
                     flexShrink: 0,
                     display: "flex",
                     flexDirection: "column",
@@ -880,6 +916,14 @@ export default function App() {
 
                   <div
                     onPointerDown={handleSplitPanePointerDown}
+                    role="separator" tabIndex={0} aria-label={t("app.split.resizeSidebar")} aria-orientation="vertical"
+                    aria-valuemin={minSidebarWidth} aria-valuemax={maxSidebarWidth} aria-valuenow={splitSidebarWidth}
+                    onKeyDown={event => {
+                      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                      event.preventDefault();
+                      const delta = (event.key === "ArrowRight" ? 20 : -20) * (direction === "rtl" ? -1 : 1);
+                      patchSettings({ splitPaneSidebarWidth: event.key === "Home" ? minSidebarWidth : event.key === "End" ? maxSidebarWidth : Math.min(maxSidebarWidth, Math.max(minSidebarWidth, splitSidebarWidth + delta)) });
+                    }}
                     title={t("app.split.resizeSidebar")}
                     style={{
                       width: 10,

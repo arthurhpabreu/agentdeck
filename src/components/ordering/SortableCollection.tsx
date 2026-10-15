@@ -1,20 +1,23 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
-import { SortableContext, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { DndContext, closestCenter } from "@dnd-kit/core";
+import { SortableContext, horizontalListSortingStrategy, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, RotateCcw, Undo2 } from "lucide-react";
+import { RotateCcw, Undo2 } from "lucide-react";
 import { useAppI18n } from "../../i18n";
 import { presentationKey, usePresentationOrder, usePresentationStore } from "../../store/presentationStore";
 import { orderingCopy } from "./orderingCopy";
 import "./ordering.css";
+import { useItemDragSensors } from "./dragSurface";
 
-export function ArrangementControls({ surface, context, density = false, densityOnly = false }: { surface: string; context: string; density?: boolean; densityOnly?: boolean }) {
+export function ArrangementControls({ surface, context, density = false, densityOnly = false, itemCount }: { surface: string; context: string; density?: boolean; densityOnly?: boolean; itemCount?: number }) {
   const { locale } = useAppI18n(), c = orderingCopy(locale), key = presentationKey(surface, context);
   const layout = usePresentationStore(state => state.layouts[key]);
   const canUndo = usePresentationStore(state => !!state.history[key]?.length);
   const currentDensity = usePresentationStore(state => state.density);
+  const showArrangement = !densityOnly && (itemCount === undefined || itemCount > 1 || canUndo);
+  if (!showArrangement && !density) return null;
   return <div className="ad-arrangement-controls" role="group" aria-label={c.arrange}>
-    {!densityOnly && <><span>{layout?.order || layout?.positions ? c.manual : c.automatic}</span>
+    {showArrangement && <><span>{layout?.order || layout?.positions ? c.manual : c.automatic}</span>
     <button type="button" title={c.undo} aria-label={c.undo} disabled={!canUndo} onClick={() => usePresentationStore.getState().undo(surface, context)}><Undo2 size={13} /></button>
     <button type="button" title={c.reset} aria-label={c.reset} disabled={!layout?.order && !layout?.positions} onClick={() => usePresentationStore.getState().reset(surface, context)}><RotateCcw size={13} /></button></>}
     {density && <select aria-label={c.density} value={currentDensity} onChange={event => usePresentationStore.getState().setDensity(event.target.value as "compact" | "comfortable")}><option value="comfortable">{c.comfortable}</option><option value="compact">{c.compact}</option></select>}
@@ -26,7 +29,7 @@ function SortableItem({ id, label, move, children, handleTabIndex, optimizeOffsc
   const { setNodeRef, setActivatorNodeRef, attributes, listeners, transform, transition, isDragging, isOver } = useSortable({ id });
   const element = useRef<HTMLDivElement | null>(null);
   const density = usePresentationStore(state => state.density);
-  const nodeRef = useCallback((node: HTMLDivElement | null) => { element.current = node; setNodeRef(node); }, [setNodeRef]);
+  const nodeRef = useCallback((node: HTMLDivElement | null) => { element.current = node; setNodeRef(node); setActivatorNodeRef(node); }, [setNodeRef, setActivatorNodeRef]);
   useLayoutEffect(() => {
     const node = element.current;
     if (!node || !optimizeOffscreen || !globalThis.CSS?.supports?.("content-visibility", "auto")) return;
@@ -45,14 +48,14 @@ function SortableItem({ id, label, move, children, handleTabIndex, optimizeOffsc
     observer.observe(node);
     return () => { observer.disconnect(); node.style.removeProperty("content-visibility"); node.style.removeProperty("contain-intrinsic-size"); };
   }, [optimizeOffscreen, density]);
-  const handle = useMemo(() => <button ref={setActivatorNodeRef} type="button" className="ad-reorder-handle" {...attributes} {...listeners} aria-label={`${c.drag}: ${label}`} title={c.hint}
-    tabIndex={handleTabIndex}
-    onClick={event => event.stopPropagation()} onKeyDown={event => {
+  const content = useMemo(() => children(null), [children]);
+  return <div ref={nodeRef} className="ad-sortable-item" data-sortable-id={id} data-dragging={isDragging} data-drop-target={isOver && !isDragging}
+    {...attributes} {...listeners} role="group" data-drag-item tabIndex={handleTabIndex ?? 0} aria-label={`${c.drag}: ${label}`} title={c.hint}
+    onKeyDown={event => {
+      if (event.target !== event.currentTarget) return;
       if (event.altKey && ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"].includes(event.key)) { event.preventDefault(); event.stopPropagation(); move(event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1); }
       else listeners?.onKeyDown?.(event);
-    }}><GripVertical size={13} /></button>, [setActivatorNodeRef, attributes, listeners, c, label, handleTabIndex, move]);
-  const content = useMemo(() => children(handle), [children, handle]);
-  return <div ref={nodeRef} className="ad-sortable-item" data-sortable-id={id} data-dragging={isDragging} data-drop-target={isOver && !isDragging}
+    }}
     style={{ transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 50 : undefined }}>{content}</div>;
 }
 
@@ -67,19 +70,41 @@ export function SortableCollection<T>({ surface, context, items, getId, getLabel
   const ordered = usePresentationOrder(surface, context, items, getId);
   const [dragIds, setDragIds] = useState<string[] | null>(null);
   const allAtStart = useRef<string[]>([]);
+  const collection = useRef<HTMLDivElement>(null);
+  const labelClickCleanup = useRef<(() => void) | null>(null);
+  const labelClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearLabelClick = () => {
+    if (labelClickTimer.current) clearTimeout(labelClickTimer.current);
+    labelClickCleanup.current?.(); labelClickCleanup.current = null;
+  };
+  useEffect(() => () => { if (labelClickTimer.current) clearTimeout(labelClickTimer.current); labelClickCleanup.current?.(); }, []);
+  const protectDraggedLabel = () => {
+    clearLabelClick();
+    const listener = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target && collection.current?.contains(target) && target.closest("label[data-drag-primary]") && !target.closest("input")) event.preventDefault();
+      clearLabelClick();
+    };
+    // DndKit stops propagation, but a label's native checkbox activation also
+    // needs its default cancelled. Same-document capture listeners still run.
+    document.addEventListener("click", listener, true);
+    labelClickCleanup.current = () => document.removeEventListener("click", listener, true);
+  };
+  const finishLabelDrag = () => { labelClickTimer.current = setTimeout(clearLabelClick, 50); };
   const density = usePresentationStore(state => state.density);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 7 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const sensors = useItemDragSensors();
   const visibleIds = dragIds ?? ordered.map(getId), byId = new Map(items.map(item => [getId(item), item]));
   const move = (active: string, over: string, full = allIds ?? items.map(getId)) => {
     usePresentationStore.getState().moveItem(surface, context, full, visibleIds, active, over);
     const order = usePresentationStore.getState().layouts[presentationKey(surface, context)]?.order;
     if (order) onOrder?.(order);
   };
-  return <div className={`ad-sortable-collection ${className}`} data-surface={surface} data-density={density} data-horizontal={horizontal} data-arranging={!!dragIds} style={style}>
-    {toolbar && <ArrangementControls surface={surface} context={context} density={densityControl} />}
-    <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll onDragStart={() => { allAtStart.current = allIds ?? items.map(getId); setDragIds(ordered.map(getId)); }} onDragCancel={() => setDragIds(null)} onDragEnd={({ active, over }) => {
+  return <div ref={collection} className={`ad-sortable-collection ${className}`} data-surface={surface} data-density={density} data-horizontal={horizontal} data-arranging={!!dragIds} style={style}>
+    {toolbar && <ArrangementControls surface={surface} context={context} density={densityControl} itemCount={items.length} />}
+    <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll onDragStart={event => { if (!(event.activatorEvent instanceof KeyboardEvent)) protectDraggedLabel(); allAtStart.current = allIds ?? items.map(getId); setDragIds(ordered.map(getId)); }} onDragCancel={() => { finishLabelDrag(); setDragIds(null); }} onDragEnd={({ active, over }) => {
       if (over && active.id !== over.id) move(String(active.id), String(over.id), allAtStart.current);
       setDragIds(null);
+      finishLabelDrag();
     }}><SortableContext items={visibleIds} strategy={horizontal ? horizontalListSortingStrategy : verticalListSortingStrategy}>
       <div className="ad-sortable-content">{visibleIds.map(id => {
         const item = byId.get(id); if (!item) return null;

@@ -170,7 +170,7 @@ function GroupSection({
             }}
           >
             {handle}
-            <button
+            <button data-drag-primary
               onClick={() => selectScmFile(sessionId, group, file.path)}
               style={{
                 flex: 1,

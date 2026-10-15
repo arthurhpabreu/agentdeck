@@ -35,7 +35,8 @@ export function normalizeThemeMode(theme: string | undefined): ThemeMode {
 
 export function normalizeSplitPaneSidebarWidth(width: unknown): number {
   if (typeof width !== "number" || !Number.isFinite(width)) return 320;
-  return Math.min(560, Math.max(280, Math.round(width)));
+  // Keep the preferred width; the viewport applies its responsive half-width cap.
+  return Math.max(160, Math.round(width));
 }
 
 export function normalizeSplitWidgetPanelWidth(width: unknown): number {

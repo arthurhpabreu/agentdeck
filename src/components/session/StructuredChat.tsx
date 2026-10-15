@@ -25,6 +25,7 @@ import { boundedChatMessages } from "../../services/chatCompaction";
 import { matchesChatMessage, readChatHistory, searchChatHistory } from "../../services/chatHistory";
 import { ChatToolCard } from "./ChatToolCard";
 import { ChatTurnActivity } from "./ChatTurnActivity";
+import { ChatExecutionDetails } from "./ChatExecutionDetails";
 import { showSessionSurface } from "../../services/workbenchCommands";
 import { McpAuthNotice } from "./McpAuthNotice";
 import { ChatRecoveryControl } from "./ChatRecoveryControl";
@@ -159,6 +160,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
         {search && !filtered.length && <p className="ad-hint">{c.noMatch}</p>}
       </div>}
       {thread.busy && <ChatTurnActivity thread={thread} sessionId={session.id} visible={visible} />}
+      <ChatExecutionDetails key={thread.turnId} diagnostic={thread.diagnostic} />
       {(thread.status === "stopped" || thread.status === "interrupted") && !thread.busy && <p className="ad-chat-progress">{c.stopped}</p>}
     </div>
     {!follow && thread.messages.length > 0 && <button className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => { setFollow(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><ArrowDown size={16} /></button>}

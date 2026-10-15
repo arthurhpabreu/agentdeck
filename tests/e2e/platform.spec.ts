@@ -233,6 +233,56 @@ test("@macos missing randomUUID preserves terminal tabs, active input and chat c
   expect(history.messages.some((message: any) => message.text === "Include the existing architectural decision")).toBe(true);
 });
 
+test("@macos optional MCP startup logs stay in details while quoted prompts and successful replies never create warnings", async ({ page }) => {
+  await setup(page); await openMacConversation(page);
+  const quote = "History quoted: failed to refresh OAuth tokens for server miro. The requested work succeeded.";
+  await page.locator(".ad-chat-composer textarea:visible").fill(quote);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.locator(".ad-user-text")).toContainText(quote);
+  await prepareWarningTurn(page);
+  const before = await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; return (await import(/* @vite-ignore */ path)).useChatStore.getState().threads["mac-session"].lastEventAt; });
+  const diagnostic = "Optional MCP connector miro could not refresh its login. The conversation can continue. Reconnect this connector in Codex if you need to use it.";
+  await page.evaluate(diagnostic => {
+    const w = window as any, base = { sessionId: "mac-session", turnId: "warning-turn", kind: "status", status: "diagnostic" };
+    w.__emit("chat-event", { ...base, title: "MCP login", text: diagnostic });
+    w.__emit("chat-event", { ...base, text: "Connected to Codex; optional connector initialization finished" });
+  }, diagnostic);
+  const details = page.locator(".ad-chat-execution-details");
+  await expect(details.locator("summary")).toHaveText("Execution details");
+  await expect(details.locator("pre")).toBeHidden();
+  await expect(page.locator(".ad-chat-warning")).toHaveCount(0);
+  await expect(page.locator(".ad-turn-activity-detail")).not.toContainText("miro");
+  expect(await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; const thread = (await import(/* @vite-ignore */ path)).useChatStore.getState().threads["mac-session"]; return { lastEventAt: thread.lastEventAt, activity: thread.activity, warning: thread.mcpAuthWarning }; })).toEqual({ lastEventAt: before, activity: "Reviewing the project", warning: undefined });
+  await details.locator("summary").click();
+  await expect(details.locator("pre")).toContainText(diagnostic);
+  await page.evaluate(quote => {
+    const w = window as any, base = { sessionId: "mac-session", turnId: "warning-turn" };
+    w.__emit("chat-event", { ...base, kind: "text", itemId: "quoted-response", text: quote });
+    w.__emit("chat-event", { ...base, kind: "tool", itemId: "read-history", title: "Terminal", command: "Read earlier transcript", output: quote, status: "completed", exitCode: 0 });
+    w.__emit("chat-event", { ...base, kind: "done", status: "completed" });
+  }, quote);
+  await expect(page.locator(".ad-message-assistant").last()).toContainText(quote);
+  await expect(page.locator('.ad-chat-error[role="alert"]')).toHaveCount(0);
+  await expect(page.locator(".ad-chat-warning")).toHaveCount(0);
+  await expect(details.locator("pre")).toContainText(diagnostic);
+  expect(await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; const thread = (await import(/* @vite-ignore */ path)).useChatStore.getState().threads["mac-session"]; return { busy: thread.busy, status: thread.status, warning: thread.mcpAuthWarning }; })).toEqual({ busy: false, status: "completed", warning: undefined });
+  await page.screenshot({ path: ".local/validation/mcp-startup-details.png" });
+});
+
+test("@macos requested MCP authentication failures remain visible as real tool and conversation errors", async ({ page }) => {
+  await setup(page); await openMacConversation(page); await prepareWarningTurn(page);
+  await page.evaluate(() => {
+    const w = window as any, base = { sessionId: "mac-session", turnId: "warning-turn" };
+    w.__emit("chat-event", { ...base, kind: "tool", itemId: "miro-action", title: "miro · create-board", text: "Miro authentication is required for this action", status: "failed" });
+    w.__emit("chat-event", { ...base, kind: "error", text: "The requested Miro action needs authentication" });
+    w.__emit("chat-event", { ...base, kind: "done", status: "error" });
+  });
+  await expect(page.locator(".ad-tool-card")).toContainText("miro · create-board");
+  await expect(page.locator('.ad-chat-error[role="alert"]')).toContainText("The requested Miro action needs authentication");
+  await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeVisible();
+  await expect(page.locator(".ad-chat-warning")).toHaveCount(0);
+});
+
 test("@macos real MCP authentication notices expire without duplicate renewal or losing fatal errors", async ({ page }) => {
   test.setTimeout(60_000);
   await page.clock.install();

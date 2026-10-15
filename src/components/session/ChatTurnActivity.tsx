@@ -31,7 +31,7 @@ export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatT
   const activeTools = thread.messages.filter(m => m.turnId === thread.turnId && m.role === "tool" && ["running", "in_progress", "inProgress", "started"].includes(m.status ?? "running"));
   const latestTool = activeTools[activeTools.length - 1];
   const label = thread.compacting ? contextCopy(locale).compacting : thread.status === "blocked" ? c.blocked : thread.status === "reasoning" ? c.thinking : latestTool ? `${latestTool.title || c.command} · ${c.running}` : thread.status === "finishing" ? c.finishing : thread.status === "responding" ? c.responding : thread.status === "starting" ? c.starting : c.working;
-  const detail = latestTool?.command || thread.activity || thread.diagnostic?.split("\n").slice(-1)[0];
+  const detail = latestTool?.command || thread.activity;
   const check = async () => {
     setChecking(true); setCheckNotice("");
     try { const status = await refreshChatTurnStatus(sessionId); if (status?.running) setCheckNotice(c.alive); }

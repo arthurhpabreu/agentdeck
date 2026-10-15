@@ -1,0 +1,14 @@
+.ad-multi-agent-economy { margin: 18px 20px; padding: 16px 0; border-block: 1px solid var(--ci-border); }
+.ad-multi-agent-heading { display: flex; align-items: center; gap: 12px; }
+.ad-multi-agent-heading h4 { margin: 0; font-size: 12px; font-weight: 600; }
+.ad-multi-agent-economy p { margin: 8px 0 0; color: var(--ci-text-dim); font-size: 11px; line-height: 1.65; }
+.ad-multi-agent-economy dl { display: grid; gap: 10px; margin: 16px 0; }
+.ad-multi-agent-economy dl[data-enabled=false] { opacity: .65; }
+.ad-multi-agent-economy dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.ad-multi-agent-economy dt { color: var(--ci-text-dim); font-size: 11px; }
+.ad-multi-agent-economy dd { margin: 0; text-align: end; }
+.ad-multi-agent-economy dd strong { font-size: 11px; font-weight: 500; overflow-wrap: anywhere; }
+.ad-multi-agent-economy dd small { display: block; margin-top: 3px; color: var(--ci-text-dim); font-size: 10px; }
+.ad-multi-agent-economy .is-error { color: #c56e71; }
+.ad-multi-agent-refresh { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 4px 0; border: 0; background: transparent; color: var(--ci-accent); cursor: pointer; font: inherit; font-size: 11px; }
+.ad-multi-agent-refresh:disabled { opacity: .55; cursor: default; }

@@ -28,6 +28,8 @@ pub struct PtySessionMeta {
     pub runner_type: String,
     pub workdir: String,
     pub project_path: String,
+    pub multi_agent_guidance: String,
+    pub multi_agent_guidance_delivered: bool,
 }
 
 /// session_id to PTY metadata for routing hook events to the correct session.

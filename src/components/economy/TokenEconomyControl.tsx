@@ -8,11 +8,17 @@ import { tokenEconomyMessages } from "./tokenEconomyMessages";
 import "./tokenEconomy.css";
 import { workflowCopy } from "../session/workflowCopy";
 import { getRuntimePlatform } from "../../services/platform";
+import { MultiAgentEconomy } from "./MultiAgentEconomy";
+import { observeMultiAgentEnabled, useMultiAgentEconomyStore } from "../../store/multiAgentEconomyStore";
+import { multiAgentCopy } from "./multiAgentCopy";
 
 export function TokenEconomyControl({ disabled = false, visible = true, provider, workdir, sessionId }: { disabled?: boolean; visible?: boolean; provider?: RunnerType; workdir?: string; sessionId?: string }) {
   const INSTALL_COMMAND = getRuntimePlatform().os === "windows" ? "winget install rtk-ai.rtk" : "cargo install --git https://github.com/rtk-ai/rtk";
   const { locale, t } = useAppI18n();
   const m = tokenEconomyMessages(locale);
+  const multi = multiAgentCopy(locale);
+  const multiAgentEnabled = useMultiAgentEconomyStore(state => state.enabled);
+  const loadMultiAgentEnabled = useMultiAgentEconomyStore(state => state.loadEnabled);
   const w = workflowCopy(locale);
   const [scope, setScope] = useState<TokenEconomyScope>("agentdeck");
   const { status, refreshing, changing, error, checkedAt, refresh, setEnabled } = useTokenEconomy(visible, workdir, scope);
@@ -36,6 +42,12 @@ export function TokenEconomyControl({ disabled = false, visible = true, provider
   const reported = (value: number | undefined) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? count(value) : m.unknown;
   const close = () => { setOpen(false); trigger.current?.focus(); };
 
+  useEffect(() => {
+    if (!visible || !desktop) return;
+    const stopObserving = observeMultiAgentEnabled();
+    void loadMultiAgentEnabled();
+    return stopObserving;
+  }, [visible, desktop, loadMultiAgentEnabled]);
   useEffect(() => {
     if (!open) return;
     panel.current?.focus();
@@ -61,13 +73,14 @@ export function TokenEconomyControl({ disabled = false, visible = true, provider
   const chipState = status ? status.enabled ? m.enabled : m.disabled : refreshing ? m.checking : m.unavailable;
 
   return <div className="ad-token-economy" ref={root} onKeyDown={event => { if (event.key === "Escape" && open) { event.stopPropagation(); close(); } }}>
-    <button type="button" ref={trigger} className="ad-economy-trigger" data-enabled={status?.enabled === true} aria-label={m.title} title={`${m.title} · ${chipState}`} aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => { setOpen(value => !value); if (!open) void refresh(false, workdir, scope); }}>
-      <Leaf size={14} /><span>{m.short}</span><small>{chipState}</small>{measured && status!.commandCount! > 0 && <span className="ad-economy-count">≈ {percent(status!.savingsPercent!)}% {w.rtkLabel}</span>}{cachePercent !== undefined && <span className="ad-economy-count" title={w.cacheHint}>{percent(cachePercent)}% {w.cacheLabel}</span>}{totalUsage && <span className="ad-economy-count">{compactCount(totalUsage.inputTokens + totalUsage.outputTokens)} {m.usedShort}</span>}<ChevronDown size={11} />
+    <button type="button" ref={trigger} className="ad-economy-trigger" data-enabled={status?.enabled === true} aria-label={m.title} aria-description={multiAgentEnabled ? multi.badgeHint : undefined} title={`${m.title} · ${chipState}${multiAgentEnabled ? ` · ${multi.badgeHint}` : ""}`} aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => { setOpen(value => !value); if (!open) void refresh(false, workdir, scope); }}>
+      <Leaf size={14} /><span>{m.short}</span><small>{chipState}</small>{multiAgentEnabled && <span className="ad-multi-agent-badge" title={multi.badgeHint}>{multi.badge}</span>}{measured && status!.commandCount! > 0 && <span className="ad-economy-count">≈ {percent(status!.savingsPercent!)}% {w.rtkLabel}</span>}{cachePercent !== undefined && <span className="ad-economy-count" title={w.cacheHint}>{percent(cachePercent)}% {w.cacheLabel}</span>}{totalUsage && <span className="ad-economy-count">{compactCount(totalUsage.inputTokens + totalUsage.outputTokens)} {m.usedShort}</span>}<ChevronDown size={11} />
     </button>
     {open && <div id={id} ref={panel} className="ad-economy-panel" role="dialog" tabIndex={-1} aria-label={m.title}>
       <header><div><h3>{m.title}</h3><p>{status?.available ? m.ready : status ? m.missing : m.checking}</p></div><button type="button" className="ad-economy-icon" aria-label={m.close} title={m.close} onClick={close}><X size={16} /></button></header>
       <div className="ad-economy-setting"><div><strong>{m.toggle}</strong><p>{changing ? m.saving : disabled ? m.busy : m.future}</p></div><button type="button" className="ad-economy-switch" role="switch" aria-label={m.toggle} aria-checked={status?.enabled === true} disabled={disabled || changing || !status || !desktop} onClick={() => void setEnabled(!status?.enabled, workdir, scope)}><span>{changing && <LoaderCircle size={10} />}</span></button></div>
       <p className="ad-economy-description">{m.description}</p>
+      <MultiAgentEconomy provider={provider} workdir={workdir} sessionId={sessionId} disabled={disabled} />
       <div className="ad-economy-integrations" aria-label={m.integrations}>
         <div data-current={provider === "claude-code"}><strong>{t("notifications.claudeCode")}</strong><p>{m.claudeDetail}</p>{status?.claudeHookAvailable && <small>{m.hook}</small>}</div>
         <div data-current={provider === "codex"}><strong>{t("notifications.codex")}</strong><p>{m.codexDetail}</p>{status?.codexHookAvailable && <small>{m.codexHook}</small>}</div>

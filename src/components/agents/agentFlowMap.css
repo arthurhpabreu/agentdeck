@@ -53,7 +53,6 @@
 @media (max-width: 1050px) { .ad-monitor-body[data-view="map"], .ad-monitor-body[data-view="tasks"] { grid-template-columns: minmax(0, 1fr) 290px; } }
 @media (max-width: 700px) { .ad-monitor-body[data-view="map"], .ad-monitor-body[data-view="tasks"] { display: flex; overflow: auto; } .ad-flow-panel { min-height: 340px; flex-shrink: 0; } .ad-monitor-body[data-view="map"] .ad-monitor-detail, .ad-monitor-body[data-view="tasks"] .ad-monitor-detail { overflow: visible; border-left: 0; border-top: 1px solid var(--ci-border); } .ad-task-board { max-height: 320px; } }
 @media (prefers-reduced-motion: reduce) { .ad-flow-signal, .ad-flow-node[data-active="true"] .ad-flow-avatar { animation: none; filter: none; } }
-.ad-flow-drag-handle { position: absolute; top: 3px; right: -20px; width: 18px; height: 25px; background: var(--ci-bg); border: 1px solid var(--ci-border); }
 .ad-flow-node[data-position-dragging="true"] { z-index: 20; outline: 2px solid var(--ci-accent); outline-offset: 3px; }
 .ad-board-arrange-row { display: flex; align-items: flex-start; min-width: 0; }
 .ad-board-arrange-row > .ad-board-task { flex: 1; min-width: 0; }
@@ -62,3 +61,5 @@
 .ad-board-manual { padding: 0 12px 12px; overflow: auto; }
 .ad-board-manual .ad-sortable-content { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
 .ad-flow-focus { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+.ad-flow-node:focus-visible { outline: 2px solid var(--ci-accent); outline-offset: 3px; }

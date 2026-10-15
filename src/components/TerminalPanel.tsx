@@ -135,7 +135,7 @@ export function TerminalPanel({ session }: { session: ClaudeSession | null }) {
         }}>
           <SortableCollection surface="terminal-tabs" context={tabContext} items={automaticTabs} getId={tab => tab.key} getLabel={tab => tab.title} horizontal toolbar={false} render={(tab, handle) => <div className="ad-terminal-tab" data-active={tab.key === activeTab?.key}>
             {handle}
-            <button type="button" role="tab" id={`${id}-tab-${encodeURIComponent(tab.key)}`} aria-controls={`${id}-viewport`} aria-selected={tab.key === activeTab?.key} tabIndex={tab.key === activeTab?.key ? 0 : -1} onClick={() => selectTab(tab.key)}>{tab.title}</button>
+            <button data-drag-primary type="button" role="tab" id={`${id}-tab-${encodeURIComponent(tab.key)}`} aria-controls={`${id}-viewport`} aria-selected={tab.key === activeTab?.key} tabIndex={tab.key === activeTab?.key ? 0 : -1} onClick={() => selectTab(tab.key)}>{tab.title}</button>
             {tabs.length > 1 && <button type="button" className="ad-terminal-tab-close" aria-label={t("editor.closeTab", { title: tab.title })} title={t("editor.closeTab", { title: tab.title })} onClick={() => closeTab(tab.key)}><X size={12} /></button>}
           </div>} />
         </div>

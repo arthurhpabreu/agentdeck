@@ -2,12 +2,8 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
-  KeyboardSensor,
   closestCenter,
   pointerWithin,
-  useSensor,
-  useSensors,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -16,13 +12,14 @@ import { useEditorBufferStore } from "../../store/editorBufferStore";
 import { getSessionEditorGroupIds, useEditorStore } from "../../store/editorStore";
 import { EditorGroupPane, type EditorSplitDropData } from "./EditorGroupPane";
 import { EditorTabPreview, type EditorTabDragData, type EditorTabStripDropData } from "./EditorTabs";
-import { SortableContext, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
+import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Undo2 } from "lucide-react";
+import { Undo2 } from "lucide-react";
 import { ArrangementControls } from "../ordering/SortableCollection";
 import { orderingCopy } from "../ordering/orderingCopy";
 import { useAppI18n } from "../../i18n";
 import { usePresentationOrder, usePresentationStore } from "../../store/presentationStore";
+import { useItemDragSensors } from "../ordering/dragSurface";
 import { moveEditorTabToVisualGroup } from "../../services/editorPresentation";
 
 type EditorDropData = EditorSplitDropData | EditorTabStripDropData | EditorTabDragData;
@@ -48,11 +45,14 @@ function readDragData(data: unknown): EditorTabDragData | null {
 function SortableEditorGroup({ id, ids, sessionId, label, children }: { id: string; ids: string[]; sessionId: string; label: string; children: ReactNode }) {
   const { locale } = useAppI18n(), c = orderingCopy(locale);
   const { setNodeRef, setActivatorNodeRef, attributes, listeners, transform, transition, isDragging } = useSortable({ id, data: { type: "editor-group", groupId: id } });
-  return <div ref={setNodeRef} data-editor-group-container={id} data-dragging={isDragging} style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 10 : undefined }}>
-    {ids.length > 1 && <div style={{ height: 22, display: "flex", alignItems: "center", justifyContent: "flex-end" }}><button type="button" ref={setActivatorNodeRef} className="ad-reorder-handle" {...attributes} {...listeners} aria-label={`${c.drag}: ${c.group} ${label}`} title={c.hint} onKeyDown={event => {
-      if (event.altKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); const over = ids[ids.indexOf(id) + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1)]; if (over) usePresentationStore.getState().moveItem("editor-groups", sessionId, ids, ids, id, over); }
+  return <div ref={node => { setNodeRef(node); setActivatorNodeRef(node); }} data-editor-group-container={id} data-dragging={isDragging}
+    {...attributes} {...listeners} role="group" data-drag-item tabIndex={ids.length > 1 ? 0 : -1} aria-label={`${c.drag}: ${c.group} ${label}`} title={c.hint}
+    onKeyDown={event => {
+      if (event.target !== event.currentTarget) return;
+      if (event.altKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); event.stopPropagation(); const over = ids[ids.indexOf(id) + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1)]; if (over) usePresentationStore.getState().moveItem("editor-groups", sessionId, ids, ids, id, over); }
       else listeners?.onKeyDown?.(event);
-    }}><GripVertical size={13} /></button></div>}{children}
+    }} style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 10 : undefined }}>
+    {children}
   </div>;
 }
 
@@ -74,7 +74,7 @@ export function EditorSplitHost({
   const [activeDrag, setActiveDrag] = useState<EditorTabDragData | null>(null);
 
   const dirtyByActiveDragTab = useEditorBufferStore((s) => activeDrag ? s.buffersByTabId[activeDrag.tabId]?.dirty === true : false);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 7 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const sensors = useItemDragSensors();
 
   useEffect(() => {
     if (!session) return;

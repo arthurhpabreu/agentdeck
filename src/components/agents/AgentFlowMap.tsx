@@ -1,5 +1,5 @@
-import { useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Bot, CheckCircle2, Crosshair, GripVertical, Pause, Play, Radio, Terminal, Wrench } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Bot, CheckCircle2, Crosshair, Pause, Play, Radio, Terminal, Wrench } from "lucide-react";
 import type { AgentNode } from "./AgentObservatory";
 import { ProviderIcon } from "../ProviderIcon";
 import { GraphViewport } from "../graph/GraphViewport";
@@ -9,6 +9,7 @@ import { agentWorking, layoutAgents, taskColumn } from "./agentGraph";
 import "../graph/knowledgeGraph.css";
 import "./agentFlowMap.css";
 import { SortableCollection, ArrangementControls } from "../ordering/SortableCollection";
+import { isDragSurface } from "../ordering/dragSurface";
 import { orderingCopy } from "../ordering/orderingCopy";
 import { presentationKey, usePresentationStore, type VisualPoint } from "../../store/presentationStore";
 
@@ -17,34 +18,49 @@ function PositionedAgent({ node, position, selected, active, locale, onCommit, c
   onCommit: (id: string, point: VisualPoint) => void; children: ReactNode;
 }) {
   const [preview, setPreview] = useState<VisualPoint | null>(null), [dragging, setDragging] = useState(false);
-  const start = useRef<{ point: VisualPoint; x: number; y: number; scale: number; moved: boolean } | null>(null);
-  const pending = useRef<VisualPoint | null>(null);
+  const start = useRef<{ point: VisualPoint; x: number; y: number; scale: number; moved: boolean; armed: boolean; element: HTMLDivElement; pointerId: number } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressClickUntil = useRef(0), pending = useRef<VisualPoint | null>(null);
   const point = preview ?? position, c = orderingCopy(locale);
-  const cancel = () => { start.current = null; pending.current = null; setPreview(null); setDragging(false); };
-  return <div className="ad-flow-node" style={{ left: point.x, top: point.y }} data-phase={node.status} data-active={active} data-selected={selected} data-position-dragging={dragging}>
-    <button type="button" className="ad-reorder-handle ad-flow-drag-handle" aria-label={`${c.drag}: ${node.name}`} title={c.mapHint}
-      onPointerDown={event => {
-        if (event.button !== 0) return;
-        event.stopPropagation(); event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId);
-        start.current = { point: position, x: event.clientX, y: event.clientY, scale: Number(event.currentTarget.closest('.ad-graph-world')?.getAttribute('data-scale')) || 1, moved: false };
-        setDragging(true);
-      }} onPointerMove={event => {
-        const initial = start.current; if (!initial) return;
-        const dx = event.clientX - initial.x, dy = event.clientY - initial.y;
-        if (!initial.moved && Math.hypot(dx, dy) < 7) return;
-        initial.moved = true;
-        const next = { x: Math.max(0, initial.point.x + dx / initial.scale), y: Math.max(0, initial.point.y + dy / initial.scale) };
-        pending.current = next; setPreview(next);
-      }} onPointerUp={event => {
-        event.stopPropagation(); if (start.current?.moved && pending.current) onCommit(node.key, pending.current);
-        cancel();
-      }} onPointerCancel={cancel} onClick={event => event.stopPropagation()} onKeyDown={event => {
-        if (event.key === "Escape" && start.current) { event.preventDefault(); event.stopPropagation(); cancel(); }
-        else if (event.key.startsWith("Arrow")) {
-          event.preventDefault(); event.stopPropagation(); const step = event.shiftKey ? 40 : 16;
-          onCommit(node.key, { x: Math.max(0, position.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0)), y: Math.max(0, position.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0)) });
-        }
-      }}><GripVertical size={15} /></button>{children}
+  const cancel = () => {
+    if (timer.current) clearTimeout(timer.current);
+    const current = start.current;
+    if (current?.element.hasPointerCapture(current.pointerId)) current.element.releasePointerCapture(current.pointerId);
+    start.current = null; pending.current = null; setPreview(null); setDragging(false);
+  };
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  return <div className="ad-flow-node" role="group" tabIndex={0} data-drag-item aria-label={`${c.drag}: ${node.name}`} title={c.mapHint}
+    style={{ left: point.x, top: point.y }} data-phase={node.status} data-active={active} data-selected={selected} data-position-dragging={dragging}
+    onPointerDown={event => {
+      if (event.button !== 0 || !isDragSurface(event)) return;
+      event.stopPropagation();
+      start.current = { point: position, x: event.clientX, y: event.clientY, scale: Number(event.currentTarget.closest(".ad-graph-world")?.getAttribute("data-scale")) || 1, moved: false, armed: false, element: event.currentTarget, pointerId: event.pointerId };
+      timer.current = setTimeout(() => {
+        const current = start.current; if (!current) return;
+        current.armed = true; current.element.focus({ preventScroll: true });
+        current.element.setPointerCapture(current.pointerId);
+      }, event.pointerType === "touch" ? 260 : 180);
+    }} onPointerMove={event => {
+      const initial = start.current; if (!initial) return;
+      const dx = event.clientX - initial.x, dy = event.clientY - initial.y;
+      if (!initial.armed) { if (Math.hypot(dx, dy) > 6) cancel(); return; }
+      if (!initial.moved && Math.hypot(dx, dy) < 7) return;
+      event.preventDefault(); initial.moved = true; setDragging(true);
+      const next = { x: Math.max(0, initial.point.x + dx / initial.scale), y: Math.max(0, initial.point.y + dy / initial.scale) };
+      pending.current = next; setPreview(next);
+    }} onPointerUp={() => {
+      if (start.current?.armed) suppressClickUntil.current = Date.now() + 400;
+      if (start.current?.moved && pending.current) onCommit(node.key, pending.current);
+      cancel();
+    }} onPointerCancel={cancel} onPointerLeave={() => { if (start.current && !start.current.armed) cancel(); }} onClickCapture={event => {
+      if (Date.now() < suppressClickUntil.current) { suppressClickUntil.current = 0; event.preventDefault(); event.stopPropagation(); }
+    }} onKeyDown={event => {
+      if (event.key === "Escape" && start.current) { event.preventDefault(); event.stopPropagation(); suppressClickUntil.current = Date.now() + 400; cancel(); }
+      else if (event.target === event.currentTarget && event.key.startsWith("Arrow")) {
+        event.preventDefault(); event.stopPropagation(); const step = event.shiftKey ? 40 : 16;
+        onCommit(node.key, { x: Math.max(0, position.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0)), y: Math.max(0, position.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0)) });
+      }
+    }}>{children}
   </div>;
 }
 
@@ -75,9 +91,9 @@ export function AgentFlowMap({ nodes, allNodes = nodes, selectedKey, onSelect, l
   return <section className="ad-flow-panel" aria-label={board ? g.tasks : g.map} data-paused={paused}>
     <div className="ad-flow-controls"><select aria-label={m.sessions} value={effectiveSession} onChange={event => setSessionId(event.target.value)}><option value="all">{m.all} · {roots.length} {m.sessions.toLocaleLowerCase()}</option>{roots.map(root => <option key={root.key} value={root.session.id}>{root.name}</option>)}</select><span>{visible.length} {g.visible}</span>{!board && <button type="button" className="ad-monitor-icon-button" aria-label={paused ? g.resume : g.pause} title={paused ? g.resume : g.pause} aria-pressed={paused} onClick={() => setPaused(value => !value)}>{paused ? <Play size={15} /> : <Pause size={15} />}</button>}</div>
     {board && <div className="ad-flow-board-mode" role="group" aria-label={c.arrange}><button type="button" className="ad-button" aria-pressed={!manualBoard} onClick={() => setManualBoard(false)}>{c.status}</button><button type="button" className="ad-button" aria-pressed={manualBoard} onClick={() => setManualBoard(true)}>{c.manual}</button></div>}
-    {board ? manualBoard ? <SortableCollection surface="agent-board-manual" context="all" className="ad-board-manual" items={visible} allIds={allNodes.map(node => node.key)} getId={node => node.key} getLabel={node => node.name} render={(node, handle) => <div className="ad-board-arrange-row">{handle}<button type="button" className="ad-board-task" aria-pressed={selectedKey === node.key} onClick={() => onSelect(node.key)}><span><ProviderIcon provider={node.session.runner.type} size={14} />{node.name}</span><strong>{node.task || m.noTask}</strong><small>{agentPhaseLabel(node.status, locale)} · {node.events.length} {m.tools}</small>{node.parentKey && <small>{m.childOf} {allNodes.find(parent => parent.key === node.parentKey)?.name ?? node.parentKey}</small>}</button></div>} /> : <div className="ad-task-board">{(["waiting", "running", "attention", "completed"] as const).map(column => {
+    {board ? manualBoard ? <SortableCollection surface="agent-board-manual" context="all" className="ad-board-manual" items={visible} allIds={allNodes.map(node => node.key)} getId={node => node.key} getLabel={node => node.name} render={(node, handle) => <div className="ad-board-arrange-row">{handle}<button type="button" data-drag-primary className="ad-board-task" aria-pressed={selectedKey === node.key} onClick={() => onSelect(node.key)}><span><ProviderIcon provider={node.session.runner.type} size={14} />{node.name}</span><strong>{node.task || m.noTask}</strong><small>{agentPhaseLabel(node.status, locale)} · {node.events.length} {m.tools}</small>{node.parentKey && <small>{m.childOf} {allNodes.find(parent => parent.key === node.parentKey)?.name ?? node.parentKey}</small>}</button></div>} /> : <div className="ad-task-board">{(["waiting", "running", "attention", "completed"] as const).map(column => {
       const items = visible.filter(node => taskColumn(node.status) === column);
-      return <section key={column} className="ad-task-column" data-column={column}><header><i className="ad-monitor-dot" data-phase={column === "attention" ? "waiting" : column === "completed" ? "done" : column} /><h3>{g[column]}</h3><span>{items.length}</span></header><SortableCollection surface="agent-board-column" context={column} items={items} allIds={allNodes.filter(node => taskColumn(node.status) === column).map(node => node.key)} getId={node => node.key} getLabel={node => node.name} render={(node, handle) => <div className="ad-board-arrange-row">{handle}<button type="button" className="ad-board-task" aria-pressed={selectedKey === node.key} onClick={() => onSelect(node.key)}><span><ProviderIcon provider={node.session.runner.type} size={14} />{node.name}</span><strong>{node.task || m.noTask}</strong><small>{agentPhaseLabel(node.status, locale)} · {node.events.length} {m.tools}</small>{!node.isRoot && <small>{g.recorded}</small>}</button></div>} /></section>;
+      return <section key={column} className="ad-task-column" data-column={column}><header><i className="ad-monitor-dot" data-phase={column === "attention" ? "waiting" : column === "completed" ? "done" : column} /><h3>{g[column]}</h3><span>{items.length}</span></header><SortableCollection surface="agent-board-column" context={column} items={items} allIds={allNodes.filter(node => taskColumn(node.status) === column).map(node => node.key)} getId={node => node.key} getLabel={node => node.name} render={(node, handle) => <div className="ad-board-arrange-row">{handle}<button type="button" data-drag-primary className="ad-board-task" aria-pressed={selectedKey === node.key} onClick={() => onSelect(node.key)}><span><ProviderIcon provider={node.session.runner.type} size={14} />{node.name}</span><strong>{node.task || m.noTask}</strong><small>{agentPhaseLabel(node.status, locale)} · {node.events.length} {m.tools}</small>{!node.isRoot && <small>{g.recorded}</small>}</button></div>} /></section>;
     })}</div> : <>
       <div className="ad-flow-focus"><button type="button" className="ad-button" disabled={!selectedPosition} onClick={() => setFocusCount(count => count + 1)}><Crosshair size={13} />{centerLabel}</button><ArrangementControls surface="agent-map" context="all" /></div>
       <GraphViewport width={layout.width} height={layout.height} label={g.map} controls={g} resetKey={effectiveSession} focusTarget={focusCount && selectedPosition ? { x: selectedPosition.x + 126, y: selectedPosition.y + 100, key: `${selectedKey}:${focusCount}` } : undefined}>
@@ -100,10 +116,10 @@ export function AgentFlowMap({ nodes, allNodes = nodes, selectedKey, onSelect, l
           const position = layout.positions.get(node.key); if (!position) return null;
           const active = executing(node), recent = node.events[node.events.length - 1];
           return <PositionedAgent key={node.key} node={node} position={position} selected={selectedKey === node.key} active={active} locale={locale} onCommit={commitPosition}>
-            <button type="button" className="ad-flow-agent-card" aria-label={`${node.name} · ${agentPhaseLabel(node.status, locale)}`} aria-pressed={selectedKey === node.key} onClick={() => onSelect(node.key)}>
+            <button type="button" data-drag-primary className="ad-flow-agent-card" aria-label={`${node.name} · ${agentPhaseLabel(node.status, locale)}`} aria-pressed={selectedKey === node.key} onClick={() => onSelect(node.key)}>
               <span className="ad-flow-avatar">{node.isRoot ? <ProviderIcon provider={node.session.runner.type} size={22} /> : <Bot size={22} />}</span><span className="ad-flow-agent-name"><strong>{node.name}</strong><small>{node.agent?.role || (node.isRoot ? m.root : m.subagents)}</small></span><span className="ad-flow-status"><i className="ad-monitor-dot" data-phase={node.status} />{agentPhaseLabel(node.status, locale)}</span>
             </button>
-            <button type="button" className="ad-flow-task-card" aria-label={`${g.task}: ${node.task || m.noTask}`} onClick={() => onSelect(node.key)}>
+            <button type="button" data-drag-primary className="ad-flow-task-card" aria-label={`${g.task}: ${node.task || m.noTask}`} onClick={() => onSelect(node.key)}>
               <span><Terminal size={12} />{g.task}{!node.isRoot && <small>{g.recorded}</small>}</span><strong>{node.task || m.noTask}</strong><small>{recent ? <><Wrench size={11} />{recent.title}<span>{node.events.length}</span></> : <>{node.status === "done" ? <CheckCircle2 size={12} /> : <Radio size={12} />}{node.isRoot ? m.live : m.native}</>}</small>
             </button>
           </PositionedAgent>;

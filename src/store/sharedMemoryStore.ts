@@ -45,7 +45,7 @@ export const useSharedMemoryStore = create<SharedMemoryState>((set, get) => {
   });
   const invalidateLoads = (path: string) => requestVersions.set(path, (requestVersions.get(path) ?? 0) + 1);
   return {
-    memoryTab: "memory",
+    memoryTab: "documents",
     setMemoryTab: memoryTab => set({ memoryTab }),
     memoryScope: "project",
     setMemoryScope: memoryScope => set({ memoryScope }),

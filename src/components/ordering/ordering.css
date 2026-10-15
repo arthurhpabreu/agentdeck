@@ -7,10 +7,9 @@
 .ad-sortable-item[data-dragging="true"] { opacity: .75; outline: 1px solid var(--ci-accent); border-radius: 4px; background: var(--ci-bg); }
 .ad-sortable-item[data-drop-target="true"]::before { content: ""; position: absolute; inset: -2px 0 auto; height: 2px; background: var(--ci-accent); z-index: 51; pointer-events: none; }
 .ad-sortable-collection[data-horizontal="true"] .ad-sortable-item[data-drop-target="true"]::before { inset: 0 auto 0 -2px; width: 2px; height: auto; }
-.ad-reorder-handle { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 19px; min-height: 22px; padding: 2px; background: transparent; border: 0; color: var(--ci-text-dim); cursor: grab; touch-action: none; border-radius: 3px; }
-.ad-reorder-handle:active { cursor: grabbing; }
-.ad-reorder-handle:hover { color: var(--ci-accent); background: var(--ci-list-hover-bg); }
-.ad-reorder-handle:focus-visible { outline: 2px solid var(--ci-accent); outline-offset: 1px; }
+.ad-sortable-item { touch-action: auto; }
+.ad-sortable-item:focus-visible, [data-drag-item]:focus-visible { outline: 2px solid var(--ci-accent); outline-offset: -2px; border-radius: 4px; }
+.ad-sortable-item[data-dragging="true"], [data-dragging="true"] { cursor: grabbing; }
 .ad-arrangement-controls { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin: 2px 0 4px; font-size: 10px; color: var(--ci-text-dim); }
 .ad-arrangement-controls > button { display: inline-flex; align-items: center; justify-content: center; padding: 3px; border: 0; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; }
 .ad-arrangement-controls > button:disabled { opacity: .35; cursor: default; }
@@ -20,3 +19,9 @@
 .ad-sortable-collection[data-density="compact"] .ad-session-card { padding-block: 3px !important; min-height: 26px !important; }
 .ad-editor-group-order > .ad-sortable-content { flex: 1; min-height: 0; }
 .ad-editor-group-order > .ad-sortable-content > .ad-sortable-item { flex: 1; min-height: 0; overflow: hidden; }
+@container (max-width: 300px) {
+  .ad-session-card { flex-wrap: wrap; }
+  .ad-session-card > [data-drag-primary] { flex-basis: calc(100% - 28px) !important; }
+  .ad-session-card > [data-session-actions] { margin-inline-start: 14px; }
+  .ad-session-card > [data-session-actions][data-visible="false"] { display: none !important; }
+}

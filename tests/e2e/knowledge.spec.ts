@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function setupDocuments(page: Page) {
+async function setupDocuments(page: Page, checkInitialTab = false) {
   await page.addInitScript(() => {
     const w = window as any; let nextId = 0;
     w.__documentCalls = []; w.__cancelPick = false; w.__searchFailure = false; w.__sourceFailure = false; w.__holdSearch = false;
@@ -44,22 +44,62 @@ async function setupDocuments(page: Page) {
     localStorage.setItem("agentdeck-workspaces",JSON.stringify({state:{workspaces:[{id:"alpha",name:"Alpha",path:"C:\\Projects\\Alpha",color:"green",createdAt:1,order:0}],activeWorkspaceId:"alpha"},version:0}));
     localStorage.setItem("agentdeck-sessions",JSON.stringify({state:{sessions:[{id:"doc-session",name:"Documents",workspaceId:"alpha",workdir:"C:\\Projects\\Alpha",status:"idle",currentTask:"",createdAt:1,diffFiles:[],output:[],runner:{type:"codex"}}],activeSessionId:"doc-session"},version:0}));
   });
-  await page.goto("/");await page.getByRole("button",{name:"Conhecimento local",exact:true}).click();await page.getByRole("tab",{name:"Documentos",exact:true}).click();return page.locator(".ad-documents");
+  await page.goto("/");await page.getByRole("button",{name:"Conhecimento local",exact:true}).click();if(checkInitialTab)await expect(page.getByRole("tab",{name:"Documentos",exact:true})).toHaveAttribute("aria-selected","true");await page.getByRole("tab",{name:"Documentos",exact:true}).click();return page.locator(".ad-documents");
 }
-async function selectVault(page:Page,docs:ReturnType<Page["locator"]>){await docs.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true}).check();await expect(docs.getByRole("region",{name:"Saúde da fonte",exact:true})).toContainText(/2\s+notas|Índice parcial|Pasta indisponível/);}
-const globalScope=(page:Page)=>page.getByRole("group",{name:"Escopo dos documentos"}).getByRole("button",{name:"Global",exact:true});
+async function selectVault(page:Page,docs:ReturnType<Page["locator"]>){await docs.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true}).check();await docs.locator(".ad-documents-explore > summary").click();await docs.locator(".ad-documents-diagnostics > summary").click();await expect(docs.getByRole("region",{name:"Saúde da fonte",exact:true})).toContainText(/2\s+notas|Índice parcial|Pasta indisponível/);}
+const globalScope=(page:Page)=>page.getByRole("group",{name:"Navegação de documentos"}).getByRole("button",{name:"Catálogo",exact:true});
+
+test("new knowledge panels start with documents and retain the chosen tab when reopened",async({page})=>{
+  await setupDocuments(page,true);
+  await expect(page.getByRole("tab",{name:"Documentos",exact:true})).toHaveAttribute("aria-selected","true");
+  await page.getByRole("tab",{name:"Memória compartilhada",exact:true}).click();
+  await page.getByTestId("workbench-sidebar").getByRole("button",{name:"Arquivos",exact:true}).click();
+  await page.getByRole("button",{name:"Conhecimento local",exact:true}).click();
+  await expect(page.getByRole("tab",{name:"Memória compartilhada",exact:true})).toHaveAttribute("aria-selected","true");
+  await page.getByRole("tab",{name:"Memória compartilhada",exact:true}).focus();await page.keyboard.press("Home");
+  await expect(page.getByRole("tab",{name:"Documentos",exact:true})).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(page.getByRole("tab",{name:"Memória compartilhada",exact:true})).toBeFocused();
+});
+
+test("document hierarchy makes conversation selection explicit and opens exploration on request @macos",async({page})=>{
+  const docs=await setupDocuments(page);
+  await expect(page.getByRole("heading",{name:"Fontes da conversa",exact:true})).toBeVisible();
+  await expect(page.locator(".ad-documents-context")).toHaveText("ConversaDocuments");
+  await expect(page.locator(".ad-memory-project select")).toHaveValue("alpha");
+  await expect(docs.locator(".ad-source-count").first()).toHaveText("Selecionados: 0");
+  await expect(docs.getByRole("region",{name:"Grafo de notas",exact:true})).toHaveCount(0);
+  await expect(docs.getByRole("region",{name:"Saúde da fonte",exact:true})).toHaveCount(0);
+  await docs.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true}).check();
+  await expect(docs.locator(".ad-source-count").first()).toHaveText("Selecionados: 1");
+  const calls=await page.evaluate(()=>(window as any).__documentCalls);
+  expect(calls.some((call:any)=>["get_knowledge_graph","get_knowledge_health"].includes(call.command))).toBe(false);
+  await globalScope(page).click();
+  await expect(page.getByText("Cadastrar um vault não ativa seu uso em projetos ou conversas.",{exact:true})).toBeVisible();
+  const search=docs.getByRole("textbox",{name:"Buscar",exact:true});
+  await expect(search).toBeDisabled();
+  await docs.getByRole("button",{name:"Consultar notas",exact:true}).click();
+  await expect(docs.locator(".ad-documents-inspector")).toContainText("QA vault");
+  await search.fill("catalog inspection");await search.press("Enter");
+  await expect(docs.locator(".ad-documents-results")).toBeVisible();
+  const searches=await page.evaluate(()=>(window as any).__documentCalls.filter((call:any)=>call.command==="search_knowledge"));
+  expect(searches.at(-1).args).toMatchObject({projectPath:null,sessionId:null,sourceId:"a"});
+  await docs.getByRole("button",{name:"Fechar consulta do vault",exact:true}).click();
+  await expect(search).toBeDisabled();
+  expect(await page.evaluate(()=>(window as any).__customSelections["doc-session"].sourceIds)).toEqual(["a"]);
+});
 
 test("vault registration does not grant any project; custom empty blocks inherited sources @macos",async({page})=>{
-  const docs=await setupDocuments(page);await expect(docs).toContainText("Nenhum vault selecionado. Sem fallback global.");
-  const projectDefaults=docs.locator(":scope > details").first();await projectDefaults.locator("summary").click();await projectDefaults.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true}).check();await projectDefaults.locator("summary").click();
+  const docs=await setupDocuments(page);await expect(docs).toContainText("Nenhum vault será consultado.");
+  const projectDefaults=docs.locator(".ad-project-source-defaults");await projectDefaults.locator(":scope > summary").click();await projectDefaults.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true}).check();await projectDefaults.locator(":scope > summary").click();
   await expect(docs.getByRole("combobox",{name:"Vaults selecionados",exact:true})).toHaveValue("inherit");await expect(docs.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true})).toBeChecked();await docs.getByRole("combobox",{name:"Vaults selecionados",exact:true}).selectOption("custom");
-  await docs.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true}).uncheck();await expect(docs).toContainText("Nenhum vault selecionado. Sem fallback global.");
+  await docs.getByRole("checkbox",{name:"Selecionado: QA vault",exact:true}).uncheck();await expect(docs).toContainText("Nenhum vault será consultado.");
   await expect(docs.getByRole("combobox",{name:"Vaults selecionados",exact:true})).toHaveValue("custom");
   expect(await page.evaluate(()=>(window as any).__projectSelection.sourceIds)).toEqual(["a"]);
   await globalScope(page).click();await docs.getByRole("button",{name:"Cadastrar vault",exact:true}).click();
   const editor=docs.locator(".ad-source-editor");await editor.getByRole("textbox",{name:"Nome",exact:true}).fill("Arbitrary FPS vault");
   await page.evaluate(()=>{(window as any).__cancelPick=true;});await editor.getByRole("button",{name:"Escolher pasta",exact:true}).click();await expect(editor.getByRole("textbox",{name:"Pasta",exact:true})).toHaveValue("");
-  await page.evaluate(()=>{(window as any).__cancelPick=false;});await editor.getByRole("button",{name:"Escolher pasta",exact:true}).click();await editor.getByRole("combobox",{name:"Modo",exact:true}).selectOption("query");await editor.getByRole("textbox",{name:/Pastas ou notas autorizadas/}).fill("News\nGuides");await editor.getByRole("button",{name:"Salvar",exact:true}).click();
+  await page.evaluate(()=>{(window as any).__cancelPick=false;});await editor.getByRole("button",{name:"Escolher pasta",exact:true}).click();await editor.locator("summary").click();await editor.getByRole("combobox",{name:"Modo",exact:true}).selectOption("query");await editor.getByRole("textbox",{name:/Pastas ou notas autorizadas/}).fill("News\nGuides");await editor.getByRole("button",{name:"Salvar",exact:true}).click();
   await expect(docs).toContainText("Arbitrary FPS vault");expect(await page.evaluate(()=>(window as any).__projectSelection.sourceIds)).toEqual(["a"]);
 });
 test("search cancellation and retry preserve the query and discard superseded responses",async({page})=>{
@@ -70,7 +110,7 @@ test("search cancellation and retry preserve the query and discard superseded re
   await input.fill("none");await input.press("Enter");await expect(docs).toContainText("Nenhuma nota encontrada para esta busca.");
 });
 test("catalog write failure retains editable draft for retry and removal never deletes notes",async({page})=>{
-  const docs=await setupDocuments(page);await globalScope(page).click();await docs.getByRole("button",{name:"Editar",exact:true}).click();const editor=docs.locator(".ad-source-editor");await editor.getByRole("textbox",{name:"Nome",exact:true}).fill("Renamed vault");await page.evaluate(()=>{(window as any).__sourceFailure=true;});await editor.getByRole("button",{name:"Salvar",exact:true}).click();await expect(docs.getByRole("alert")).toContainText("Source unavailable");await expect(editor.getByRole("textbox",{name:"Nome",exact:true})).toHaveValue("Renamed vault");await page.evaluate(()=>{(window as any).__sourceFailure=false;});await editor.getByRole("button",{name:"Salvar",exact:true}).click();await expect(docs).toContainText("Renamed vault");await docs.getByRole("button",{name:"Remover associação",exact:true}).click();await expect(docs.getByText("Renamed vault",{exact:true})).toHaveCount(0);
+  const docs=await setupDocuments(page);await globalScope(page).click();await docs.locator(".ad-source-row-options > summary").click();await docs.getByRole("button",{name:"Editar",exact:true}).click();const editor=docs.locator(".ad-source-editor");await editor.getByRole("textbox",{name:"Nome",exact:true}).fill("Renamed vault");await page.evaluate(()=>{(window as any).__sourceFailure=true;});await editor.getByRole("button",{name:"Salvar",exact:true}).click();await expect(docs.getByRole("alert")).toContainText("Source unavailable");await expect(editor.getByRole("textbox",{name:"Nome",exact:true})).toHaveValue("Renamed vault");await page.evaluate(()=>{(window as any).__sourceFailure=false;});await editor.getByRole("button",{name:"Salvar",exact:true}).click();await expect(docs).toContainText("Renamed vault");await docs.getByRole("button",{name:"Remover associação",exact:true}).click();await expect(docs.getByText("Renamed vault",{exact:true})).toHaveCount(0);
   const calls=await page.evaluate(()=>(window as any).__documentCalls);expect(calls.some((call:any)=>/delete.*(file|folder)|remove_directory/.test(call.command))).toBe(false);
 });
 test("graph navigation reads connected notes without requesting a model",async({page})=>{

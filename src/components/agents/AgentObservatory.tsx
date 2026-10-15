@@ -177,7 +177,7 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
   const clearFilters = () => { setQuery(""); setProvider("all"); setStatusFilter("all"); };
 
   const renderNode = (node: AgentNode, depth = 0): React.ReactNode => <div key={node.key} className={depth ? "ad-monitor-branch" : "ad-monitor-root"}>
-    <button className="ad-monitor-agent" data-selected={selected?.key === node.key} aria-pressed={selected?.key === node.key} onClick={() => setSelectedKey(node.key)} title={m.showDetails}>
+    <button data-drag-primary className="ad-monitor-agent" data-selected={selected?.key === node.key} aria-pressed={selected?.key === node.key} onClick={() => setSelectedKey(node.key)} title={m.showDetails}>
       <span className="ad-monitor-avatar" data-child={!node.isRoot}>{node.isRoot ? <ProviderIcon provider={node.session.runner.type} size={20} /> : <Bot size={18} />}</span>
       <span className="ad-monitor-agent-copy"><strong>{node.name}</strong><span>{node.agent?.role || (node.isRoot ? workspaces.find(workspace => workspace.id === node.session.workspaceId)?.name || getAgentAdapter(node.session.runner.type).name : m.subagents)}</span><small>{node.task || m.noTask}</small></span>
       <span className="ad-monitor-node-side"><span className="ad-monitor-node-status"><i className="ad-monitor-dot" data-phase={node.status} />{agentPhaseLabel(node.status, locale)}</span><time>{relativeTime(node.updatedAt)}</time></span>

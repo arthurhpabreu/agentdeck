@@ -2,6 +2,7 @@
 .ad-economy-trigger { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; background: transparent; color: var(--ci-text-dim); border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11px; white-space: nowrap; transition: background-color 180ms ease, color 180ms ease; }
 .ad-economy-trigger small { font-size: 11px; color: var(--ci-text-dim); }
 .ad-economy-count { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--ci-accent); }
+.ad-multi-agent-badge { padding: 2px 5px; border: 1px solid var(--ci-accent-bdr); border-radius: 4px; color: var(--ci-accent); font-size: 10px; line-height: 1.2; }
 .ad-economy-trigger[data-enabled="true"] > svg:first-child { color: var(--ci-accent); }
 .ad-economy-trigger:hover, .ad-economy-trigger[aria-expanded="true"] { background: var(--ci-hover); color: var(--ci-text); }
 .ad-economy-trigger > svg:last-child { transition: transform 180ms ease; }

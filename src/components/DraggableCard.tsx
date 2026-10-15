@@ -1,21 +1,9 @@
 import { useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useDraggable } from "@dnd-kit/core";
+import { isDragSurface } from "./ordering/dragSurface";
 import { CSS } from "@dnd-kit/utilities";
 
 export type ResizeEdge = "left" | "right" | "top" | "bottom" | "top-left" | "top-right" | "bottom-left" | "corner";
-
-function DragHandleIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-      <circle cx="3" cy="3" r="1" />
-      <circle cx="3" cy="6" r="1" />
-      <circle cx="3" cy="9" r="1" />
-      <circle cx="7" cy="3" r="1" />
-      <circle cx="7" cy="6" r="1" />
-      <circle cx="7" cy="9" r="1" />
-    </svg>
-  );
-}
 
 function ResizeHandle({
   edge,
@@ -44,6 +32,7 @@ function ResizeHandle({
 
   return (
     <div
+      data-no-drag
       onPointerDown={onPointerDown}
       style={{
         position: "absolute",
@@ -129,6 +118,11 @@ export function DraggableCard({
   return (
     <div
       ref={setNodeRef}
+      {...attributes} {...listeners} role="group" data-drag-item aria-label={typeof title === "string" ? title : id}
+      onPointerDown={event => { if (isDragSurface(event)) listeners?.onPointerDown?.(event); }}
+      onMouseDown={event => { if (isDragSurface(event)) listeners?.onMouseDown?.(event); }}
+      onTouchStart={event => { if (isDragSurface(event)) listeners?.onTouchStart?.(event); }}
+      onKeyDown={event => { if (event.target === event.currentTarget) listeners?.onKeyDown?.(event); }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -171,8 +165,6 @@ export function DraggableCard({
           }}
         >
           <div
-            {...listeners}
-            {...attributes}
             style={{
               display: "flex",
               alignItems: "center",
@@ -180,14 +172,10 @@ export function DraggableCard({
               minWidth: 0,
               flex: 1,
               cursor: isDragging ? "grabbing" : "grab",
-              touchAction: "none",
               color: hovered || isDragging ? "var(--ci-text-muted)" : "var(--ci-text-dim)",
               transition: "color 0.12s, opacity 0.12s",
             }}
           >
-            <span style={{ display: "inline-flex", flexShrink: 0, opacity: hovered || isDragging ? 0.9 : 0.55 }}>
-              <DragHandleIcon />
-            </span>
             <span
               style={{
                 minWidth: 0,

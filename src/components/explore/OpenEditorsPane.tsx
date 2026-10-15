@@ -53,7 +53,7 @@ export function OpenEditorsPane({ session }: { session: ClaudeSession }) {
             }}
           >
             {handle}
-            <button
+            <button data-drag-primary
               onClick={() => {
                 if (groupId) {
                   setActiveGroup(session.id, groupId);

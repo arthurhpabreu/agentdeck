@@ -1,2 +1,35 @@
 .ad-source-policy{display:grid;gap:10px;min-width:0;padding:12px;border:1px solid var(--ci-border);border-radius:10px}.ad-source-policy h3,.ad-source-policy h4,.ad-source-policy p{margin:0}.ad-source-policy label:not(.ad-source-checkbox){display:grid;gap:5px}.ad-source-policy input:not([type=checkbox]),.ad-source-policy textarea,.ad-source-policy select{min-width:0;max-width:100%;padding:7px;color:var(--ci-text);background:var(--ci-bg);border:1px solid var(--ci-border);border-radius:6px}.ad-source-row{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap;padding:8px 0}.ad-source-label{display:grid;gap:3px;min-width:120px;flex:1}.ad-source-label strong,.ad-source-label small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ad-source-label span,.ad-source-hint,.ad-source-policy>small{font-size:11px;color:var(--ci-text-muted);overflow-wrap:anywhere}.ad-source-checkbox{display:flex;align-items:center;gap:8px}.ad-source-checkbox small{margin-left:auto}.ad-source-actions{display:flex;gap:8px;flex-wrap:wrap}.ad-source-editor{display:grid;gap:10px;padding:10px;border:1px solid var(--ci-border);border-radius:8px}.ad-source-editor textarea{min-height:70px}.ad-source-context-warning{padding:9px;border:1px solid var(--ci-status-warning,#e0aa47);border-radius:6px;color:var(--ci-text)}
 .ad-memory-sortable-note{display:flex;gap:5px;align-items:center;min-width:0}.ad-memory-sortable-note .ad-memory-note{flex:1;min-width:0}
+
+.ad-source-policy-compact { gap: 11px; padding: 12px; border-radius: 8px; }
+.ad-source-policy-compact .ad-source-heading { display: flex; align-items: center; gap: 9px; justify-content: space-between; }
+.ad-source-policy-compact h3 { font-size: 12px; font-weight: 600; }
+.ad-source-count { font-size: 10px; color: var(--ci-text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ad-source-policy-compact > label { font-size: 11px; color: var(--ci-text-muted); }
+.ad-source-policy-compact .ad-source-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px 10px; align-items: start; padding: 8px 0; }
+.ad-source-policy-compact .ad-source-row > .ad-source-label { min-width: 0; }
+.ad-source-policy-compact .ad-source-row > input[type=checkbox] { margin-top: 2px; accent-color: var(--ci-accent); }
+.ad-source-policy-compact .ad-source-row > .ad-button { grid-column: 3; grid-row: 1; justify-self: end; font-size: 10px; padding: 6px 7px; }
+.ad-source-policy-compact .ad-source-row-options { grid-column: 2; justify-self: start; }
+.ad-source-policy-compact .ad-source-label strong { font-size: 12px; }
+.ad-source-policy-compact .ad-source-label small { white-space: normal; overflow-wrap: anywhere; }
+.ad-source-policy-compact .ad-source-metadata { font-size: 10px; color: var(--ci-text-muted); }
+.ad-source-metadata > summary, .ad-source-row-options > summary { cursor: pointer; }
+.ad-source-policy-compact .ad-source-metadata[open] { display: grid; gap: 5px; }
+.ad-source-policy-compact .ad-source-row-options { font-size: 10px; color: var(--ci-text-muted); }
+.ad-source-policy-compact .ad-source-row-catalog { grid-template-columns: minmax(0, 1fr) auto; }
+.ad-source-policy-compact .ad-source-row-catalog > .ad-button { grid-column: 2; }
+.ad-source-policy-compact .ad-source-row-catalog > .ad-source-row-options { grid-column: 1 / -1; }
+.ad-source-row-options[open] { display: grid; gap: 7px; width: 100%; }
+.ad-source-row-options[open] > summary { margin-bottom: 2px; }
+.ad-source-policy-compact .ad-source-empty { font-size: 11px; line-height: 1.6; color: var(--ci-text-muted); }
+.ad-source-policy-compact .ad-source-primary { color: var(--ci-bg); background: var(--ci-accent); border-color: var(--ci-accent); }
+.ad-source-policy-compact .ad-source-primary:hover { color: var(--ci-bg); background: var(--ci-accent); filter: brightness(1.05); }
+.ad-source-hidden-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.ad-source-policy-compact .ad-source-disclosure { min-width: 0; border-top: 1px solid var(--ci-border); padding-top: 10px; }
+.ad-source-policy-compact .ad-source-disclosure > summary { font-size: 11px; line-height: 1.6; color: var(--ci-text-muted); cursor: pointer; }
+.ad-source-disclosure > summary > span { float: right; font-size: 10px; font-variant-numeric: tabular-nums; }
+.ad-source-policy-compact .ad-source-disclosure > div { display: grid; gap: 10px; padding-top: 11px; min-width: 0; }
+.ad-source-policy-compact .ad-source-disclosure h4 { font-size: 11px; }
+.ad-source-policy-compact .ad-source-disclosure small, .ad-source-policy-compact .ad-source-disclosure code { font-size: 10px; overflow-wrap: anywhere; }
+.ad-source-policy-compact .ad-source-editor { padding: 10px; font-size: 11px; }

@@ -26,6 +26,9 @@
 .ad-tool-output-toggle:hover { background: var(--ci-surface-hi); }
 .ad-tool-exit { padding: 5px 12px 8px; color: var(--ci-text-dim); font-size: 10px; }
 .ad-turn-activity { max-width: 790px; margin: 10px auto; }
+.ad-chat-execution-details { width: min(100%, 790px); margin: 8px auto; color: var(--ci-text-dim); font-size: 11px; }
+.ad-chat-execution-details > summary { cursor: pointer; padding: 5px 0; }
+.ad-chat-execution-details > pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; border: 1px solid var(--ci-border); border-radius: 7px; background: var(--ci-code-bg); font: 10px/1.6 "Cascadia Code", Consolas, monospace; user-select: text; }
 .ad-chat-scroll.is-empty:has(.ad-turn-activity) { flex-direction: column; }
 .ad-chat-scroll.is-empty .ad-turn-activity { width: min(100%, 790px); flex-shrink: 0; }
 .ad-turn-activity .ad-chat-progress { margin: 0; padding-bottom: 5px; }

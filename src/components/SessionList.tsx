@@ -173,7 +173,7 @@ function SessionCard({
 
       <StatusDot status={session.status} />
 
-      <button type="button" aria-label={`${session.name} ${runnerLabel}`} onClick={event => { event.stopPropagation(); onClick(); }} style={{ flex: 1, minWidth: 0, padding: 0, border: 0, background: "transparent", textAlign: "start", cursor: "pointer", font: "inherit" }}>
+      <button data-drag-primary type="button" aria-label={`${session.name} ${runnerLabel}`} onClick={event => { event.stopPropagation(); onClick(); }} style={{ flex: 1, minWidth: 0, padding: 0, border: 0, background: "transparent", textAlign: "start", cursor: "pointer", font: "inherit" }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, minWidth: 0 }}>
           <span title={session.name} style={{
             flexBasis: "100%",
@@ -305,7 +305,7 @@ function SessionCard({
           </button>
         </div>
       ) : (
-        <div style={{
+        <div data-session-actions data-visible={showActions} style={{
           display: "flex",
           alignItems: "center",
           gap: 4,

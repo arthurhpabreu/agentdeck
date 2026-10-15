@@ -207,22 +207,40 @@ pub async fn start_runner(
     let event_app = app.clone();
     let event_session = session_id.clone();
     let event_run = run_id.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        start_runner_inner(
-            app,
-            session_id,
-            workdir,
-            task,
-            runner_type,
-            cli_path,
-            cli_args,
-            project_path,
-            run_id,
+    let result = async {
+        let selection_args = cli_args
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let (model, effort) = crate::multi_agent::selection(&runner_type, &selection_args);
+        let multi_agent = crate::multi_agent::prepare(
+            &app,
+            &runner_type,
+            &cli_path,
+            &workdir,
+            model.as_deref(),
+            effort.as_deref(),
         )
-    })
-    .await
-    .map_err(|error| error.to_string())
-    .and_then(|result| result);
+        .await?;
+        tauri::async_runtime::spawn_blocking(move || {
+            start_runner_inner(
+                app,
+                session_id,
+                workdir,
+                task,
+                runner_type,
+                cli_path,
+                cli_args,
+                project_path,
+                run_id,
+                multi_agent,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result)
+    }
+    .await;
     if let Err(error) = &result {
         let _ = event_app.emit(
             "runner-done",
@@ -248,6 +266,7 @@ fn start_runner_inner(
     cli_args: String,
     project_path: Option<String>,
     run_id: String,
+    multi_agent: Option<crate::multi_agent::Profile>,
 ) -> Result<(), String> {
     if !matches!(runner_type.as_str(), "claude-code" | "codex" | "gemini") {
         return Err("Unsupported runner type.".into());
@@ -271,6 +290,16 @@ fn start_runner_inner(
         .split_whitespace()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
+    let multi_agent_env = if let Some(profile) = &multi_agent {
+        crate::multi_agent::configure(
+            profile,
+            &runner_type,
+            &expanded_dir.to_string_lossy(),
+            &mut cli_args_vec,
+        )?
+    } else {
+        Vec::new()
+    };
     // Every legacy launch is a new native process, so prepare its selected sources afresh.
     crate::memory_runtime::reset(&app, &project_path, &session_id, &runner_type);
     let memory = if task.trim().is_empty() {
@@ -294,6 +323,14 @@ fn start_runner_inner(
     // The empty legacy bootstrap must stay empty instead of becoming a paid
     // context-only prompt. Its scoped MCP configuration is still installed.
     let mut task = task;
+    if !task.trim().is_empty() {
+        if let Some(profile) = &multi_agent {
+            crate::token_economy::append_guidance(
+                &mut task,
+                &crate::multi_agent::guidance(profile, &runner_type),
+            );
+        }
+    }
     if let Some(memory) = &memory {
         task.push_str(&memory.text);
     }
@@ -394,6 +431,7 @@ fn start_runner_inner(
     for (key, value) in launch.env {
         cmd.env(key, value);
     }
+    cmd.envs(multi_agent_env);
     if let Some(memory) = &memory {
         crate::memory_runtime::validate_turn(&app, memory)?;
     }

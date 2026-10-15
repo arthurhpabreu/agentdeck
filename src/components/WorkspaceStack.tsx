@@ -87,7 +87,7 @@ function WorkspaceCardExpanded({
 
       <WorkspaceColorControl workspaceId={ws.id} name={ws.name} value={ws.color} />
 
-      <button type="button" className="ad-workspace-select" onClick={onClick} aria-pressed={isActive}>
+      <button data-drag-primary type="button" className="ad-workspace-select" onClick={onClick} aria-pressed={isActive}>
         <span style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
           <span style={{
             color: isActive || hovered ? "var(--ci-text)" : "var(--ci-text-muted)",

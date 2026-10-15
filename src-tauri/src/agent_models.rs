@@ -5,16 +5,17 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub struct AgentModel {
-    id: String,
-    label: String,
-    reasoning_efforts: Vec<String>,
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) reasoning_efforts: Vec<String>,
     fast_mode: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    resolved_model: Option<String>,
+    pub(crate) resolved_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cli_version: Option<String>,
+    pub(crate) cli_version: Option<String>,
 }
 
 fn valid_model_id(value: &str) -> bool {

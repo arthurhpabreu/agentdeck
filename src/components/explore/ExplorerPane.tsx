@@ -145,7 +145,7 @@ export function ExplorerPane({
             return (
               <div key={node.key}>
                 <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>{handle}<div style={{ flex: 1, minWidth: 0 }}>
-                <button
+                <button data-drag-primary
                   onClick={() => {
                     toggleDir(session.id, node.path);
                     if (!isOpen && !useExplorerStore.getState().childrenBySessionPath[`${session.id}:${node.path}`]) {
@@ -191,7 +191,7 @@ export function ExplorerPane({
           const kind = statusByPath.get(node.path) ?? null;
           const isTouched = touchedPathSet.has(node.path);
           return (
-            <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>{handle}<button
+            <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>{handle}<button data-drag-primary
               key={node.key}
               onClick={() => {
                 openFile(session.id, node.path, true, true, "explorer");

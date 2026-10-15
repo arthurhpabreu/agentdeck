@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
-import { FileCode2, GitCommitHorizontal, GripVertical, X } from "lucide-react";
+import { FileCode2, GitCommitHorizontal, X } from "lucide-react";
 import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { useDroppable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
@@ -126,12 +126,14 @@ function SortableEditorTab({
     opacity: isDragging ? 0.28 : 1,
     position: "relative",
     zIndex: isDragging ? 2 : 1,
-    touchAction: "none",
+    touchAction: "auto",
   };
 
   return (
-    <div ref={setNodeRef} style={style} data-dragging={isDragging} data-editor-tab={tab.id}>
-      <button ref={setActivatorNodeRef} type="button" className="ad-reorder-handle" {...attributes} {...listeners} aria-label={`${c.drag}: ${tab.title}`} title={c.hint} onKeyDown={event => {
+    <div ref={node => { setNodeRef(node); setActivatorNodeRef(node); }} style={style} data-dragging={isDragging} data-editor-tab={tab.id}
+      {...attributes} {...listeners} role="group" data-drag-item tabIndex={0} aria-label={`${c.drag}: ${tab.title}`} title={c.hint}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget) return;
         if (event.altKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
           event.preventDefault(); event.stopPropagation();
           const state = usePresentationStore.getState();
@@ -140,8 +142,8 @@ function SortableEditorTab({
           const target = ids[ids.indexOf(tab.id) + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1)];
           if (target) state.moveItem("editor-tabs", group.id, group.tabIds, group.tabIds, tab.id, target);
         } else listeners?.onKeyDown?.(event);
-      }}><GripVertical size={12} /></button>
-      <button
+      }}>
+      <button data-drag-primary
         onClick={() => {
           setActiveTab(group.id, tabId);
         }}
