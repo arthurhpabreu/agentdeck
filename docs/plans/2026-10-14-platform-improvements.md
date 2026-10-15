@@ -157,7 +157,7 @@ Os testes usam fixtures sem prompts pagos ou notas privadas. Cada implementaçã
 
 ## Revisão de usabilidade e distribuição de modelos — 15 de outubro de 2026
 
-As [notas da versão 0.10.0](../releases/0.10.0.md) reúnem as mudanças desta revisão e estão preparadas para publicação.
+As [notas da versão 0.10.0](../releases/0.10.0.md) e a [validação da release](../validation/0.10.0-release.md) registram as mudanças desta revisão, entregues na [release publicada](https://github.com/arthurhpabreu/agentdeck/releases/tag/v0.10.0).
 
 O estudo desta revisão usou a tela existente, os fluxos de seleção de fontes e capturas com dados sintéticos em temas claro/escuro, lateral de 330 px e janelas de 1360×900 e 1024×768. A dificuldade principal era a mistura de cadastro, autorização, consulta e diagnóstico na mesma sequência. O cadastro global continuava necessário como catálogo reutilizável; o nome “Global” induzia a interpretar que as fontes seriam usadas em todas as conversas.
 
@@ -193,6 +193,7 @@ Distribuir tarefas entre modelos não comprova redução da quantidade de tokens
 
 ### Validação desta revisão
 
+- Validação final da 0.10.0: **11 de 11 testes Chromium locais** passaram para confiabilidade e ciclo de vida do chat. O CI da tag aprovou **235 testes Chromium no Windows**, **29 testes WebKit no Mac Apple Silicon** e **29 no Mac Intel**, além dos testes nativos e das verificações dos pacotes. Resultados completos, hashes e conferência pública constam na [validação da release](../validation/0.10.0-release.md).
 - Correção de encerramento do chat: resultados Claude reconciliam os UUIDs de mensagens consumidas e o estado nativo da sessão. O fechamento da entrada e a limpeza do transporte têm critérios separados; comandos em segundo plano e agentes reais permanecem protegidos. A interface identifica a espera por tarefas em segundo plano e não reabre ferramentas concluídas por eventos de progresso atrasados. A suíte nativa completa aprovou 276 casos, com sete opcionais ignorados; após o último ajuste de EOF, os 72 testes de chat passaram. O CI da release registra a validação final por plataforma.
 - Backend Windows: **263 testes aprovados**, nenhum erro e sete testes opcionais ignorados. Inclui preservação de permissões/instruções, modelo/esforço/Fast/Ultra principais em execuções novas e retomadas, flags antes do separador de prompt, seleção de auxiliares, deduplicação/revogação, compactação e classificação OAuth.
 - Interface Chromium: a rodada completa aprovou **224 de 228** casos. Os quatro restantes excederam o prazo ao carregar módulos lazy sob pressão de recursos, antes de executar as ações avaliadas. A repetição com um único runner aprovou **20 de 20**, incluindo todos os 17 casos de ordenação e os três fluxos restantes, sem aumentar timeouts nem retirar asserções. A cobertura total compreende **229 cenários distintos**, incluindo a regressão adicional de arraste de label sem alterar seu checkbox.
