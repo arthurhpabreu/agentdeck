@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.10.0 — 2026-10-15
+
+### Added
+
+- Optional task distribution across Codex and Claude Code models, independent of
+  RTK. The chosen main model, effort, Fast and Ultra remain unchanged; available
+  Luna/Haiku agents handle bounded exploration, with stronger models reserved for
+  occasional advice. Running agents keep their settings.
+- Model distribution shows no savings estimate yet, keeping provider-reported
+  usage separate from RTK measurements and accounting for additional advisor use.
+
+### Changed
+
+- Hold item bodies to rearrange lists, tabs, cards and widgets without dotted
+  grips. Clicks, interactive controls, text selection, touch scrolling, keyboard
+  movement, cancellation and undo retain their functions.
+- The left sidebar can reach half the window width, with pointer and keyboard
+  resizing and a saved preference that adapts to smaller windows.
+- Knowledge opens Documents first, separates project/conversation Sources from
+  the Vault catalog, and moves advanced settings into details. Search precedes
+  graphs and diagnostics, which load when opened; existing source policies remain.
+
+### Fixed
+
+- Optional MCP startup OAuth refresh messages, including Miro, become sanitized
+  execution diagnostics. Explicit authentication failures for requested actions
+  remain visible and actionable.
+
 ## 0.8.2 — 2026-10-15
 
 ### Fixed

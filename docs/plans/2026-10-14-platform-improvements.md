@@ -157,6 +157,8 @@ Os testes usam fixtures sem prompts pagos ou notas privadas. Cada implementaçã
 
 ## Revisão de usabilidade e distribuição de modelos — 15 de outubro de 2026
 
+As [notas da versão 0.10.0](../releases/0.10.0.md) reúnem as mudanças desta revisão e estão preparadas para publicação.
+
 O estudo desta revisão usou a tela existente, os fluxos de seleção de fontes e capturas com dados sintéticos em temas claro/escuro, lateral de 330 px e janelas de 1360×900 e 1024×768. A dificuldade principal era a mistura de cadastro, autorização, consulta e diagnóstico na mesma sequência. O cadastro global continuava necessário como catálogo reutilizável; o nome “Global” induzia a interpretar que as fontes seriam usadas em todas as conversas.
 
 | Problema observado | Decisão implementada |
