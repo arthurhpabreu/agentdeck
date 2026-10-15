@@ -1,5 +1,9 @@
 # Validation evidence
 
+## 0.9.1
+
+Published October 15, 2026. All tagged Windows x64, macOS Apple Silicon and macOS Intel validation jobs passed. Four installers/application packages, LICENSE and the aggregate checksum manifest were downloaded and verified before publication; the same universal Mac application passed native execution and visual inspection on both architectures. See the [release validation](validation/0.9.1-release.md) for source, test counts, checksums and limits.
+
 ## 0.7.0
 
 Validated on October 14, 2026 with native Windows x64, macOS Apple Silicon and macOS Intel jobs in the [cross-platform preview](https://github.com/arthurhpabreu/agentdeck/actions/runs/38603037958).
