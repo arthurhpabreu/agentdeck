@@ -347,7 +347,7 @@
   "docs.home": "Home",
   "docs.sessionCreation": "Session Creation",
   "docs.cliSettings": "CLI Settings",
-  "docs.strictWorktreeDiff": "Strictly isolated worktree workspace and clear code diff",
+  "docs.strictWorktreeDiff": "Optional worktree isolation and clear code diffs",
   "docs.downloads": "Downloads",
   "docs.releasePage": "Release Page",
   "docs.releaseLinks": "Release Download Links",

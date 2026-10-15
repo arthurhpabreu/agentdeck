@@ -22,6 +22,13 @@ const messages = {
   confirmHint: ["Remover esta pasta? O estado será verificado novamente e a branch será preservada.", "Remove this folder? Its state will be checked again and the branch will be preserved.", "¿Eliminar esta carpeta? Se verificará otra vez su estado y se conservará la rama."],
   cancel: ["Cancelar", "Cancel", "Cancelar"],
   removed: ["Pasta removida. A branch foi preservada.", "Folder removed. Its branch was preserved.", "Carpeta eliminada. Se conservó la rama."],
+  size: ["Espaço ocupado", "Disk usage", "Espacio ocupado"],
+  reclaimable: ["Caches que podem ser removidos", "Removable caches", "Cachés que se pueden eliminar"],
+  partialSize: ["Medição parcial: algumas pastas não puderam ser verificadas.", "Partial measurement: some folders could not be inspected.", "Medición parcial: no se pudieron verificar algunas carpetas."],
+  cachesAction: ["Limpar caches", "Clean caches", "Limpiar cachés"],
+  cachesConfirm: ["Confirmar limpeza dos caches", "Confirm cache cleanup", "Confirmar limpieza de cachés"],
+  cachesHint: ["Remover somente as dependências e os arquivos de compilação listados abaixo? Será necessário reinstalar ou recompilar ao retomar. O código, os demais arquivos locais e a branch serão preservados.", "Remove only the dependencies and build files listed below? Resuming will require reinstalling or rebuilding. Code, other local files and the branch will be preserved.", "¿Eliminar solo las dependencias y los archivos de compilación indicados abajo? Al retomar habrá que reinstalar o compilar. Se conservarán el código, los demás archivos locales y la rama."],
+  cachesCleaned: ["Espaço liberado", "Space reclaimed", "Espacio liberado"],
   notice: ["Há pastas de sessões preservadas. Revise os worktrees para recuperar seus arquivos.", "Session folders were preserved. Review worktrees to recover your files.", "Se conservaron carpetas de sesiones. Revisa los worktrees para recuperar tus archivos."],
 } as const;
 export function worktreeCopy(locale: string) {

@@ -347,7 +347,7 @@
   "docs.home": "Início",
   "docs.sessionCreation": "Criação de sessão",
   "docs.cliSettings": "Configurações dos agentes",
-  "docs.strictWorktreeDiff": "Projetos isolados com worktrees e alterações de código claras",
+  "docs.strictWorktreeDiff": "Worktrees opcionais para isolamento e alterações de código claras",
   "docs.downloads": "Downloads",
   "docs.releasePage": "Página da versão",
   "docs.releaseLinks": "Links para baixar a versão",

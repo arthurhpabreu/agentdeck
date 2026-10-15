@@ -6,15 +6,17 @@ import { SplitDetailHost } from "../components/SplitSwapLayout";
 import { lazy, Suspense } from "react";
 const ExploreEditor = lazy(() => import("../components/ExploreMode").then((module) => ({ default: module.ExploreEditor })));
 import { showSessionSurface, showExplorer, showScm } from "../services/workbenchCommands";
-import { sanitizeRunnerConfig, useSettingsStore } from "../store/settingsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
 import { SortableCollection } from "../components/ordering/SortableCollection";
+import { SessionDirectoryControl } from "../components/session/SessionDirectoryControl";
+import { useNewSession } from "../hooks/useNewSession";
 
-function WelcomeAction({ label, accent = false, onClick }: { label: string; accent?: boolean; onClick: () => void }) {
+function WelcomeAction({ label, accent = false, disabled = false, onClick }: { label: string; accent?: boolean; disabled?: boolean; onClick: () => void }) {
   return (
     <button
+      disabled={disabled}
       onPointerDown={(event) => {
         event.stopPropagation();
       }}
@@ -118,12 +120,6 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
   const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
   const activeWorkspace = useWorkspaceStore((s) => s.workspaces.find((workspace) => workspace.id === s.activeWorkspaceId) ?? null);
   const sessions = useSessionStore((s) => s.sessions);
-  const addSession = useSessionStore((s) => s.addSession);
-  const setActiveSession = useSessionStore((s) => s.setActiveSession);
-  const setExpandedSession = useSessionStore((s) => s.setExpandedSession);
-  const markWorktreeReady = useSessionStore((s) => s.markWorktreeReady);
-  const focusSession = useWorkbenchStore((s) => s.focusSession);
-  const runner = sanitizeRunnerConfig(useSettingsStore((s) => s.settings.runner));
   const hasWorkspace = workspaces.length > 0;
   const recentSessions = activeWorkspace
     ? sessions.filter((item) => item.workspaceId === activeWorkspace.id).slice(0, 5)
@@ -158,72 +154,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
     await invoke("trust_workspace", { path: trimmed }).catch(() => {});
   };
 
-  const handleNewSession = async () => {
-    if (!activeWorkspace) return;
-
-    let id: string;
-    if ("__TAURI_INTERNALS__" in window) {
-      try {
-        id = await invoke<string>("reserve_session_id", {
-          workspaces: workspaces.map((workspace) => ({
-            workspaceId: workspace.id,
-            workspacePath: workspace.path,
-          })),
-          existingSessionIds: sessions.map((item) => item.id),
-        });
-      } catch {
-        return;
-      }
-    } else {
-      const maxId = sessions
-        .map((item) => Number(item.id))
-        .filter((value) => !Number.isNaN(value))
-        .reduce((max, value) => Math.max(max, value), 0);
-      id = String(maxId + 1);
-    }
-
-    addSession(id, activeWorkspace.id, activeWorkspace.path, undefined, { ...runner });
-    setActiveSession(id);
-    setExpandedSession(id);
-    focusSession(id);
-
-    if ("__TAURI_INTERNALS__" in window) {
-      await invoke("clear_deleted_items", {
-        sessionIds: [id],
-        workspaceIds: [],
-        sessionRefs: [{ sessionId: id, workspaceId: activeWorkspace.id }],
-        workspaceRefs: [],
-      }).catch(() => {});
-      await invoke("remember_session_workdir", {
-        sessionId: id,
-        workdir: activeWorkspace.path,
-      }).catch(() => {});
-      try {
-        const result = await invoke<{
-          worktree_path: string;
-          branch: string;
-          base_branch: string;
-        } | null>("setup_session_worktree", {
-          workdir: activeWorkspace.path,
-          sessionId: id,
-        });
-        if (result) {
-          await invoke("remember_session_workdir", {
-            sessionId: id,
-            workdir: result.worktree_path,
-          }).catch(() => {});
-          useSessionStore.getState().updateSession(id, {
-            workdir: result.worktree_path,
-            worktreePath: result.worktree_path,
-            branchName: result.branch,
-            baseBranch: result.base_branch,
-          });
-        }
-      } catch {}
-    }
-
-    markWorktreeReady(id);
-  };
+  const { createSession: handleNewSession, creating, creationError } = useNewSession(activeWorkspace);
 
   return (
     <div style={{ width: "100%", height: "100%", overflowY: "auto" }}>
@@ -272,12 +203,16 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
                     />
                   </>
                 ) : (
-                  <WelcomeEntry
-                    title={t("workbench.welcome.createOrChooseSession")}
-                    detail={t("workbench.welcome.useSidebarOrCreate")}
-                    onClick={() => { void handleNewSession(); }}
-                    action={<WelcomeAction label={t("workbench.welcome.new")} accent onClick={() => { void handleNewSession(); }} />}
-                  />
+                  <div data-testid="new-session-welcome">
+                    <SessionDirectoryControl disabled={creating} />
+                    {creationError && <p role="alert" style={{ fontSize: 12, color: "var(--ci-deleted-text)" }}>{creationError}</p>}
+                    <WelcomeEntry
+                      title={t("workbench.welcome.createOrChooseSession")}
+                      detail={t("workbench.welcome.useSidebarOrCreate")}
+                      onClick={() => { void handleNewSession(); }}
+                      action={<WelcomeAction label={t("workbench.welcome.new")} accent disabled={creating} onClick={() => { void handleNewSession(); }} />}
+                    />
+                  </div>
                 )}
               </WelcomeList>
               <WelcomeList title={t("workbench.welcome.recent")}>

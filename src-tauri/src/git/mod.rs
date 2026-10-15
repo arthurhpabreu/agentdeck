@@ -7,3 +7,4 @@ pub mod status;
 pub mod watch;
 pub mod worktree;
 pub mod worktree_recovery;
+mod worktree_storage;

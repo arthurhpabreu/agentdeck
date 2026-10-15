@@ -7,11 +7,12 @@ import { useAppI18n } from "../i18n";
 import { ClaudeSession, SessionStatus, orderWorkspaceSessions, selectSessionNavigation, useSessionStore } from "../store/sessionStore";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceStore, getWorkspaceColor } from "../store/workspaceStore";
-import { useSettingsStore, RUNNER_LABELS, sanitizeRunnerConfig, isGlassTheme } from "../store/settingsStore";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import { useSettingsStore, RUNNER_LABELS, isGlassTheme } from "../store/settingsStore";
 import { showExplorer, showSessionSurface } from "../services/workbenchCommands";
 import { SessionRenameControl } from "./session/SessionRenameControl";
 import { SortableCollection } from "./ordering/SortableCollection";
+import { SessionDirectoryControl } from "./session/SessionDirectoryControl";
+import { useNewSession } from "../hooks/useNewSession";
 
 // ── Status configuration using CSS variables ─────────────────
 const STATUS_CONFIG: Record<SessionStatus, {
@@ -410,19 +411,12 @@ export function SessionList() {
     expandedSessionId,
     sessionOrderByWorkspace,
     removeSession,
-    setActiveSession,
-    setExpandedSession,
-    addSession,
-    markWorktreeReady,
     updateSession,
-  } = useSessionStore(useShallow(state => ({ sessions: selectSessionNavigation(state), activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, sessionOrderByWorkspace: state.sessionOrderByWorkspace, removeSession: state.removeSession, setActiveSession: state.setActiveSession, setExpandedSession: state.setExpandedSession, addSession: state.addSession, markWorktreeReady: state.markWorktreeReady, updateSession: state.updateSession })));
+  } = useSessionStore(useShallow(state => ({ sessions: selectSessionNavigation(state), activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, sessionOrderByWorkspace: state.sessionOrderByWorkspace, removeSession: state.removeSession, updateSession: state.updateSession })));
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
-  const focusSession = useWorkbenchStore((s) => s.focusSession);
-  const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === activeWorkspaceId)
   );
-  const runner = sanitizeRunnerConfig(useSettingsStore((s) => s.settings.runner));
   const settings = useSettingsStore((s) => s.settings);
   const isGlass = isGlassTheme(settings.theme);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
@@ -434,84 +428,7 @@ export function SessionList() {
     return orderWorkspaceSessions(sessions, activeWorkspace.id, sessionOrderByWorkspace);
   }, [activeWorkspace, sessions, sessionOrderByWorkspace]);
 
-  const handleNewSession = async () => {
-    if (!activeWorkspace) return;
-
-    let id: string;
-    if ("__TAURI_INTERNALS__" in window) {
-      try {
-        id = await invoke<string>("reserve_session_id", {
-          workspaces: workspaces.map((workspace) => ({
-            workspaceId: workspace.id,
-            workspacePath: workspace.path,
-          })),
-          existingSessionIds: sessions.map((session) => session.id),
-        });
-      } catch (e) {
-        console.warn("[ui-state] reserve session id failed:", e);
-        return;
-      }
-    } else {
-      const maxId = sessions
-        .map((session) => Number(session.id))
-        .filter((value) => !Number.isNaN(value))
-        .reduce((max, value) => Math.max(max, value), 0);
-      id = String(maxId + 1);
-    }
-
-    addSession(id, activeWorkspace.id, activeWorkspace.path, undefined, { ...runner });
-    setActiveSession(id);
-    setExpandedSession(id);
-    focusSession(id);
-
-    if ("__TAURI_INTERNALS__" in window) {
-      await invoke("clear_deleted_items", {
-        sessionIds: [id],
-        workspaceIds: [],
-        sessionRefs: [{ sessionId: id, workspaceId: activeWorkspace.id }],
-        workspaceRefs: [],
-      }).catch((e) => {
-        console.warn("[ui-state] clear deleted session failed:", e);
-      });
-      await invoke("remember_session_workdir", {
-        sessionId: id,
-        workdir: activeWorkspace.path,
-      }).catch((e) => {
-        console.warn("[session-files] remember workdir failed:", e);
-      });
-    }
-
-    if ("__TAURI_INTERNALS__" in window) {
-      try {
-        const result = await invoke<{
-          worktree_path: string;
-          branch: string;
-          base_branch: string;
-        } | null>("setup_session_worktree", {
-          workdir: activeWorkspace.path,
-          sessionId: id,
-        });
-
-        if (result) {
-          await invoke("remember_session_workdir", {
-            sessionId: id,
-            workdir: result.worktree_path,
-          }).catch((e) => {
-            console.warn("[session-files] remember worktree failed:", e);
-          });
-          useSessionStore.getState().updateSession(id, {
-            workdir: result.worktree_path,
-            worktreePath: result.worktree_path,
-            branchName: result.branch,
-            baseBranch: result.base_branch,
-          });
-        }
-      } catch (e) {
-        console.warn("[worktree] setup failed, fallback to workdir:", e);
-      }
-    }
-    markWorktreeReady(id);
-  };
+  const { createSession: handleNewSession, creating, creationError } = useNewSession(activeWorkspace);
 
   const handleRemoveSession = async (session: ClaudeSession) => {
     setPendingDeleteSessionId(null);
@@ -545,7 +462,7 @@ export function SessionList() {
   if (!activeWorkspace) return null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+    <div data-testid="new-session-sidebar" style={{ display: "flex", flexDirection: "column", gap: 3 }}>
       {/* Section header */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -568,7 +485,8 @@ export function SessionList() {
         </div>
 
         <button
-          onClick={handleNewSession}
+          onClick={() => void handleNewSession()}
+          disabled={creating}
           style={{
             background: "none",
             border: "none",
@@ -596,6 +514,9 @@ export function SessionList() {
           <span>{t("session.createNew")}</span>
         </button>
       </div>
+
+      <SessionDirectoryControl disabled={creating} />
+      {creationError && <p role="alert" style={{ fontSize: 12, color: "var(--ci-deleted-text)" }}>{creationError}</p>}
 
           {/* Session list */}
           <SortableCollection surface="sessions" context={activeWorkspace.id} items={wsSessions}

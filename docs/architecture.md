@@ -37,6 +37,17 @@ Native commands own filesystem access, process spawning and credential use. Proj
 
 Keep persisted app identity stable when changing publisher metadata. Optional worktree development deliberately uses an isolated identifier.
 
+New conversations default to the project directory. An explicit, remembered
+creation choice requests a separate Git worktree; preparation completes before
+the session is published, and errors never fall back to shared execution.
+Existing session directories are unaffected. Manual recovery measures checkout
+and eligible cache sizes without following links. Cache cleanup validates Git
+registration, repository ownership, namespace, HEAD and native process use, then
+removes only ignored, untracked dependency/build directories with matching
+manifests. Ordinary checkout cleanup retains its stricter local-file checks.
+Legacy namespaces are available for manual recovery without automatic session
+hydration or crossing development/release boundaries.
+
 ## Platform adapters and packaging
 
 The React workspace and Rust domain logic are shared across platforms. OS differences live at explicit boundaries:

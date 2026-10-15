@@ -201,6 +201,7 @@ export function normalizeSplitWidgetCanvas(canvas: unknown): SplitWidgetCanvas {
 }
 
 export interface Settings {
+  newSessionDirectoryMode: "project" | "worktree";
   runner: RunnerConfig;
   runnerProfiles: RunnerProfiles;
   locale: LocaleSetting;
@@ -275,6 +276,7 @@ function resolveRunnerConfig(
 }
 
 const DEFAULT_SETTINGS: Settings = {
+  newSessionDirectoryMode: "project",
   runner: resolveRunnerConfig("claude-code", DEFAULT_RUNNER_PROFILES),
   runnerProfiles: DEFAULT_RUNNER_PROFILES,
   locale: "system",
@@ -373,6 +375,7 @@ export const useSettingsStore = create<SettingsStore>()(
           settings: {
             ...DEFAULT_SETTINGS,
             ...Object.fromEntries(Object.entries(persistedSettings).filter(([key]) => key !== "apiKeys")),
+            newSessionDirectoryMode: persistedSettings.newSessionDirectoryMode === "worktree" ? "worktree" : "project",
             locale: normalizeLocaleSetting(persistedSettings.locale),
             theme: normalizeThemeMode(persistedSettings.theme),
             ptyFontSize: normalizePtyFontSize(persistedSettings.ptyFontSize),

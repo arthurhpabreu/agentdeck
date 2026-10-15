@@ -1,6 +1,6 @@
 [package]
 name = "agentdeck"
-version = "0.8.2"
+version = "0.9.0"
 description = "Agentdeck desktop workspace for official coding agents"
 authors = ["Arthur Abreu"]
 edition = "2021"

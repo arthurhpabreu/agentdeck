@@ -8,6 +8,7 @@ async function setupRecovery(page: Page, dirtySession = false) {
     w.__recoveryCalls = [];
     w.__recoveryListFailure = false;
     w.__recoveryRemoveFailure = false;
+    w.__recoveryCacheFailure = false;
     w.__recoveryRows = [
       { path: "C:\\Worktrees\\clean-session", branch: "ci/clean", head: "1".repeat(40), reason: "clean", canRemove: true },
       { path: "C:\\Worktrees\\dirty-session", branch: "ci/dirty", head: "2".repeat(40), reason: "dirty", canRemove: false },
@@ -31,6 +32,16 @@ async function setupRecovery(page: Page, dirtySession = false) {
           if (!row || !row.canRemove || row.head !== args.expectedHead) throw new Error("QA worktree state no longer permits cleanup");
           w.__recoveryRows = w.__recoveryRows.filter((row: any) => row.path !== args.worktreePath);
           return;
+        }
+        if (command === "clean_recoverable_worktree_caches") {
+          if (w.__recoveryCacheFailure) throw new Error("QA worktree is now in use; caches were preserved");
+          const row = w.__recoveryRows.find((row: any) => row.path === args.worktreePath);
+          if (!row || row.head !== args.expectedHead) throw new Error("QA worktree changed");
+          const reclaimed = row.reclaimableBytes;
+          row.sizeBytes -= reclaimed;
+          row.reclaimableBytes = 0;
+          row.cachePaths = [];
+          return reclaimed;
         }
         if (command === "teardown_session_worktree") throw new Error("QA local files preserved after removing the project");
         if (command === "pick_folder") return "C:\\Projects\\Recovery";
@@ -151,4 +162,56 @@ test("preserved worktrees stay discoverable after the last project is removed an
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-worktree-recovery") ?? "{}").state);
   expect(saved.repositories).toContain("C:\\Projects\\Recovery");
   expect(saved.notices.some((notice: any) => notice.path === "C:\\Worktrees\\dirty-session")).toBe(true);
+});
+test("storage cleanup lists only caches, requires confirmation and keeps the worktree", async ({ page }) => {
+  await setupRecovery(page);
+  await page.evaluate(() => {
+    const rows = (window as any).__recoveryRows;
+    Object.assign(rows.find((row: any) => row.path.endsWith("dirty-session")), {
+      sizeBytes: 3 * 1024 ** 3, reclaimableBytes: 2 * 1024 ** 3,
+      cachePaths: ["node_modules", "src-tauri/target"], storageError: null,
+    });
+    Object.assign(rows.find((row: any) => row.path.endsWith("active-session")), {
+      sizeBytes: 1024 ** 3, reclaimableBytes: 1024 ** 3, cachePaths: ["node_modules"],
+    });
+  });
+  const dialog = await openRecovery(page);
+  const dirty = dialog.getByRole("article").filter({ hasText: "dirty-session" });
+  await expect(dirty).toContainText("3 GiB");
+  await expect(dirty).toContainText("2 GiB");
+  await expect(dirty.getByRole("button", { name: "Limpar worktree", exact: true })).toBeDisabled();
+  const active = dialog.getByRole("article").filter({ hasText: "active-session" });
+  await expect(active.getByRole("button", { name: "Limpar caches", exact: true })).toBeDisabled();
+  await dirty.getByRole("button", { name: "Limpar caches", exact: true }).click();
+  await expect(dirty).toContainText("node_modules");
+  await expect(dirty).toContainText("src-tauri/target");
+  await expect(dirty).toContainText("reinstalar ou recompilar");
+  await dirty.getByRole("button", { name: "Cancelar", exact: true }).click();
+  expect(await page.evaluate(() => (window as any).__recoveryCalls.filter((call: any) => call.command === "clean_recoverable_worktree_caches"))).toHaveLength(0);
+  await dirty.getByRole("button", { name: "Limpar caches", exact: true }).click();
+  await dirty.getByRole("button", { name: "Confirmar limpeza dos caches", exact: true }).click();
+  await expect(dialog.getByRole("status").filter({ hasText: "Espaço liberado: 2 GiB" })).toBeVisible();
+  await expect(dirty).toBeVisible();
+  await expect(dirty).toContainText("1 GiB");
+  await expect(dirty.getByRole("button", { name: "Limpar caches", exact: true })).toHaveCount(0);
+  await expect(dirty.getByRole("button", { name: "Limpar worktree", exact: true })).toBeDisabled();
+  const calls = await page.evaluate(() => (window as any).__recoveryCalls.filter((call: any) => /^(?:clean_recoverable_worktree_caches|remove_recoverable_worktree)$/.test(call.command)));
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({ command: "clean_recoverable_worktree_caches", args: { expectedHead: "2".repeat(40), cachePaths: ["node_modules", "src-tauri/target"] } });
+});
+
+test("cache cleanup failure keeps the folder and its measurements available", async ({ page }) => {
+  await setupRecovery(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__recoveryCacheFailure = true;
+    Object.assign(w.__recoveryRows[1], { sizeBytes: 2048, reclaimableBytes: 1024, cachePaths: ["node_modules"] });
+  });
+  const dialog = await openRecovery(page);
+  const dirty = dialog.getByRole("article").filter({ hasText: "dirty-session" });
+  await dirty.getByRole("button", { name: "Limpar caches", exact: true }).click();
+  await dirty.getByRole("button", { name: "Confirmar limpeza dos caches", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("QA worktree is now in use");
+  await expect(dirty).toContainText("2 KiB");
+  await expect(dirty.getByRole("button", { name: "Limpar caches", exact: true })).toBeEnabled();
 });

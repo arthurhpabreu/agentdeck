@@ -51,6 +51,29 @@ Provider requirements can differ from the app's requirements. Check the linked i
 
 Open a project, create a session and select a provider. Git projects can use independent session worktrees. Choose a Markdown folder or Obsidian vault under **Knowledge → Documents**; global and project sources are independent.
 
+New conversations use **Project folder** by default. They share files and local
+changes with other conversations in that project, without creating another
+checkout or installing another set of dependencies. Before creating a conversation,
+choose **Isolated worktree** when parallel changes need separate files and a branch.
+The app remembers this choice for subsequent conversations; existing conversations
+keep their original directories. An isolation failure is shown before creating the
+conversation, so it cannot silently run in the shared project.
+
+Use **Preserved worktrees** to inspect disk usage for a repository. **Clean caches**
+lists eligible ignored `node_modules` and Cargo `target` directories and asks for
+confirmation. Dependencies and build output will need to be recreated when you
+resume; source changes, other local files and branches remain. Cleanup is blocked
+for attached sessions, active native processes, locked or detached worktrees, and
+unverified cache paths. Linked cache trees are excluded. Ordinary worktree removal
+still requires a fully clean folder, including ignored files, and preserves its
+branch. The manual list also includes registered worktrees from the corresponding
+legacy application namespace; development and release namespaces remain separate.
+
+Keep worktrees for ongoing isolated changes, pending reviews or local files that
+still need saving. Git branches retain committed work without retaining a full
+checkout. There is no automatic deletion based on age, and arbitrary ignored files
+such as `.env`, browser profiles and local databases are never treated as caches.
+
 ## Telegram notifications
 
 Agent Deck can also send a short notification to your private Telegram chat when an agent finishes a response and awaits your next instruction. Telegram has official apps for both [Android and iPhone/iPad](https://telegram.org/apps). This optional integration starts disabled and sends no task progress, prompts, response content or project paths.
