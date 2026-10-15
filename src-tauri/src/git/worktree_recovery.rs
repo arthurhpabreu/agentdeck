@@ -341,6 +341,8 @@ mod tests {
             fs::create_dir_all(&directory).unwrap();
             // macOS temp directories can be reached through /var -> /private/var.
             // Test real paths so the production link guard remains strict.
+            // Keep Windows paths in Git's supported drive-letter spelling.
+            #[cfg(unix)]
             let directory = fs::canonicalize(directory).unwrap();
             let repo = directory.join("repo");
             let managed = directory.join(session_worktree_root_dir());
