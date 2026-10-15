@@ -12,6 +12,7 @@ import { recordChatAttention } from "./attentionStore";
 import { useSourceDeliveryStore } from "./sourceDeliveryStore";
 import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, estimateChatInputTokens, getCompactionBudget, messageTextSize, residentMessages, shouldCompact } from "../services/chatCompaction";
 import { deleteChatHistory, readChatHistoryMessage, restoreChatHistory, saveChatHistory } from "../services/chatHistory";
+import { isPendingChatTool, isTerminalChatTool, mergeChatToolStatus } from "../services/chatToolState";
 
 export interface ChatAttachment { name: string; path: string; mimeType: string; size: number }
 export interface ChatUsage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
@@ -122,6 +123,7 @@ export const useChatStore = create<{
     if (passiveDiagnostic && e.text && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
     if (e.kind === "status" && !e.parentId && !connectionNotice && !passiveDiagnostic) {
       next.status = e.status ?? old.status;
+      if (old.status === "waiting-background" && e.status && e.status !== old.status) next.activity = undefined;
       if (e.text && e.status !== "reasoning") next.activity = e.text.slice(0, 240);
       if (e.status === "compacting") next.compacting = true;
       if (e.text && e.status !== "reasoning" && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
@@ -144,18 +146,19 @@ export const useChatStore = create<{
       if (e.status === "accepted" && accepted && accepted.status !== "accepted") { next.contextPrompts = (old.contextPrompts ?? 0) + 1; if (!measuredContext) { next.contextTokens = (old.contextTokens ?? 0) + estimateChatInputTokens(accepted.text, accepted.attachments); next.contextTokensEstimated = true; } }
       next.messages = old.messages.map(m => m.id === `${e.itemId}:user` ? { ...m, status: e.status, ...(e.text ? { title: e.text } : {}) } : m);
     }
-    if (e.kind === "done") next = { ...next, busy: false, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), draft: old.compacting && e.status !== "completed" ? old.draft || old.messages.find(m => m.id === `${e.turnId}:user`)?.text || "" : old.draft, messages: next.messages.map(m => m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && [undefined, "running", "inProgress", "in_progress", "started", "pending", "queued"].includes(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
+    if (e.kind === "done") next = { ...next, busy: false, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), draft: old.compacting && e.status !== "completed" ? old.draft || old.messages.find(m => m.id === `${e.turnId}:user`)?.text || "" : old.draft, messages: next.messages.map(m => m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && isPendingChatTool(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
     if (e.kind === "text" || e.kind === "tool") {
       const id = chatMessageId(e);
       const index = old.messages.findIndex(m => m.id === id);
       const previous = old.messages[index];
+      const progressReplay = e.kind === "tool" && isTerminalChatTool(previous?.status) && isPendingChatTool(e.status);
       const text = e.text === undefined ? previous?.text ?? "" : (e.textDelta ?? (e.delta && e.output === undefined)) ? (previous?.text ?? "") + e.text : e.text;
       const output = e.output === undefined ? previous?.output : (e.outputDelta ?? e.delta) ? (previous?.output ?? "") + e.output : e.output;
-      const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? at, order: previous?.order ?? old.nextMessageOrder ?? 0, title: e.title ?? previous?.title, status: e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, command: e.command ?? previous?.command, output: output === undefined ? undefined : boundedOutput(output), cwd: e.cwd ?? previous?.cwd, exitCode: e.exitCode ?? previous?.exitCode, elapsedSeconds: e.elapsedSeconds ?? previous?.elapsedSeconds, text: boundedText(text) };
+      const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? at, order: previous?.order ?? old.nextMessageOrder ?? 0, title: e.title ?? previous?.title, status: e.kind === "tool" ? mergeChatToolStatus(previous?.status, e.status) : e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, command: e.command ?? previous?.command, output: output === undefined ? undefined : boundedOutput(output), cwd: e.cwd ?? previous?.cwd, exitCode: e.exitCode ?? previous?.exitCode, elapsedSeconds: e.elapsedSeconds ?? previous?.elapsedSeconds, text: boundedText(text) };
       if (!previous) next.nextMessageOrder = (old.nextMessageOrder ?? 0) + 1;
       const added = e.output !== undefined ? e.outputDelta ?? e.delta ? e.output : e.output.slice(previous?.output?.length ?? 0) : e.text !== undefined ? e.textDelta ?? e.delta ? e.text : e.text.slice(previous?.text.length ?? 0) : "";
       if (added && !message.parentId && !measuredContext) { next.contextTokens = (next.contextTokens ?? 0) + estimateTokens(added); next.contextTokensEstimated = true; }
-      if (!e.parentId) {
+      if (!e.parentId && !progressReplay) {
         if (e.kind === "tool") { next.activity = (message.command || message.title || message.text).slice(0, 240); next.status = message.status === "blocked" ? "blocked" : "tool"; }
         else { next.status = "responding"; next.activity = undefined; }
       }
@@ -277,6 +280,7 @@ function acceptChatEvent(e: ChatEvent) {
   const key = `${e.sessionId}:${e.turnId}:${e.kind}:${e.parentId ?? ""}:${e.itemId ?? e.kind}`; const previous = pendingEvents.get(key);
   const defined = Object.fromEntries(Object.entries(e).filter(([, value]) => value !== undefined));
   const merged: BufferedChatEvent = { ...previous, ...defined, sessionId: e.sessionId, turnId: e.turnId, kind: e.kind, receivedAt };
+  if (e.kind === "tool") merged.status = mergeChatToolStatus(previous?.status, e.status);
   if (e.text !== undefined) {
     const delta = !!e.delta && e.output === undefined;
     merged.text = boundedText(delta ? (previous?.text ?? "") + e.text : e.text);

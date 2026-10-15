@@ -24,6 +24,15 @@
 
 ### Fixed
 
+- Claude Code chats reconcile grouped follow-up messages with the UUIDs consumed
+  by each native result and its session state, avoiding a finished response being
+  held open by an incorrect count of pending messages.
+- Completion preserves real background commands and agents. Retained Claude
+  transports are eligible for cleanup only after verified idle, consumed input
+  and an empty native task ledger on a compatible CLI.
+- Late tool progress cannot reopen completed calls. The activity footer explains
+  when native background tasks remain, while confirmed completion clears running
+  indicators and interrupted/error results retain their status.
 - Optional MCP startup OAuth refresh messages, including Miro, become sanitized
   execution diagnostics. Explicit authentication failures for requested actions
   remain visible and actionable.

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { isPendingChatTool, mergeChatToolStatus } from "../services/chatToolState";
 
 export interface AgentToolEvent {
   id: string;
@@ -77,12 +78,18 @@ export const useAgentObservabilityStore = create<{
         const index = tools.findIndex(tool => tool.id === id);
         const tool: AgentToolEvent = {
           id, kind: "tool", title: event.title ?? tools[index]?.title ?? "Tool", detail: event.output?.slice(-3000) ?? event.text?.slice(0, 3000) ?? tools[index]?.detail ?? "",
-          status: event.status ?? "running", timestamp: tools[index]?.timestamp ?? new Date().toISOString(),
+          status: mergeChatToolStatus(tools[index]?.status, event.status) ?? "running", timestamp: tools[index]?.timestamp ?? new Date().toISOString(),
           parentId: event.parentId ? `${event.turnId}:${event.parentId}` : tools[index]?.parentId,
           input: event.command?.slice(0, 3000) ?? (event.status === "running" && event.text ? event.text.slice(0, 3000) : tools[index]?.input),
         };
         if (index >= 0) tools[index] = tool;
         else tools.push(tool);
+      }
+      if (event.kind === "done" && !event.parentId) {
+        for (let index = 0; index < tools.length; index++) {
+          const tool = tools[index];
+          if (tool.id.startsWith(`${event.turnId}:`) && isPendingChatTool(tool.status)) tools[index] = { ...tool, status: event.status === "completed" ? "completed" : "interrupted" };
+        }
       }
       const live = { ...state.live, [event.sessionId]: { turnId: event.turnId, tools: tools.slice(-60), updatedAt: Date.now() } };
       const keys = Object.keys(live);

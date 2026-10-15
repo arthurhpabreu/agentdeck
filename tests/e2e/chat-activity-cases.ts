@@ -7,6 +7,55 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
   }
+  test("chat lifecycle waiting-background explains live tasks and clears on renewed work or completion @macos", async ({ page }, testInfo) => {
+    await page.clock.install();
+    await start(page);
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await page.evaluate(() => {
+      const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session };
+      w.__emit("chat-event", { ...base, kind: "tool", itemId: "background-command", title: "Bash", command: "render-video", status: "running" });
+      w.__emit("chat-event", { ...base, kind: "status", status: "waiting-background", text: "Response received; waiting for background tasks." });
+    });
+    const tool = page.locator(".ad-tool-card").filter({ hasText: "render-video" });
+    await expect(page.locator(".ad-chat-progress")).toContainText("Aguardando tarefas em segundo plano");
+    await expect(tool.locator("summary")).toContainText("Executando");
+    await expect(page.locator(".ad-turn-activity-detail")).toContainText("render-video");
+    await page.evaluate(async () => {
+      const path = "/src/store/chatStore.ts";
+      (await import(/* @vite-ignore */ path)).useChatStore.getState().patch("session", { lastEventAt: Date.now() - 250_000 });
+    });
+    await page.clock.runFor(1000);
+    await expect(page.locator(".ad-chat-stall")).toContainText("A resposta principal foi recebida, mas ainda há tarefas ativas em segundo plano.");
+    await page.getByRole("button", { name: "Verificar processo", exact: true }).click();
+    await expect(page.locator(".ad-chat-stall")).toContainText("Processo em execução");
+    await expect(page.locator(".ad-chat-progress")).toContainText("Aguardando tarefas em segundo plano");
+    await page.screenshot({ path: testInfo.outputPath("waiting-background.png") });
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "status", status: "running" });
+    });
+    await expect(page.locator(".ad-chat-progress")).not.toContainText("Aguardando tarefas em segundo plano");
+    await expect(page.locator(".ad-chat-progress")).toContainText("Bash · Executando");
+    const renewed = await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; return (await import(/* @vite-ignore */ path)).useChatStore.getState().threads.session; });
+    expect(renewed.busy).toBe(true); expect(renewed.status).toBe("running"); expect(renewed.activity).toBeUndefined();
+    await page.evaluate(() => {
+      const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session, kind: "status" };
+      w.__emit("chat-event", { ...base, status: "waiting-background" });
+      w.__emit("chat-event", { ...base, status: "blocked" });
+    });
+    await expect(page.locator(".ad-chat-progress")).toContainText("Aguardando aprovação");
+    await page.evaluate(async () => {
+      const path = "/src/store/chatStore.ts"; const store = (await import(/* @vite-ignore */ path)).useChatStore;
+      store.getState().patch("session", { status: "waiting-background", compacting: true });
+    });
+    await expect(page.locator(".ad-chat-progress")).toContainText("Compactando contexto");
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "done", status: "completed" });
+    });
+    await expect(page.locator(".ad-turn-activity")).toHaveCount(0);
+    await expect(tool.locator("summary")).toContainText("Concluído");
+  });
   test("tool details stay collapsed until opened and retain output after completion and reload", async ({ page }) => {
     await start(page);
     await page.evaluate(() => {

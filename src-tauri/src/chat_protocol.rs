@@ -519,6 +519,11 @@ impl ChatParser {
         }
         let stream_key = parent.as_deref().unwrap_or("main").to_owned();
         match record["type"].as_str().unwrap_or("") {
+            "agentdeck.waiting-background" => {
+                let mut event = self.event("status");
+                event.status = Some("waiting-background".into());
+                events.push(event);
+            }
             "tool_progress" => {
                 let mut event = self.event("tool");
                 event.item_id = string(record, "tool_use_id");

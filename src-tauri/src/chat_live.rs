@@ -12,6 +12,11 @@ struct Message {
     id: String,
     input: Value,
 }
+#[derive(Default)]
+struct ClaudeMessage {
+    accepted: bool,
+    included_in_result: bool,
+}
 pub(super) struct LiveInput {
     writer: Option<Box<dyn Write + Send>>,
     codex: bool,
@@ -21,6 +26,8 @@ pub(super) struct LiveInput {
     queued: VecDeque<Message>,
     pending: HashMap<u64, Message>,
     claude_pending: usize,
+    claude_initial_pending: bool,
+    claude_messages: HashMap<String, ClaudeMessage>,
     started: bool,
     compacting: bool,
 }
@@ -43,6 +50,11 @@ impl LiveInput {
         for (_, message) in self.pending.drain() {
             unconfirmed.push((message.id, "The provider did not confirm this additional message. Check the native conversation before sending it again."));
         }
+        for (id, message) in self.claude_messages.drain() {
+            if !message.accepted {
+                unconfirmed.push((id, "The provider did not confirm this additional message. Check the native conversation before sending it again."));
+            }
+        }
         unconfirmed
     }
     pub fn new(stdin: ChildStdin, codex: bool, compacting: bool) -> Self {
@@ -60,6 +72,8 @@ impl LiveInput {
             queued: VecDeque::new(),
             pending: HashMap::new(),
             claude_pending: 1,
+            claude_initial_pending: true,
+            claude_messages: HashMap::new(),
             started: false,
             compacting: false,
         }
@@ -99,7 +113,9 @@ impl LiveInput {
                 return Ok("queued");
             }
             self.write(input)?;
-            self.claude_pending += 1;
+            self.claude_messages
+                .insert(id.into(), ClaudeMessage::default());
+            self.update_claude_pending();
             return Ok("queued");
         }
         let message = Message {
@@ -116,6 +132,42 @@ impl LiveInput {
             self.queued.push_back(message);
             Ok("queued")
         }
+    }
+    fn update_claude_pending(&mut self) {
+        self.claude_pending = usize::from(self.claude_initial_pending) + self.claude_messages.len();
+    }
+    fn claude_result(&mut self, record: &Value) -> Vec<String> {
+        // One native result may consume several stdin messages. Only explicit
+        // UUIDs, or accepted messages covered by a later idle, drain followups.
+        self.claude_initial_pending = false;
+        let mut consumed = vec![];
+        let explicit_ids =
+            record["user_message_uuids"].is_array() || record["user_message_uuid"].is_string();
+        if let Some(ids) = record["user_message_uuids"].as_array() {
+            for id in ids.iter().filter_map(Value::as_str) {
+                if let Some(message) = self.claude_messages.remove(id) {
+                    if !message.accepted {
+                        consumed.push(id.to_owned());
+                    }
+                }
+            }
+        } else if let Some(id) = record["user_message_uuid"].as_str() {
+            if let Some(message) = self.claude_messages.remove(id) {
+                if !message.accepted {
+                    consumed.push(id.to_owned());
+                }
+            }
+        }
+        for message in self.claude_messages.values_mut() {
+            message.included_in_result = message.accepted && !explicit_ids;
+        }
+        self.update_claude_pending();
+        consumed
+    }
+    fn claude_idle(&mut self) {
+        self.claude_messages
+            .retain(|_, message| !message.included_in_result);
+        self.update_claude_pending();
     }
     fn start_queued(&mut self) -> Result<(), String> {
         if self.compacting || self.turn.is_some() || !self.pending.is_empty() {
@@ -164,6 +216,16 @@ pub(super) struct LiveProtocol {
     totals: Value,
     claude_totals: Value,
     claude_results: std::collections::HashSet<String>,
+    claude_state: Option<String>,
+    claude_result_ready: bool,
+    claude_cleanup_current: bool,
+    claude_tasks: std::collections::HashSet<String>,
+    claude_all_tasks: std::collections::HashSet<String>,
+    claude_background_tasks: std::collections::HashSet<String>,
+    claude_terminal_tasks: VecDeque<(String, Option<String>)>,
+    claude_task_runs: HashMap<String, Option<String>>,
+    claude_ledger_supported: bool,
+    claude_ledger_uncertain: bool,
     compacting: bool,
     compact_confirmed: bool,
     compact_turn: Option<String>,
@@ -184,6 +246,14 @@ pub(super) enum ProtocolPhase {
     Failed,
 }
 
+fn claude_task_ledger_supported(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').map(str::parse::<u32>).collect();
+    match parts.as_slice() {
+        [Ok(major), Ok(minor), Ok(patch)] => (*major, *minor, *patch) >= (2, 1, 300),
+        _ => false,
+    }
+}
+
 impl LiveProtocol {
     pub fn new(request: &ChatTurnRequest) -> Self {
         Self {
@@ -192,6 +262,16 @@ impl LiveProtocol {
             totals: json!({}),
             claude_totals: json!({}),
             claude_results: Default::default(),
+            claude_state: None,
+            claude_result_ready: false,
+            claude_cleanup_current: false,
+            claude_tasks: Default::default(),
+            claude_all_tasks: Default::default(),
+            claude_background_tasks: Default::default(),
+            claude_terminal_tasks: Default::default(),
+            claude_task_runs: Default::default(),
+            claude_ledger_supported: false,
+            claude_ledger_uncertain: false,
             compacting: request.compact_before_turn && request.provider_session_id.is_some(),
             compact_confirmed: false,
             compact_turn: None,
@@ -217,8 +297,68 @@ impl LiveProtocol {
     pub fn progress_revision(&self) -> u64 {
         self.progress_revision
     }
+    pub fn completion_cleanup_ready(&self) -> bool {
+        self.request.runner_type == "codex"
+            || (self.claude_ledger_supported
+                && !self.claude_ledger_uncertain
+                && self.claude_state.as_deref() == Some("idle")
+                && self.claude_result_ready
+                && self.claude_cleanup_current
+                && self.claude_all_tasks.is_empty()
+                && self.claude_background_tasks.is_empty())
+    }
+    fn claude_task_event(&mut self, record: &Value) -> Option<String> {
+        let Some(id) = record["task_id"].as_str().filter(|id| !id.is_empty()) else {
+            self.claude_ledger_uncertain = true;
+            return None;
+        };
+        let run = record["run_id"].as_str().filter(|run| !run.is_empty());
+        if run.is_none() {
+            // Older CLIs can still use the EOF fallback, but cannot prove that
+            // a terminal task id was not resumed in another native run.
+            self.claude_ledger_uncertain = true;
+        }
+        if let Some(previous) = self.claude_task_runs.get(id) {
+            match (previous.as_deref(), run) {
+                (Some(previous), Some(run)) if run < previous => return None,
+                (Some(_), None) => {
+                    self.claude_all_tasks.insert(id.into());
+                    if matches!(
+                        record["task_type"].as_str(),
+                        Some("local_agent" | "local_workflow")
+                    ) {
+                        self.claude_tasks.insert(id.into());
+                    }
+                    return None;
+                }
+                (Some(previous), Some(run)) if run > previous => {
+                    self.claude_tasks.remove(id);
+                    self.claude_background_tasks.remove(id);
+                }
+                _ => {}
+            }
+        }
+        let key = (id.to_owned(), run.map(str::to_owned));
+        if self.claude_terminal_tasks.contains(&key) {
+            if run.is_none() && record["subtype"] == "task_started" {
+                self.claude_all_tasks.insert(id.into());
+                if matches!(
+                    record["task_type"].as_str(),
+                    Some("local_agent" | "local_workflow")
+                ) {
+                    self.claude_tasks.insert(id.into());
+                }
+            }
+            return None;
+        }
+        self.claude_task_runs.insert(id.into(), key.1);
+        Some(id.into())
+    }
     pub fn ingest(&mut self, line: &str, input: &mut LiveInput) -> Vec<String> {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
+            if !input.codex {
+                self.claude_ledger_uncertain = true;
+            }
             return vec![line.into()];
         };
         let mut out = vec![];
@@ -241,7 +381,143 @@ impl LiveProtocol {
         input: &mut LiveInput,
         out: &mut Vec<Value>,
     ) -> Result<(), String> {
-        if record["parent_tool_use_id"].is_null()
+        let top_level = !crate::notification::completion::is_child_event(&record);
+        let task_frame = record["type"] == "system"
+            && record["subtype"].as_str().is_some_and(|subtype| {
+                subtype.starts_with("task_") || subtype == "background_tasks_changed"
+            });
+        if top_level || task_frame {
+            if matches!(record["type"].as_str(), Some("assistant" | "stream_event"))
+                || (record["type"] == "system" && record["subtype"] == "api_retry")
+            {
+                self.claude_result_ready = false;
+                if self.claude_state.is_some() {
+                    self.claude_state = Some("running".into());
+                }
+            }
+            if record["type"] == "system" {
+                match record["subtype"].as_str() {
+                    Some("init") if top_level => {
+                        self.claude_ledger_supported = record["claude_code_version"]
+                            .as_str()
+                            .is_some_and(claude_task_ledger_supported);
+                    }
+                    Some("session_state_changed") if top_level => {
+                        self.claude_state = record["state"].as_str().map(str::to_owned);
+                        if !matches!(
+                            self.claude_state.as_deref(),
+                            Some("idle" | "running" | "requires_action")
+                        ) {
+                            self.claude_ledger_uncertain = true;
+                        }
+                        if self.claude_state.as_deref() != Some("idle") {
+                            self.claude_result_ready = false;
+                        }
+                    }
+                    Some("task_started") => {
+                        let Some(id) = self.claude_task_event(&record) else {
+                            out.push(record);
+                            return Ok(());
+                        };
+                        self.claude_cleanup_current = false;
+                        self.claude_all_tasks.insert(id.clone());
+                        if record["task_type"].as_str().is_none() {
+                            self.claude_ledger_uncertain = true;
+                        }
+                        // Shells/monitors may be permanent. Native idle decides
+                        // their EOF; finite delegated agents must keep stdin.
+                        if matches!(
+                            record["task_type"].as_str(),
+                            Some("local_agent" | "local_workflow")
+                        ) {
+                            self.claude_tasks.insert(id);
+                        }
+                    }
+                    Some("task_notification" | "task_updated") => {
+                        let notification = record["subtype"] == "task_notification";
+                        let status = if notification {
+                            &record["status"]
+                        } else {
+                            &record["patch"]["status"]
+                        };
+                        let terminal = matches!(
+                            status.as_str(),
+                            Some("completed" | "failed" | "stopped" | "killed")
+                        );
+                        if notification && !terminal {
+                            self.claude_ledger_uncertain = true;
+                        }
+                        if let Some(id) = self.claude_task_event(&record) {
+                            let deferring_agent = self.claude_tasks.contains(&id);
+                            if terminal {
+                                self.claude_all_tasks.remove(&id);
+                                self.claude_background_tasks.remove(&id);
+                                self.claude_tasks.remove(&id);
+                                if self.claude_terminal_tasks.len() >= 1024 {
+                                    if let Some((old_id, old_run)) =
+                                        self.claude_terminal_tasks.pop_front()
+                                    {
+                                        if self.claude_task_runs.get(&old_id) == Some(&old_run)
+                                            && !self.claude_all_tasks.contains(&old_id)
+                                        {
+                                            self.claude_task_runs.remove(&old_id);
+                                        }
+                                    }
+                                }
+                                self.claude_terminal_tasks
+                                    .push_back((id, record["run_id"].as_str().map(str::to_owned)));
+                            } else {
+                                self.claude_all_tasks.insert(id);
+                            }
+                            // Agent completion can wake the parent for another
+                            // turn. Shell activity must not withhold native EOF
+                            // forever, but still revokes transport cleanup.
+                            if terminal && deferring_agent {
+                                self.claude_result_ready = false;
+                            }
+                            self.claude_cleanup_current = false;
+                        }
+                    }
+                    Some("task_progress") => {
+                        if let Some(id) = self.claude_task_event(&record) {
+                            self.claude_all_tasks.insert(id);
+                            self.claude_cleanup_current = false;
+                        }
+                    }
+                    Some("background_tasks_changed") => {
+                        if let Some(tasks) = record["tasks"].as_array() {
+                            self.claude_background_tasks.clear();
+                            for task in tasks {
+                                if task["task_type"].as_str().is_none() {
+                                    self.claude_ledger_uncertain = true;
+                                }
+                                if let Some(id) = self.claude_task_event(task) {
+                                    self.claude_background_tasks.insert(id);
+                                }
+                            }
+                            if !self.claude_background_tasks.is_empty() {
+                                self.claude_cleanup_current = false;
+                            }
+                        } else {
+                            self.claude_ledger_uncertain = true;
+                        }
+                    }
+                    Some(subtype) if subtype.starts_with("task_") => {
+                        self.claude_ledger_uncertain = true;
+                        self.claude_result_ready = false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if record["type"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("task_"))
+        {
+            self.claude_ledger_uncertain = true;
+            self.claude_result_ready = false;
+        }
+        if top_level
             && ((record["type"] == "system" && record["subtype"] == "init")
                 || matches!(record["type"].as_str(), Some("assistant" | "stream_event")))
         {
@@ -257,7 +533,7 @@ impl LiveProtocol {
         {
             return Ok(());
         }
-        if self.compacting && record["parent_tool_use_id"].is_null() {
+        if self.compacting && top_level {
             if matches!(record["type"].as_str(), Some("stream_event" | "assistant"))
                 || (record["type"] == "system" && record["subtype"] == "compact_boundary")
             {
@@ -285,11 +561,20 @@ impl LiveProtocol {
                 }
                 out.push(json!({"type":"context_compacted","id":"before-turn","before_turn":true}));
                 input.write_text(&build_input(&self.request)?)?;
-                input.claude_pending = 1;
+                input.claude_initial_pending = true;
+                input.claude_messages.clear();
+                self.claude_result_ready = false;
+                self.claude_cleanup_current = false;
+                if self.claude_state.is_some() {
+                    self.claude_state = Some("running".into());
+                }
                 while let Some(message) = input.queued.pop_front() {
                     input.write(message.input)?;
-                    input.claude_pending += 1;
+                    input
+                        .claude_messages
+                        .insert(message.id, ClaudeMessage::default());
                 }
+                input.update_claude_pending();
                 out.push(json!({"type":"agentdeck.initial-delivered"}));
                 return Ok(());
             }
@@ -299,7 +584,7 @@ impl LiveProtocol {
             }
             return Ok(());
         }
-        if record["type"] == "result" && record["parent_tool_use_id"].is_null() {
+        if record["type"] == "result" && top_level {
             let id = record["uuid"]
                 .as_str()
                 .map(str::to_owned)
@@ -316,19 +601,43 @@ impl LiveProtocol {
                             + record["usage"][key].as_u64().unwrap_or(0)
                     );
                 }
-                input.claude_pending = input.claude_pending.saturating_sub(1);
-                if input.claude_pending == 0 {
-                    input.writer.take();
+                self.claude_result_ready = true;
+                self.claude_cleanup_current = true;
+                for id in input.claude_result(&record) {
+                    out.push(json!({"type":"agentdeck.input","message_id":id,"status":"accepted"}));
                 }
             }
             record["usage"] = self.claude_totals.clone();
         }
-        if record["type"] == "user" {
+        if record["type"] == "user" && top_level {
             if let Some(id) = record["uuid"].as_str() {
-                out.push(json!({"type":"agentdeck.input","message_id":id,"status":"accepted"}));
+                if let Some(message) = input.claude_messages.get_mut(id) {
+                    message.accepted = true;
+                    out.push(json!({"type":"agentdeck.input","message_id":id,"status":"accepted"}));
+                }
+            }
+        }
+        if !self.claude_result_ready {
+            self.claude_cleanup_current = false;
+        }
+        if self.claude_result_ready && self.claude_tasks.is_empty() {
+            if self.claude_state.as_deref() == Some("idle") {
+                input.claude_idle();
+            }
+            if matches!(self.claude_state.as_deref(), None | Some("idle"))
+                && input.claude_pending == 0
+                && input.queued.is_empty()
+            {
+                input.writer.take();
             }
         }
         out.push(record);
+        if self.claude_state.as_deref() == Some("idle")
+            && self.claude_result_ready
+            && (!self.claude_all_tasks.is_empty() || !self.claude_background_tasks.is_empty())
+        {
+            out.push(json!({"type":"agentdeck.waiting-background"}));
+        }
         Ok(())
     }
     fn codex(
@@ -1123,12 +1432,15 @@ mod tests {
         protocol.ingest(&result, &mut input);
         assert!(input.writer.is_some());
         let final_record = protocol.ingest(
-            &json!({"type":"result","uuid":"second","usage":{"input_tokens":20,"output_tokens":4}})
+            &json!({"type":"result","uuid":"second","user_message_uuid":"addition","usage":{"input_tokens":20,"output_tokens":4}})
                 .to_string(),
             &mut input,
         );
         assert!(input.writer.is_none());
-        let value: Value = serde_json::from_str(&final_record[0]).unwrap();
+        assert!(final_record
+            .iter()
+            .any(|line| line.contains("agentdeck.input")));
+        let value: Value = serde_json::from_str(final_record.last().unwrap()).unwrap();
         assert_eq!(value["usage"]["input_tokens"], 30);
         assert_eq!(value["usage"]["output_tokens"], 7);
     }

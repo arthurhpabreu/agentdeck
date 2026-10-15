@@ -8,6 +8,91 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
   }
+  test("chat lifecycle tool results survive progress replays within a frame and after the final response", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool" };
+      for (const itemId of ["same-frame", "later-progress"]) {
+        w.__emit("chat-event", { ...base, itemId, title: "Bash", command: `echo ${itemId}`, status: "running" });
+        w.__emit("chat-event", { ...base, itemId, output: "Command completed", exitCode: 0, status: "completed" });
+      }
+      w.__emit("chat-event", { ...base, itemId: "same-frame", status: "running", elapsedSeconds: 12 });
+      w.__emit("chat-event", { ...base, kind: "status", status: "finishing" });
+    });
+    for (const command of ["echo same-frame", "echo later-progress"]) {
+      await expect(page.locator(".ad-tool-card").filter({ hasText: command }).locator("summary")).toContainText("Concluído");
+    }
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool", itemId: "later-progress", status: "running", elapsedSeconds: 25 });
+    });
+    await expect.poll(async () => (await state(page)).messages.find((m: any) => m.id.endsWith(":later-progress"))?.elapsedSeconds).toBe(25);
+    const thread = await state(page);
+    expect(thread.busy).toBe(true); expect(thread.status).toBe("finishing");
+    expect(thread.messages.filter((m: any) => ["same-frame", "later-progress"].some(id => m.id.endsWith(`:${id}`))).map((m: any) => m.status)).toEqual(["completed", "completed"]);
+    await expect(page.locator(".ad-tool-card").filter({ hasText: "echo later-progress" }).locator("summary")).toContainText("Concluído");
+    const tools = await page.evaluate(async () => { const path = "/src/store/agentObservabilityStore.ts"; return (await import(/* @vite-ignore */ path)).useAgentObservabilityStore.getState().live.session.tools; });
+    expect(tools.filter((tool: any) => ["same-frame", "later-progress"].some(id => tool.id.endsWith(`:${id}`))).map((tool: any) => tool.status)).toEqual(["completed", "completed"]);
+  });
+  test("chat lifecycle keeps background work and queued input live until confirmed completion clears activity", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any; const invoke = w.__TAURI_INTERNALS__.invoke;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => command === "steer_chat_turn" ? Promise.resolve("queued") : invoke(command, args);
+    });
+    await page.locator(".ad-chat-composer textarea").fill("Follow up after the background task");
+    await page.getByRole("button", { name: "Enviar complemento", exact: true }).click();
+    await page.evaluate(() => {
+      const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool" };
+      for (const [itemId, status] of [["background", "running"], ["started", "started"], ["pending", "pending"], ["queued", "queued"], ["implicit", undefined], ["denied", "blocked"], ["failed", "failed"]]) {
+        w.__emit("chat-event", { ...base, itemId, status, title: itemId, command: `task ${itemId}` });
+      }
+      w.__emit("chat-event", { ...base, itemId: "child-background", parentId: "child", title: "Child task", status: "running" });
+      w.__emit("chat-event", { ...base, kind: "text", itemId: "final-answer", text: "Main answer is ready while native work remains." });
+      w.__emit("chat-event", { ...base, kind: "status", status: "finishing" });
+    });
+    let thread = await state(page);
+    expect(thread.busy).toBe(true); expect(thread.status).toBe("finishing");
+    expect(thread.messages.find((m: any) => m.text === "Follow up after the background task").status).toBe("queued");
+    await expect(page.locator(".ad-turn-activity")).toBeVisible();
+    await expect(page.locator(".ad-tool-card").filter({ hasText: "task background" }).locator("summary")).toContainText("Executando");
+    await page.evaluate(() => { const w = window as any; w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "done", status: "completed" }); });
+    await expect(page.locator(".ad-turn-activity")).toHaveCount(0);
+    thread = await state(page);
+    expect(thread.busy).toBe(false); expect(thread.status).toBe("completed"); expect(thread.activity).toBeUndefined();
+    for (const id of ["background", "started", "pending", "queued", "implicit", "child-background"]) expect(thread.messages.find((m: any) => m.id.endsWith(`:tool:${id}`)).status).toBe("completed");
+    expect(thread.messages.find((m: any) => m.id.endsWith(":denied")).status).toBe("blocked");
+    expect(thread.messages.find((m: any) => m.id.endsWith(":failed")).status).toBe("failed");
+    expect(thread.messages.find((m: any) => m.text === "Follow up after the background task").status).toBe("failed");
+    const activity = await page.evaluate(async () => {
+      const activityPath = "/src/store/agentActivityStore.ts", observedPath = "/src/store/agentObservabilityStore.ts", sessionPath = "/src/store/sessionStore.ts";
+      return { phase: (await import(/* @vite-ignore */ activityPath)).useAgentActivityStore.getState().sessions.session.phase,
+        tools: (await import(/* @vite-ignore */ observedPath)).useAgentObservabilityStore.getState().live.session.tools,
+        session: (await import(/* @vite-ignore */ sessionPath)).useSessionStore.getState().sessions.find((s: any) => s.id === "session").status };
+    });
+    expect(activity.phase).toBe("done"); expect(activity.session).toBe("waiting");
+    for (const id of ["background", "started", "pending", "queued", "implicit", "child-background"]) expect(activity.tools.find((tool: any) => tool.id.endsWith(`:${id}`)).status).toBe("completed");
+    expect(activity.tools.find((tool: any) => tool.id.endsWith(":denied")).status).toBe("blocked");
+    expect(activity.tools.find((tool: any) => tool.id.endsWith(":failed")).status).toBe("failed");
+  });
+  for (const ending of ["stopped", "error"]) test(`chat lifecycle ${ending} completion interrupts unfinished tools without claiming success`, async ({ page }) => {
+    await start(page);
+    await page.evaluate(ending => {
+      const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool" };
+      w.__emit("chat-event", { ...base, itemId: "unfinished", title: "Bash", command: "long-running-task", status: "running" });
+      w.__emit("chat-event", { ...base, itemId: "failed", title: "Failed task", status: "failed" });
+      w.__emit("chat-event", { ...base, kind: "done", status: ending });
+    }, ending);
+    await expect(page.locator(".ad-turn-activity")).toHaveCount(0);
+    await expect(page.locator(".ad-tool-card").filter({ hasText: "long-running-task" }).locator("summary")).toContainText("Interrompido");
+    const thread = await state(page);
+    expect(thread.busy).toBe(false); expect(thread.status).toBe(ending);
+    expect(thread.messages.find((m: any) => m.id.endsWith(":unfinished")).status).toBe("interrupted");
+    expect(thread.messages.find((m: any) => m.id.endsWith(":failed")).status).toBe("failed");
+    const tools = await page.evaluate(async () => { const path = "/src/store/agentObservabilityStore.ts"; return (await import(/* @vite-ignore */ path)).useAgentObservabilityStore.getState().live.session.tools; });
+    expect(tools.find((tool: any) => tool.id.endsWith(":unfinished")).status).toBe("interrupted");
+    expect(tools.find((tool: any) => tool.id.endsWith(":failed")).status).toBe("failed");
+  });
   test("chat reliability keeps command, streamed output and completion from the same frame", async ({ page }) => {
     await start(page);
     await page.evaluate(() => {

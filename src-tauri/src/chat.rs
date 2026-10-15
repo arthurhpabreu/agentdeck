@@ -185,10 +185,9 @@ struct CompletionShutdown {
 
 impl CompletionShutdown {
     fn observe(&mut self, provider: &str, confirmed: bool, elapsed: Duration) -> bool {
-        // Claude print mode can emit a result, consume stdin EOF, and still wait
-        // for background work before producing another answer. Only its process
-        // exit is final. Codex's completed app-server turn can be cleaned up.
-        if provider != "codex" || !confirmed {
+        // Callers must prove native completion. Claude additionally requires
+        // authoritative idle and a complete, empty native task ledger.
+        if !matches!(provider, "codex" | "claude-code") || !confirmed {
             self.confirmed_since = None;
             self.cleaned = false;
             return false;
@@ -693,6 +692,16 @@ fn kill_process(process: &ChatProcess) {
     }
 }
 
+fn kill_transport(process: &ChatProcess) {
+    if let Ok(mut child) = process.child.lock() {
+        if !matches!(child.try_wait(), Ok(Some(_))) {
+            // Completion cleanup owns only the provider transport. In contrast
+            // to user cancellation, it must never terminate descendants.
+            let _ = child.kill();
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_chat_turn(
     app: tauri::AppHandle,
@@ -881,6 +890,9 @@ pub async fn start_chat_turn(
     if request.runner_type == "claude-code" {
         command.env_remove("CLAUDECODE");
         command.env("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT", "1");
+        // A turn result can precede delegated follow-up work. Native session
+        // state tells streaming stdin when the complete run is idle.
+        command.env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1");
     }
     #[cfg(unix)]
     {
@@ -1201,7 +1213,8 @@ pub async fn start_chat_turn(
                 .unwrap_or(false);
             let completion_confirmed = !parser.failed
                 && !process.cancelled.load(Ordering::SeqCst)
-                && notification_evidence.confirmed(true, drained, live.compacting());
+                && notification_evidence.confirmed(true, drained, live.compacting())
+                && live.completion_cleanup_ready();
             if completion_shutdown.observe(
                 &request.runner_type,
                 completion_confirmed,
@@ -1211,7 +1224,11 @@ pub async fn start_chat_turn(
                     // Completion is already confirmed by the native protocol;
                     // only stop a transport that ignored the closed input pipe.
                     termination_requested = true;
-                    kill_process(&process);
+                    if request.runner_type == "claude-code" {
+                        kill_transport(&process);
+                    } else {
+                        kill_process(&process);
+                    }
                 }
             }
             if let Some(notice) =

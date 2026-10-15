@@ -30,7 +30,8 @@ export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatT
   }, [visible, silent, sessionId]);
   const activeTools = thread.messages.filter(m => m.turnId === thread.turnId && m.role === "tool" && ["running", "in_progress", "inProgress", "started"].includes(m.status ?? "running"));
   const latestTool = activeTools[activeTools.length - 1];
-  const label = thread.compacting ? contextCopy(locale).compacting : thread.status === "blocked" ? c.blocked : thread.status === "reasoning" ? c.thinking : latestTool ? `${latestTool.title || c.command} · ${c.running}` : thread.status === "finishing" ? c.finishing : thread.status === "responding" ? c.responding : thread.status === "starting" ? c.starting : c.working;
+  const waitingBackground = thread.status === "waiting-background";
+  const label = thread.compacting ? contextCopy(locale).compacting : thread.status === "blocked" ? c.blocked : waitingBackground ? c.waitingBackground : thread.status === "reasoning" ? c.thinking : latestTool ? `${latestTool.title || c.command} · ${c.running}` : thread.status === "finishing" ? c.finishing : thread.status === "responding" ? c.responding : thread.status === "starting" ? c.starting : c.working;
   const detail = latestTool?.command || thread.activity;
   const check = async () => {
     setChecking(true); setCheckNotice("");
@@ -41,6 +42,6 @@ export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatT
   return <div className={`ad-turn-activity ${silent ? "is-silent" : ""}`}>
     <div className="ad-chat-progress" role="status"><LoaderCircle size={16} className="ad-spin" /><span>{label}</span><time>{duration(elapsed)}</time></div>
     <div className="ad-turn-activity-detail"><Activity size={12} /><span title={detail}>{detail || c.activity}</span>{thread.pid && <code>{c.pid} {thread.pid}</code>}<small title={c.lastUpdate}>{Math.max(0, Math.floor((now - lastActivity) / 1000))}{c.seconds} {c.ago}</small></div>
-    {silent && <div className="ad-chat-stall"><p><strong>{c.silent} {duration(Math.max(0, Math.floor((now - lastActivity) / 1000)))}</strong><span>{c.silentHint}</span></p><div><button type="button" className="ad-button ad-button-ghost" disabled={checking} onClick={() => void check()}><RefreshCw size={13} className={checking ? "ad-spin" : ""} />{checking ? c.checking : c.check}</button><button type="button" className="ad-button ad-button-ghost" onClick={() => void stopChatTurn(sessionId)}><Square size={12} />{chatCopy(locale).stop}</button></div>{checkNotice && <small role="status">{checkNotice}</small>}</div>}
+    {silent && <div className="ad-chat-stall"><p><strong>{c.silent} {duration(Math.max(0, Math.floor((now - lastActivity) / 1000)))}</strong><span>{waitingBackground ? c.backgroundHint : c.silentHint}</span></p><div><button type="button" className="ad-button ad-button-ghost" disabled={checking} onClick={() => void check()}><RefreshCw size={13} className={checking ? "ad-spin" : ""} />{checking ? c.checking : c.check}</button><button type="button" className="ad-button ad-button-ghost" onClick={() => void stopChatTurn(sessionId)}><Square size={12} />{chatCopy(locale).stop}</button></div>{checkNotice && <small role="status">{checkNotice}</small>}</div>}
   </div>;
 }
