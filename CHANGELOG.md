@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2 — 2026-10-15
+
+### Fixed
+
+- Claude Code conversations now wait for the native process to exit after a
+  response, allowing background commands, renders and agents to finish and report
+  their results. The ten-second cleanup applies only to completed Codex transports.
+
 ## 0.7.0 — 2026-10-14
 
 ### Added

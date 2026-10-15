@@ -184,8 +184,11 @@ struct CompletionShutdown {
 }
 
 impl CompletionShutdown {
-    fn observe(&mut self, confirmed: bool, elapsed: Duration) -> bool {
-        if !confirmed {
+    fn observe(&mut self, provider: &str, confirmed: bool, elapsed: Duration) -> bool {
+        // Claude print mode can emit a result, consume stdin EOF, and still wait
+        // for background work before producing another answer. Only its process
+        // exit is final. Codex's completed app-server turn can be cleaned up.
+        if provider != "codex" || !confirmed {
             self.confirmed_since = None;
             self.cleaned = false;
             return false;
@@ -1155,7 +1158,11 @@ pub async fn start_chat_turn(
             let completion_confirmed = !parser.failed
                 && !process.cancelled.load(Ordering::SeqCst)
                 && notification_evidence.confirmed(true, drained, live.compacting());
-            if completion_shutdown.observe(completion_confirmed, launched_at.elapsed()) {
+            if completion_shutdown.observe(
+                &request.runner_type,
+                completion_confirmed,
+                launched_at.elapsed(),
+            ) {
                 if exit.is_none() && !termination_requested {
                     // Completion is already confirmed by the native protocol;
                     // only stop a transport that ignored the closed input pipe.
@@ -1445,20 +1452,20 @@ mod tests {
     fn confirmed_completion_cleanup_waits_for_all_acknowledgements_and_preserves_failures() {
         let mut shutdown = CompletionShutdown::default();
         // A top-level completion with pending input has no confirmed completion.
-        assert!(!shutdown.observe(false, Duration::from_secs(3600)));
+        assert!(!shutdown.observe("codex", false, Duration::from_secs(3600)));
         assert!(!shutdown.successful_exit(false, false, false));
-        assert!(!shutdown.observe(true, Duration::from_secs(3600)));
-        assert!(!shutdown.observe(true, Duration::from_secs(3609)));
-        assert!(shutdown.observe(true, Duration::from_secs(3610)));
+        assert!(!shutdown.observe("codex", true, Duration::from_secs(3600)));
+        assert!(!shutdown.observe("codex", true, Duration::from_secs(3609)));
+        assert!(shutdown.observe("codex", true, Duration::from_secs(3610)));
         assert!(shutdown.successful_exit(false, false, false));
         assert!(!shutdown.successful_exit(false, true, false));
         assert!(!shutdown.successful_exit(true, false, true));
         // A late protocol failure or newly pending input invalidates cleanup.
-        assert!(!shutdown.observe(false, Duration::from_secs(3611)));
+        assert!(!shutdown.observe("codex", false, Duration::from_secs(3611)));
         assert!(!shutdown.successful_exit(false, false, false));
-        assert!(!shutdown.observe(true, Duration::from_secs(3612)));
-        assert!(!shutdown.observe(true, Duration::from_secs(3621)));
-        assert!(shutdown.observe(true, Duration::from_secs(3622)));
+        assert!(!shutdown.observe("codex", true, Duration::from_secs(3612)));
+        assert!(!shutdown.observe("codex", true, Duration::from_secs(3621)));
+        assert!(shutdown.observe("codex", true, Duration::from_secs(3622)));
     }
 
     #[test]

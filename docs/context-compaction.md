@@ -126,8 +126,13 @@ missing turn-start acknowledgment reports uncertain acceptance; recovery prepare
 a follow-up draft instead of replaying the original request. Already running
 model turns and tools have no new inactivity deadline. Codex's native retry
 notifications remain recoverable while the provider retries the connection.
-After confirmed native completion and delivery of queued inputs, a transport
+After confirmed native completion and delivery of queued inputs, a Codex transport
 that fails to exit is closed after ten seconds without discarding its result.
+Claude's print process is allowed to exit on its own: a successful turn result
+can precede background commands or subagents and a subsequent response with their
+results. Closing its input does not establish that this background work is done;
+Agent Deck keeps the response active until the process exits. See Claude Code's
+[background task lifecycle](https://code.claude.com/docs/en/headless#background-tasks-at-exit).
 
 An MCP OAuth refresh failure, such as a disconnected Miro login, is displayed as
 an integration warning with the connector name for eight seconds after a new
