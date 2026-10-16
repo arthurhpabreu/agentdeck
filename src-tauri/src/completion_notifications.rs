@@ -133,7 +133,20 @@ pub(crate) fn forget_terminal(session: &str) {
     }
 }
 
-fn show_completion(app: &tauri::AppHandle, session: &str) {
+/// Name the project in the title so several running projects stay distinguishable.
+fn completion_title(project_path: Option<&str>) -> String {
+    project_path
+        .and_then(|path| {
+            path.trim_end_matches(['/', '\\'])
+                .rsplit(['/', '\\'])
+                .next()
+        })
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("Agentdeck · {name}"))
+        .unwrap_or_else(|| "Agentdeck".into())
+}
+
+fn show_completion(app: &tauri::AppHandle, session: &str, project_path: Option<&str>) {
     let locale = crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>());
     let body = match locale {
         crate::i18n::AppLocale::PtBr => {
@@ -148,7 +161,7 @@ fn show_completion(app: &tauri::AppHandle, session: &str) {
     };
     let _ = super::send_notification_with_callback(
         app.clone(),
-        "Agentdeck".into(),
+        completion_title(project_path),
         body.into(),
         None,
         Some(true),
@@ -173,7 +186,12 @@ pub(crate) fn terminal_completed(
         .map(|mut state| state.terminal_completed(session, turn, prompt))
         .unwrap_or(false);
     if notify {
-        show_completion(app, session);
+        let project = app
+            .state::<crate::state::PtySessionMetaMap>()
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(session).map(|meta| meta.project_path.clone()));
+        show_completion(app, session, project.as_deref());
     }
 }
 
@@ -183,6 +201,7 @@ pub(crate) fn chat_completed(
     turn: &str,
     prompt: &str,
     confirmed: bool,
+    project_path: &str,
 ) {
     if !crate::integration_control::notifications_and_hooks_enabled(app) {
         return;
@@ -192,7 +211,7 @@ pub(crate) fn chat_completed(
         .map(|mut state| state.chat_completed(session, turn, prompt, confirmed))
         .unwrap_or(false);
     if notify {
-        show_completion(app, session);
+        show_completion(app, session, Some(project_path));
     }
 }
 

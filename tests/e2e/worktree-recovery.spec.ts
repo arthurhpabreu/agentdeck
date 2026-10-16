@@ -33,6 +33,12 @@ async function setupRecovery(page: Page, dirtySession = false) {
           w.__recoveryRows = w.__recoveryRows.filter((row: any) => row.path !== args.worktreePath);
           return;
         }
+        if (command === "archive_recoverable_worktree") {
+          const row = w.__recoveryRows.find((row: any) => row.path === args.worktreePath);
+          if (!row || row.head !== args.expectedHead || !["clean", "dirty", "detached"].includes(row.reason)) throw new Error("QA worktree state no longer permits archiving");
+          w.__recoveryRows = w.__recoveryRows.filter((row: any) => row.path !== args.worktreePath);
+          return { stashed: row.reason === "dirty", archiveBranch: null };
+        }
         if (command === "clean_recoverable_worktree_caches") {
           if (w.__recoveryCacheFailure) throw new Error("QA worktree is now in use; caches were preserved");
           const row = w.__recoveryRows.find((row: any) => row.path === args.worktreePath);
@@ -214,4 +220,25 @@ test("cache cleanup failure keeps the folder and its measurements available", as
   await expect(dialog.getByRole("alert")).toContainText("QA worktree is now in use");
   await expect(dirty).toContainText("2 KiB");
   await expect(dirty.getByRole("button", { name: "Limpar caches", exact: true })).toBeEnabled();
+});
+
+test("clean all archives every eligible worktree after one confirmation and keeps busy ones", async ({ page }) => {
+  await setupRecovery(page);
+  await page.evaluate(() => {
+    const rows = (window as any).__recoveryRows;
+    rows.find((row: any) => row.path.endsWith("clean-session")).sizeBytes = 1024 ** 3;
+    rows.find((row: any) => row.path.endsWith("dirty-session")).sizeBytes = 2 * 1024 ** 3;
+  });
+  const dialog = await openRecovery(page);
+  await dialog.getByRole("button", { name: "Limpar todos (2 · 3 GiB)", exact: true }).click();
+  await expect(dialog.locator(".ad-source-warning")).toContainText("git stash");
+  expect(await page.evaluate(() => (window as any).__recoveryCalls.filter((call: any) => call.command === "archive_recoverable_worktree"))).toHaveLength(0);
+  await dialog.getByRole("button", { name: "Confirmar limpeza de todos", exact: true }).click();
+  await expect(dialog.getByRole("status").filter({ hasText: "Worktrees removidos: 2" })).toContainText("Alterações guardadas no git stash: 1");
+  await expect(dialog.getByRole("article")).toHaveCount(3);
+  const calls = await page.evaluate(() => (window as any).__recoveryCalls.filter((call: any) => call.command === "archive_recoverable_worktree").map((call: any) => call.args));
+  expect(calls).toEqual([
+    { workdir: "C:\\Projects\\Recovery", worktreePath: "C:\\Worktrees\\clean-session", expectedHead: "1".repeat(40) },
+    { workdir: "C:\\Projects\\Recovery", worktreePath: "C:\\Worktrees\\dirty-session", expectedHead: "2".repeat(40) },
+  ]);
 });

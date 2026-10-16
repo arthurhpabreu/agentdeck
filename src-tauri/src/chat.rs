@@ -1392,6 +1392,7 @@ pub async fn start_chat_turn(
             &request.turn_id,
             &request.prompt,
             confirmed,
+            &project_path,
         );
     });
     Ok(())

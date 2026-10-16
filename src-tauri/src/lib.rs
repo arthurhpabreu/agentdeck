@@ -317,6 +317,7 @@ pub fn run() {
             git::worktree::prune_orphan_worktrees,
             git::worktree_recovery::list_recoverable_worktrees,
             git::worktree_recovery::remove_recoverable_worktree,
+            git::worktree_recovery::archive_recoverable_worktree,
             git::worktree_recovery::clean_recoverable_worktree_caches,
             git::worktree_recovery::open_recoverable_worktree,
             // PTY terminals

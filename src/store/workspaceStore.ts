@@ -43,6 +43,8 @@ export interface Workspace {
   color: WorkspaceColorId;
   createdAt: number;
   order: number;
+  /** Last time an agent started work in this project; drives automatic grouping. */
+  lastActiveAt?: number;
 }
 
 interface WorkspaceStore {
@@ -53,6 +55,7 @@ interface WorkspaceStore {
   setActiveWorkspace: (id: string) => void;
   bringToFront: (id: string) => void;
   updateWorkspace: (id: string, patch: Partial<Pick<Workspace, "name" | "color">>) => void;
+  touchWorkspace: (id: string, at?: number) => void;
 }
 
 let _wid = Date.now();
@@ -117,6 +120,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
             w.id === id ? { ...w, ...patch, ...(patch.color !== undefined ? { color: normalizeWorkspaceColor(patch.color) } : {}) } : w
           ),
         })),
+
+      touchWorkspace: (id, at = Date.now()) =>
+        set((state) => state.workspaces.some(w => w.id === id && (w.lastActiveAt ?? 0) < at)
+          ? { workspaces: state.workspaces.map(w => w.id === id ? { ...w, lastActiveAt: at } : w) }
+          : state),
     }),
     {
       name: "agentdeck-workspaces",

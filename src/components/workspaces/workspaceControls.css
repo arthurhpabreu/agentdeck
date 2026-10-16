@@ -28,3 +28,17 @@
 .ad-project-color-dialog h2 { font-size: 16px; margin: 0 0 18px; overflow-wrap: anywhere; }
 .ad-workspace-select { flex: 1; min-width: 0; padding: 0; text-align: start; border: 0; border-radius: 5px; background: transparent; cursor: pointer; }
 .ad-workspace-card:focus-within .ad-workspace-actions { opacity: 1 !important; pointer-events: auto !important; }
+.ad-project-groups { display: flex; flex-direction: column; gap: 6px; max-height: min(52vh, 460px); overflow: auto; }
+.ad-project-group-header { display: flex; align-items: center; gap: 5px; width: 100%; padding: 2px 4px; border: 0; background: transparent; color: var(--ci-text-dim); font: inherit; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+.ad-project-group-header:hover { color: var(--ci-text); }
+.ad-project-group-header b { margin-inline-start: auto; font-weight: 600; letter-spacing: 0; }
+.ad-project-group[data-group=attention] > .ad-project-group-header { color: var(--ci-yellow-dark); }
+.ad-project-group[data-group=running] > .ad-project-group-header { color: var(--ci-green-dark); }
+.ad-project-status { color: var(--ci-text-dim); }
+.ad-workspace-card[data-state=attention] .ad-project-status { color: var(--ci-yellow-dark); }
+.ad-workspace-card[data-state=running] .ad-project-status { color: var(--ci-green-dark); }
+.ad-project-pulse { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ci-green); }
+.ad-workspace-card[data-state=attention] .ad-project-pulse { background: var(--ci-yellow); }
+.ad-workspace-card[data-state=running] .ad-project-pulse { animation: ad-project-pulse 1.6s ease-in-out infinite; }
+@keyframes ad-project-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .ad-project-pulse { animation: none !important; } }

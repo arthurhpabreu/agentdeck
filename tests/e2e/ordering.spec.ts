@@ -72,41 +72,41 @@ test("holding the project body reorders without grips, preserves a normal click 
   const projects = page.locator('[data-surface="projects"]');
   await expect(page.locator(".ad-reorder-handle, .lucide-grip-vertical, .ad-flow-drag-handle")).toHaveCount(0);
   const source = projects.locator('[data-sortable-id="p3"] .ad-workspace-select');
-  const target = projects.locator('[data-sortable-id="p1"] .ad-workspace-select');
+  const target = projects.locator('[data-sortable-id="p2"] .ad-workspace-select');
   const from = (await source.boundingBox())!, to = (await target.boundingBox())!;
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down(); await page.waitForTimeout(220);
   await expect(projects.locator('[data-sortable-id="p3"]')).toHaveAttribute("data-dragging", "true");
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 }); await page.mouse.up();
-  await expect.poll(() => rowIds(page, "projects")).toEqual(["p3", "p1", "p2"]);
+  await expect.poll(() => rowIds(page, "projects")).toEqual(["p3", "p2"]);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-workspaces")!).state.activeWorkspaceId)).toBe("p1");
   await page.waitForTimeout(100);
   await projects.locator('.ad-workspace-select').filter({ hasText: "Project two" }).click();
-  expect(await rowIds(page, "projects")).toEqual(["p3", "p1", "p2"]);
+  expect(await rowIds(page, "projects")).toEqual(["p3", "p2"]);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-workspaces")!).state.activeWorkspaceId)).toBe("p2");
   const first = (await source.boundingBox())!, last = (await projects.locator('[data-sortable-id="p2"] .ad-workspace-select').boundingBox())!;
   await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2);
   await page.mouse.down(); await page.waitForTimeout(220);
   await page.mouse.move(last.x + last.width / 2, last.y + last.height / 2, { steps: 10 });
   await page.keyboard.press("Escape"); await page.mouse.up();
-  expect(await rowIds(page, "projects")).toEqual(["p3", "p1", "p2"]);
+  expect(await rowIds(page, "projects")).toEqual(["p3", "p2"]);
 });
 
 test("action buttons cannot start a drag and movement before the hold threshold preserves the order", async ({ page }) => {
   await setup(page);
   const projects = page.locator('[data-surface="projects"]');
-  const row = projects.locator('[data-sortable-id="p1"]');
+  const row = projects.locator('[data-sortable-id="p2"]');
   const remove = row.getByTitle("Delete workspace", { exact: true });
   const action = (await remove.boundingBox())!;
   await page.mouse.move(action.x + action.width / 2, action.y + action.height / 2);
   await page.mouse.down(); await page.waitForTimeout(220);
   await expect(row).toHaveAttribute("data-dragging", "false");
   await page.mouse.move(action.x - 90, action.y + 60, { steps: 6 }); await page.mouse.up();
-  expect(await rowIds(page, "projects")).toEqual(["p1", "p2", "p3"]);
+  expect(await rowIds(page, "projects")).toEqual(["p2", "p3"]);
   const label = (await row.locator(".ad-workspace-select").boundingBox())!;
   await page.mouse.move(label.x + 20, label.y + label.height / 2); await page.mouse.down();
   await page.mouse.move(label.x + 90, label.y + 70, { steps: 6 }); await page.mouse.up();
-  expect(await rowIds(page, "projects")).toEqual(["p1", "p2", "p3"]);
+  expect(await rowIds(page, "projects")).toEqual(["p2", "p3"]);
 });
 
 test("the conversation body can move without selecting or changing its provider binding", async ({ page }) => {
@@ -159,23 +159,52 @@ test("sidebar can reach half of a wide viewport, remembers its preference and st
   await page.screenshot({ path: testInfo.outputPath("sidebar-half-width-no-grips.png"), animations: "disabled" });
 });
 
-test("a single item hides unneeded ordering controls while density and an available undo remain accessible", async ({ page }) => {
+test("a single item hides unneeded ordering controls while an available undo remains accessible", async ({ page }) => {
   await setup(page);
   const projects = page.locator('[data-surface="projects"]');
   await page.evaluate(async () => {
     const path = "/src/store/workspaceStore.ts";
     const { useWorkspaceStore } = await import(/* @vite-ignore */ path);
-    useWorkspaceStore.setState((state: any) => ({ workspaces: state.workspaces.slice(0, 1) }));
+    useWorkspaceStore.setState((state: any) => ({ workspaces: state.workspaces.slice(1, 2) }));
   });
-  await expect(projects.getByLabel("Display density")).toBeVisible();
+  await expect(projects.locator(".ad-sortable-item")).toHaveCount(1);
+  await expect(page.getByLabel("Display density")).toHaveCount(0);
   await expect(projects.getByRole("button", { name: "Automatic order", exact: true })).toHaveCount(0);
   await expect(projects.getByRole("button", { name: "Undo arrangement", exact: true })).toHaveCount(0);
   await page.evaluate(async () => {
     const path = "/src/store/presentationStore.ts";
     const { usePresentationStore } = await import(/* @vite-ignore */ path);
-    usePresentationStore.getState().setOrder("projects", "navigation", ["p1"]);
+    usePresentationStore.getState().setOrder("projects", "navigation", ["p2"]);
   });
   await expect(projects.getByRole("button", { name: "Undo arrangement", exact: true })).toBeEnabled();
+});
+
+test("projects group themselves by attention, running work and recent activity", async ({ page }) => {
+  await setup(page);
+  const groups = page.locator(".ad-project-groups");
+  await page.evaluate(async () => {
+    const sessions = "/src/store/sessionStore.ts", workspaces = "/src/store/workspaceStore.ts", attention = "/src/store/attentionStore.ts";
+    const { useSessionStore } = await import(/* @vite-ignore */ sessions);
+    const { useWorkspaceStore } = await import(/* @vite-ignore */ workspaces);
+    const { useAttentionStore } = await import(/* @vite-ignore */ attention);
+    useSessionStore.setState((state: any) => ({ sessions: [...state.sessions, { ...state.sessions[2], id: "s4", name: "Session 4", workspaceId: "p2", workdir: "C:\\ProjectTwo", status: "idle", createdAt: 4 }] }));
+    useAttentionStore.getState().record({ id: "qa-approval", sessionId: "s4", kind: "approval", text: "Approve", source: "provider", at: Date.now() });
+    useWorkspaceStore.getState().touchWorkspace("p3");
+  });
+  await expect(groups.locator(".ad-project-group-header")).toHaveText([/Waiting for you\s*1/, /Running\s*1/, /Recent\s*1/]);
+  await expect(groups.locator('[data-group="attention"]')).toContainText("Project two");
+  await expect(groups.locator('[data-group="attention"]')).toContainText("Approval needed");
+  await expect(groups.locator('[data-group="running"] .ad-workspace-card')).toHaveAttribute("data-state", "running");
+  await expect(groups.locator('[data-group="running"]')).toContainText("Project one");
+  await expect(groups.locator('[data-group="recent"]')).toContainText("Last activity");
+  // Automatic groups follow activity; only stale projects keep a manual arrangement.
+  await expect(page.locator('[data-surface="projects"]')).toHaveCount(0);
+  const recent = groups.locator('[data-group="recent"] .ad-project-group-header');
+  await recent.click();
+  await expect(recent).toHaveAttribute("aria-expanded", "false");
+  await expect(groups.locator('[data-group="recent"]')).not.toContainText("Project three");
+  await page.reload();
+  await expect(groups.locator('[data-group="recent"] .ad-project-group-header')).toHaveAttribute("aria-expanded", "false");
 });
 
 test("touch scrolling over project rows keeps their order and does not require a grip", async ({ page, browserName }) => {
@@ -186,7 +215,7 @@ test("touch scrolling over project rows keeps their order and does not require a
     const { useWorkspaceStore } = await import(/* @vite-ignore */ path);
     useWorkspaceStore.setState((state: any) => ({ workspaces: [...state.workspaces, ...Array.from({ length: 9 }, (_, index) => ({ ...state.workspaces[0], id: `more-${index}`, name: `Extra project ${index}`, order: index + 3 }))] }));
   });
-  const projects = page.locator('[data-surface="projects"]');
+  const projects = page.locator(".ad-project-groups");
   const before = await rowIds(page, "projects"), bounds = (await projects.boundingBox())!;
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
@@ -207,7 +236,7 @@ test("a deliberate touch hold moves the project body while a short touch remains
   await setup(page);
   const projects = page.locator('[data-surface="projects"]');
   const source = (await projects.locator('[data-sortable-id="p3"] .ad-workspace-select').boundingBox())!;
-  const target = (await projects.locator('[data-sortable-id="p1"] .ad-workspace-select').boundingBox())!;
+  const target = (await projects.locator('[data-sortable-id="p2"] .ad-workspace-select').boundingBox())!;
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
   const x = source.x + source.width / 2, y = source.y + source.height / 2;
@@ -219,13 +248,13 @@ test("a deliberate touch hold moves the project body while a short touch remains
     await page.waitForTimeout(16);
   }
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await expect.poll(() => rowIds(page, "projects")).toEqual(["p3", "p1", "p2"]);
+  await expect.poll(() => rowIds(page, "projects")).toEqual(["p3", "p2"]);
   const second = (await projects.locator('[data-sortable-id="p2"] .ad-workspace-select').boundingBox())!;
   await page.waitForTimeout(100);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: second.x + second.width / 2, y: second.y + second.height / 2 }] });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-workspaces")!).state.activeWorkspaceId)).toBe("p2");
-  expect(await rowIds(page, "projects")).toEqual(["p3", "p1", "p2"]);
+  expect(await rowIds(page, "projects")).toEqual(["p3", "p2"]);
   await cdp.detach();
 });
 
@@ -312,14 +341,15 @@ test("project selection preserves order; keyboard rearrangement survives rename 
   expect(await rowIds(page, "projects")).toEqual(before);
   await projects.getByRole("group", { name: "Reorder: Project three", exact: true }).focus();
   await page.keyboard.press("Alt+ArrowUp");
-  expect(await rowIds(page, "projects")).toEqual(["p1", "p3", "p2"]);
+  expect(await rowIds(page, "projects")).toEqual(["p3", "p2"]);
   await page.evaluate(async () => { const p = "/src/store/workspaceStore.ts"; const { useWorkspaceStore } = await import(/* @vite-ignore */ p); useWorkspaceStore.getState().updateWorkspace("p3", { name: "Renamed third project" }); });
-  expect(await rowIds(page, "projects")).toEqual(["p1", "p3", "p2"]);
+  expect(await rowIds(page, "projects")).toEqual(["p3", "p2"]);
   await page.reload();
   await expect(projects.getByRole("group", { name: "Reorder: Renamed third project", exact: true })).toBeVisible();
+  // A restart ends the running session, so its project rejoins the arranged group in its saved slot.
   expect(await rowIds(page, "projects")).toEqual(["p1", "p3", "p2"]);
   await projects.getByRole("button", { name: "Automatic order", exact: true }).click();
-  expect(await rowIds(page, "projects")).toEqual(before);
+  expect(await rowIds(page, "projects")).toEqual(["p1", ...before]);
 });
 
 test("manual sessions move across statuses and stay fixed during streaming; cancel and undo preserve ownership", async ({ page }) => {
@@ -335,7 +365,7 @@ test("manual sessions move across statuses and stay fixed during streaming; canc
   await last.focus(); await page.keyboard.press("Space"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Escape");
   expect(await rowIds(page, "sessions")).toEqual(arranged);
   await surface.getByRole("button", { name: "Undo arrangement", exact: true }).click();
-  expect(await rowIds(page, "sessions")).not.toEqual(arranged);
+  await expect.poll(() => rowIds(page, "sessions")).not.toEqual(arranged);
   await surface.getByRole("button", { name: "Automatic order", exact: true }).click();
   const identities = await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.sessions.map((s: any) => [s.id, s.workspaceId, s.workdir, s.providerSessionId ?? null]));
   expect(identities).toEqual([["s1", "p1", "C:\\ProjectOne", "provider-main"], ["s2", "p1", "C:\\ProjectOne", null], ["s3", "p1", "C:\\ProjectOne", null]]);

@@ -157,3 +157,18 @@ test("@macos source provenance keeps legacy history unknown, rejects stale deliv
   });
   expect(restored).toEqual({ legacyReview: true, trackedReview: false, hasRuntime: false, changedProviderReview: true, expiredOrigin: "unknown", expiredRevisions: [], boundedOrigin: "unknown", boundedRevisions: [], migratedReview: true, migratedOrigin: "unknown" });
 });
+
+test("@macos a notification click opens its session in the owning project and resize warnings stay silent", async ({ page }) => {
+  await setupImprovements(page);
+  await page.evaluate(async () => {
+    const { useWorkspaceStore } = await import("/src/store/workspaceStore.ts" as string);
+    const { useSessionStore } = await import("/src/store/sessionStore.ts" as string);
+    useWorkspaceStore.setState((state: any) => ({ workspaces: [...state.workspaces, { id: "two", name: "Outro projeto", path: "C:/fixtures/two", color: "blue", createdAt: 2, order: 1 }] }));
+    useSessionStore.setState((state: any) => ({ sessions: [...state.sessions, { ...state.sessions[0], id: "session-other", name: "Conversa remota", workspaceId: "two", workdir: "C:/fixtures/two" }] }));
+    window.dispatchEvent(new ErrorEvent("error", { message: "ResizeObserver loop completed with undelivered notifications." }));
+    (window as any).__emitImprovement("popup-focused", { session_id: "session-other" });
+  });
+  await expect.poll(() => page.evaluate(async () => (await import("/src/store/workspaceStore.ts" as string)).useWorkspaceStore.getState().activeWorkspaceId)).toBe("two");
+  await expect(page.locator(".ad-session-tabs:visible > span")).toContainText("Conversa remota");
+  await expect(page.getByText("ResizeObserver loop", { exact: false })).toHaveCount(0);
+});

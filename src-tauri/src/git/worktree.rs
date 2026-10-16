@@ -307,7 +307,8 @@ pub async fn setup_session_worktree(
     .map_err(|e| e.to_string())?
 }
 
-/// Clean up a session's Git worktree only when Git can safely remove it.
+/// Delete a removed session's folder. Its Git work stays recoverable (branch,
+/// stash) while dependencies and builds stop occupying disk space.
 #[tauri::command]
 pub async fn teardown_session_worktree(
     app: tauri::AppHandle,
@@ -320,10 +321,25 @@ pub async fn teardown_session_worktree(
 
     tokio::task::spawn_blocking(move || {
         let target = fs::canonicalize(&expanded_wt).map_err(|e| e.to_string())?;
-        if super::worktree_recovery::in_use(&app, &target) {
+        let in_use = |path: &Path| super::worktree_recovery::in_use(&app, path);
+        if in_use(&target) {
             return Err("Worktree preserved: session is still in use".into());
         }
-        teardown_folder(&expanded_workdir, &expanded_wt, &branch)
+        match super::worktree_recovery::archive(&expanded_workdir, &expanded_wt, None, in_use) {
+            Ok(_) if !branch.is_empty() => {
+                // Only merged branches are deleted; unmerged work stays reachable.
+                let _ = background_command("git")
+                    .current_dir(&expanded_workdir)
+                    .args(["branch", "-d", "--", &branch])
+                    .output();
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            // Folders outside the managed namespace keep the strict Git cleanup.
+            Err(archive_error) => {
+                teardown_folder(&expanded_workdir, &expanded_wt, &branch).map_err(|_| archive_error)
+            }
+        }
     })
     .await
     .map_err(|e| e.to_string())?

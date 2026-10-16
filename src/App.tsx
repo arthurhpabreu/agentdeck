@@ -75,8 +75,7 @@ export default function App() {
     updateSession,
     setDiffFiles,
     setActiveSession,
-    setExpandedSession,
-  } = useSessionStore(useShallow(state => ({ sessions: selectSessionNavigation(state), activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, appendOutput: state.appendOutput, updateSession: state.updateSession, setDiffFiles: state.setDiffFiles, setActiveSession: state.setActiveSession, setExpandedSession: state.setExpandedSession })));
+  } = useSessionStore(useShallow(state => ({ sessions: selectSessionNavigation(state), activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, appendOutput: state.appendOutput, updateSession: state.updateSession, setDiffFiles: state.setDiffFiles, setActiveSession: state.setActiveSession })));
   const setScmSnapshot = useScmStore((s) => s.setSnapshot);
   const setScmStatus = useScmStore((s) => s.setStatus);
   const setScmDiffOverride = useScmStore((s) => s.setDiffOverride);
@@ -102,6 +101,10 @@ export default function App() {
   const [showAgents, setShowAgents] = useState(false);
   useEffect(() => { if (activeSessionId) { useNavigationStore.getState().visit(`session:${activeSessionId}`); useAttentionStore.getState().readSession(activeSessionId); } }, [activeSessionId]);
   useEffect(() => useSessionStore.subscribe((state, previous) => { const remaining = new Set(state.sessions.map(session => session.id)); previous.sessions.forEach(session => { if (!remaining.has(session.id)) { forgetChatViewState(session.id); useAttentionStore.getState().clearSession(session.id); useSourceDeliveryStore.getState().remove(session.id); } }); }), []);
+  // Projects are grouped by agent work, so record when a session starts running.
+  useEffect(() => useSessionStore.subscribe((state, previous) => { if (state.sessions === previous.sessions) return; const before = new Map(previous.sessions.map(session => [session.id, session.status])); state.sessions.forEach(session => { if (session.status === "running" && before.get(session.id) !== "running") useWorkspaceStore.getState().touchWorkspace(session.workspaceId); }); }), []);
+  // A response that finishes in the conversation on screen has already been seen.
+  useEffect(() => useAttentionStore.subscribe(state => { const sessionId = useSessionStore.getState().activeSessionId; if (sessionId && document.hasFocus() && state.items.some(item => item.sessionId === sessionId && item.kind === "completed" && !item.read)) useAttentionStore.getState().readSession(sessionId); }), []);
   const frontendErrorIdRef = useRef(1);
 
   const pushFrontendErrorLog = useCallback((log: Omit<FrontendErrorLog, "id">) => {
@@ -127,6 +130,8 @@ export default function App() {
     };
 
     const handleWindowError = (event: ErrorEvent) => {
+      // Browsers report deferred resize notifications as a benign warning, not a failure.
+      if (/^ResizeObserver loop/.test(event.message)) return;
       pushFrontendErrorLog({
         source: "window.error",
         message: event.message,
@@ -419,15 +424,15 @@ export default function App() {
           : (aid ?? ss[ss.length - 1]?.id ?? null);
       if (target) {
         requestAnimationFrame(() => {
-          setActiveSession(target);
-          setExpandedSession(target);
-          focusSession(target);
+          // The session may belong to another project; switch to it as well.
+          showSessionSurface(target);
+          useAttentionStore.getState().readSession(target);
           refreshSessionDiff(target);
         });
       }
     });
     return () => { unlisten.then((f) => f()).catch(() => {}); };
-  }, [setExpandedSession, refreshSessionDiff]);
+  }, [refreshSessionDiff]);
 
   // ── Trust existing workspace directories at startup by writing Claude settings ──
   useEffect(() => {

@@ -100,12 +100,9 @@ fn inspect_entries(
         let is_current = namespace == Some(session_worktree_root_dir());
         let is_migration = namespace == Some(migration.as_str());
         let managed_parent = parent.parent() == Some(repo_parent) || parent.starts_with(&root);
-        let session_name = path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("session-"));
-        // Older installations used descriptive directory names. Git registration
-        // still proves ownership; only the matching build namespace is recoverable.
-        if !managed_parent || (!is_current && !is_migration) || (is_current && !session_name) {
+        // Agents and older installations also use descriptive directory names. Git
+        // registration proves ownership; only the matching build namespace is recoverable.
+        if !managed_parent || (!is_current && !is_migration) {
             continue;
         }
         let canonical = fs::canonicalize(path);
@@ -248,6 +245,120 @@ fn cleanup_caches(
     worktree_storage::clean_with_guard(&target, cache_paths, || validate().map(|_| ()))
 }
 
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveOutcome {
+    stashed: bool,
+    archive_branch: Option<String>,
+}
+
+/// Delete a worktree folder while keeping its Git work recoverable. Commits stay
+/// on their branch, uncommitted tracked/untracked files go to the repository's
+/// shared stash list and detached commits get a branch. Ignored files such as
+/// dependencies and builds are deleted with the folder.
+pub(super) fn archive(
+    workdir: &str,
+    path: &str,
+    expected_head: Option<&str>,
+    in_use: impl Fn(&Path) -> bool,
+) -> Result<ArchiveOutcome, String> {
+    worktree_storage::ensure_plain_path(Path::new(path))?;
+    let target = fs::canonicalize(path).map_err(|e| e.to_string())?;
+    let validate = || -> Result<RecoveryEntry, String> {
+        let entry = inspect_entries(workdir, &in_use, false)?
+            .into_iter()
+            .find(|entry| fs::canonicalize(&entry.path).is_ok_and(|path| path == target))
+            .ok_or("This folder is not a registered Agent Deck worktree for this repository")?;
+        if !matches!(entry.reason.as_str(), "clean" | "dirty" | "detached") {
+            return Err(format!(
+                "Worktree preserved: {} ({})",
+                entry.reason, entry.path
+            ));
+        }
+        if entry.head.is_empty() || expected_head.is_some_and(|head| head != entry.head) {
+            return Err("Worktree changed since inspection. Refresh before cleaning.".into());
+        }
+        if in_use(&target) {
+            return Err("Worktree is in use".into());
+        }
+        Ok(entry)
+    };
+    let entry = validate()?;
+    let folder: String = target
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let pending = || {
+        git(
+            &entry.path,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )
+    };
+    let mut outcome = ArchiveOutcome::default();
+    if !pending()?.trim().is_empty() {
+        let label = if entry.branch.is_empty() {
+            &folder
+        } else {
+            &entry.branch
+        };
+        let message = format!("Agent Deck archive: {label} ({})", entry.path);
+        git(
+            &entry.path,
+            &["stash", "push", "--include-untracked", "-m", &message],
+        )?;
+        if !pending()?.trim().is_empty() {
+            return Err("Uncommitted work could not be archived; worktree preserved".into());
+        }
+        outcome.stashed = true;
+    }
+    let reachable = git(
+        workdir,
+        &[
+            "for-each-ref",
+            "--contains",
+            &entry.head,
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )?;
+    if entry.branch.is_empty() && reachable.trim().is_empty() {
+        let name = format!(
+            "agentdeck/archive/{folder}-{}",
+            &entry.head[..entry.head.len().min(8)]
+        );
+        git(workdir, &["branch", &name, &entry.head])?;
+        outcome.archive_branch = Some(name);
+    }
+    // Recheck sessions and HEAD immediately before Git deletes the folder.
+    validate()?;
+    // Dependency trees routinely exceed MAX_PATH on Windows.
+    git(
+        workdir,
+        &[
+            "-c",
+            "core.longpaths=true",
+            "worktree",
+            "remove",
+            "--force",
+            "--",
+            &entry.path,
+        ],
+    )?;
+    let _ = git(workdir, &["worktree", "prune"]);
+    Ok(outcome)
+}
+
 #[tauri::command]
 pub async fn list_recoverable_worktrees(
     app: tauri::AppHandle,
@@ -272,6 +383,25 @@ pub async fn remove_recoverable_worktree(
             &expand_path(&workdir),
             &expand_path(&worktree_path),
             &expected_head,
+            |path| in_use(&app, path),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn archive_recoverable_worktree(
+    app: tauri::AppHandle,
+    workdir: String,
+    worktree_path: String,
+    expected_head: String,
+) -> Result<ArchiveOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        archive(
+            &expand_path(&workdir),
+            &expand_path(&worktree_path),
+            Some(&expected_head),
             |path| in_use(&app, path),
         )
     })
@@ -461,6 +591,81 @@ mod tests {
             .unwrap();
         assert!(cleanup(repo, &row.path, &row.head, |_| false).is_err());
         assert!(detached.exists());
+    }
+
+    #[test]
+    fn archive_stashes_uncommitted_work_keeps_commits_and_deletes_the_folder() {
+        let fixture = Fixture::new();
+        let repo = fixture.repo.to_str().unwrap();
+        let dirty = fixture.worktree("dirty");
+        fs::write(dirty.join("file.txt"), "unsaved").unwrap();
+        fs::write(dirty.join("new.txt"), "untracked").unwrap();
+        fs::write(dirty.join("ignored.txt"), "build output").unwrap();
+        let detached = fixture.worktree("detached");
+        git(detached.to_str().unwrap(), &["checkout", "--detach"]).unwrap();
+        fs::write(detached.join("file.txt"), "detached work").unwrap();
+        git(detached.to_str().unwrap(), &["commit", "-am", "detached"]).unwrap();
+        let locked = fixture.worktree("locked");
+        git(repo, &["worktree", "lock", locked.to_str().unwrap()]).unwrap();
+        let descriptive = fixture.managed.join("agent-made");
+        git(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "agent",
+                descriptive.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let rows = inspect(repo, |_| false).unwrap();
+        let head = |name: &str| {
+            rows.iter()
+                .find(|row| row.path.ends_with(name))
+                .unwrap()
+                .head
+                .clone()
+        };
+        let dirty_text = dirty.to_str().unwrap();
+        assert!(archive(repo, dirty_text, Some(&head("session-dirty")), |_| true).is_err());
+        assert!(archive(repo, dirty_text, Some("stale"), |_| false).is_err());
+        let locked_text = locked.to_str().unwrap();
+        assert!(archive(repo, locked_text, Some(&head("session-locked")), |_| false).is_err());
+        assert!(dirty.join("new.txt").exists() && locked.exists());
+
+        let outcome = archive(repo, dirty_text, Some(&head("session-dirty")), |_| false).unwrap();
+        assert!(outcome.stashed && outcome.archive_branch.is_none());
+        assert!(!dirty.exists());
+        git(repo, &["show-ref", "--verify", "refs/heads/dirty"]).unwrap();
+        assert!(git(repo, &["stash", "list"])
+            .unwrap()
+            .contains("Agent Deck archive: dirty"));
+        assert_eq!(
+            git(repo, &["show", "stash@{0}:file.txt"]).unwrap(),
+            "unsaved"
+        );
+        assert_eq!(
+            git(repo, &["show", "stash@{0}^3:new.txt"]).unwrap(),
+            "untracked"
+        );
+
+        let detached_text = detached.to_str().unwrap();
+        let outcome = archive(repo, detached_text, Some(&head("session-detached")), |_| {
+            false
+        })
+        .unwrap();
+        let branch = outcome.archive_branch.unwrap();
+        assert!(!outcome.stashed && !detached.exists());
+        assert_eq!(
+            git(repo, &["show", &format!("{branch}:file.txt")]).unwrap(),
+            "detached work"
+        );
+
+        let descriptive_text = descriptive.to_str().unwrap();
+        archive(repo, descriptive_text, Some(&head("agent-made")), |_| false).unwrap();
+        assert!(!descriptive.exists());
+        git(repo, &["show-ref", "--verify", "refs/heads/agent"]).unwrap();
     }
 
     fn cache(path: &Path, directory: &str, bytes: &[u8]) {

@@ -15,6 +15,7 @@ export interface RecoverableWorktree {
 export const worktreeRecoveryCommands = {
   list: (workdir: string) => invoke<RecoverableWorktree[]>("list_recoverable_worktrees", { workdir }),
   remove: (workdir: string, row: RecoverableWorktree) => invoke<void>("remove_recoverable_worktree", { workdir, worktreePath: row.path, expectedHead: row.head }),
+  archive: (workdir: string, row: RecoverableWorktree) => invoke<{ stashed: boolean; archiveBranch?: string | null }>("archive_recoverable_worktree", { workdir, worktreePath: row.path, expectedHead: row.head }),
   cleanCaches: (workdir: string, row: RecoverableWorktree) => invoke<number>("clean_recoverable_worktree_caches", { workdir, worktreePath: row.path, expectedHead: row.head, cachePaths: row.cachePaths ?? [] }),
   open: (workdir: string, path: string) => invoke<void>("open_recoverable_worktree", { workdir, worktreePath: path }),
 };

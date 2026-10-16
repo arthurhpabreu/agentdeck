@@ -19,22 +19,29 @@ function formatBytes(bytes: number, locale: string) {
 export function WorktreeRecovery() {
   const { locale } = useAppI18n(); const c = worktreeCopy(locale);
   const workspaces = useWorkspaceStore(state => state.workspaces);
+  const activePath = useWorkspaceStore(state => state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId)?.path);
   const sessions = useSessionStore(state => state.sessions);
   const { repositories, notices, remember, resolved } = useWorktreeRecoveryStore();
   const choices = uniqueRecoveryPaths([...workspaces.map(workspace => workspace.path), ...repositories]);
   const [open, setOpen] = useState(false), [workdir, setWorkdir] = useState(choices[0] ?? "");
   const [rows, setRows] = useState<RecoverableWorktree[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState(""), [feedback, setFeedback] = useState("");
   const [confirm, setConfirm] = useState<{ row: RecoverableWorktree; action: "remove" | "caches" } | null>(null);
+  const [confirmAll, setConfirmAll] = useState(false), [progress, setProgress] = useState("");
   const dialog = useRef<HTMLDialogElement>(null), trigger = useRef<HTMLButtonElement>(null), sequence = useRef(0), running = useRef(false);
-  const close = () => { if (running.current) return; sequence.current++; dialog.current?.close(); setOpen(false); setConfirm(null); trigger.current?.focus(); };
+  const close = () => { if (running.current) return; sequence.current++; dialog.current?.close(); setOpen(false); setConfirm(null); setConfirmAll(false); trigger.current?.focus(); };
   const load = async () => {
-    const request = ++sequence.current; setConfirm(null); setError(""); setRows([]);
+    const request = ++sequence.current; setConfirm(null); setConfirmAll(false); setError(""); setRows([]);
     if (!workdir) return;
     setBusy(true);
     try {
       const values = await api.list(workdir);
       if (!Array.isArray(values)) throw new Error("Invalid worktree list");
-      if (request === sequence.current) { setRows(values); remember(workdir); }
+      if (request === sequence.current) {
+        setRows(values); remember(workdir);
+        // Folders removed outside the app no longer need a recovery notice.
+        const listed = new Set(values.map(row => pathKey(row.path)));
+        notices.filter(notice => pathKey(notice.workdir) === pathKey(workdir) && !listed.has(pathKey(notice.path))).forEach(notice => resolved(notice.path));
+      }
     } catch (cause) { if (request === sequence.current) setError(String(cause)); }
     finally { if (request === sequence.current) setBusy(false); }
   };
@@ -46,16 +53,36 @@ export function WorktreeRecovery() {
   };
   const attached = (row: RecoverableWorktree) => sessions.some(session => session.worktreePath && pathKey(session.worktreePath) === pathKey(row.path));
   const canCleanCaches = (row: RecoverableWorktree) => !attached(row) && ["clean", "dirty"].includes(row.reason) && (row.reclaimableBytes ?? 0) > 0;
+  const archivable = rows.filter(row => !attached(row) && ["clean", "dirty", "detached"].includes(row.reason));
+  const cleanAll = () => void act(async () => {
+    setConfirmAll(false);
+    const failed: string[] = []; let removed = 0, freed = 0, stashed = 0;
+    for (const [index, row] of archivable.entries()) {
+      setProgress(`${c.cleaning} ${index + 1}/${archivable.length}…`);
+      try {
+        if (attached(row)) throw new Error(c.in_use);
+        const outcome = await api.archive(workdir, row);
+        removed += 1; freed += row.sizeBytes ?? 0; if (outcome?.stashed) stashed += 1;
+        resolved(row.path);
+      } catch (cause) { failed.push(`${row.branch || row.path}: ${String(cause)}`); }
+    }
+    setProgress("");
+    await load();
+    setFeedback([`${c.cleanAllDone}: ${removed}`, freed ? `${c.cachesCleaned}: ${formatBytes(freed, locale)}` : "", stashed ? `${c.stashed}: ${stashed}` : ""].filter(Boolean).join(" · "));
+    if (failed.length) setError(`${c.cleanAllFailed}: ${failed.join("; ")}`);
+  });
   return <>
-    <button type="button" ref={trigger} className="ad-button" onClick={() => { setWorkdir(current => current || choices[0] || ""); setOpen(true); }}>{c.title}{notices.length ? ` (${notices.length})` : ""}</button>
+    <button type="button" ref={trigger} className="ad-button" onClick={() => { setWorkdir(current => activePath || current || choices[0] || ""); setOpen(true); }}>{c.title}{notices.length ? ` (${notices.length})` : ""}</button>
     {notices.length > 0 && <p role="status" className="ad-worktree-notice">{c.notice}</p>}
     {open && createPortal(<dialog ref={dialog} className="ad-context-dialog ad-worktree-dialog" aria-label={c.title} onCancel={event => { event.preventDefault(); close(); }}>
       <header><h2>{c.title}</h2><button type="button" className="ad-button" disabled={busy} onClick={close}>{c.close}</button></header><p>{c.hint}</p>
       <label>{c.repository}<select value={workdir} disabled={busy} onChange={event => { setFeedback(""); setWorkdir(event.target.value); }}><option value="">—</option>{choices.map(path => <option key={path} value={path}>{path}</option>)}</select></label>
       <div className="ad-worktree-actions"><button type="button" className="ad-button" disabled={busy} onClick={() => void act(async () => { const path = await invoke<string | null>("pick_folder"); if (path) { remember(path); setWorkdir(path); } })}>{c.choose}</button><button type="button" className="ad-button" disabled={busy || !workdir} onClick={() => void load()}>{c.refresh}</button></div>
-      {busy && <p role="status">{c.loading}</p>}{error && <p role="alert">{error}</p>}{feedback && <p role="status">{feedback}</p>}
+      {busy && <p role="status">{progress || c.loading}</p>}{error && <p role="alert">{error}</p>}{feedback && <p role="status">{feedback}</p>}
       {!workdir && <p>{c.noRepository}</p>}{!busy && !error && workdir && !rows.length && <p>{c.empty}</p>}
       {rows.some(row => row.sizeBytes !== undefined) && <p className="ad-worktree-storage" role="status">{c.size}: <strong>{formatBytes(rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0), locale)}</strong> · {c.reclaimable}: <strong>{formatBytes(rows.reduce((total, row) => total + (canCleanCaches(row) ? row.reclaimableBytes ?? 0 : 0), 0), locale)}</strong></p>}
+      {archivable.length > 0 && <div className="ad-worktree-actions"><button type="button" className="ad-button" disabled={busy} onClick={() => setConfirmAll(true)}>{c.cleanAll} ({archivable.length}{archivable.some(row => row.sizeBytes) ? ` · ${formatBytes(archivable.reduce((total, row) => total + (row.sizeBytes ?? 0), 0), locale)}` : ""})</button></div>}
+      {confirmAll && <div className="ad-source-warning"><p>{c.cleanAllHint}</p><ul>{archivable.map(row => <li key={row.path}><code>{row.branch || row.path}</code></li>)}</ul><div className="ad-worktree-actions"><button type="button" className="ad-button" disabled={busy} onClick={cleanAll}>{c.cleanAllConfirm}</button><button type="button" className="ad-button" disabled={busy} onClick={() => setConfirmAll(false)}>{c.cancel}</button></div></div>}
       <SortableCollection surface="worktree-notices" context={pathKey(workdir)} items={notices.filter(notice => pathKey(notice.workdir) === pathKey(workdir))} allIds={notices.map(notice => notice.path)} getId={notice => notice.path} getLabel={notice => notice.path} toolbar={false} render={(notice, handle) => <div style={{ display: "flex", gap: 4 }}>{handle}<details><summary>{notice.path}</summary><p>{notice.message || c.notice}</p></details></div>} />
       <SortableCollection surface="recoverable-worktrees" context={pathKey(workdir)} items={rows} getId={row => row.path} getLabel={row => row.branch || row.path} render={(row, handle) => { const active = attached(row); return <article><div style={{ display: "flex", gap: 4, alignItems: "center" }}>{handle}<strong>{row.branch || row.head}</strong></div><p><code>{row.path}</code></p><p>{c[active ? "in_use" : row.reason]}</p>
         {row.sizeBytes !== undefined && <p className="ad-worktree-storage">{c.size}: <strong>{formatBytes(row.sizeBytes, locale)}</strong> · {c.reclaimable}: <strong>{formatBytes(row.reclaimableBytes ?? 0, locale)}</strong></p>}

@@ -123,7 +123,5 @@
 @media (prefers-reduced-motion: reduce) { .ad-monitor-spinning, .ad-monitor-detail, .ad-monitor-timeline details[open] pre { animation: none; } .ad-agent-observatory button { transition-duration: 0ms; } }
 .ad-monitor-arrange-row { display: flex; align-items: flex-start; min-width: 0; }
 .ad-monitor-arrange-content { flex: 1; min-width: 0; }
-.ad-agent-observatory[data-density="compact"] .ad-monitor-agent { padding-block: 6px; min-height: 54px; }
-.ad-agent-observatory[data-density="compact"] .ad-monitor-agent-copy small { max-height: 16px; }
 .ad-monitor-agent-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ad-agent-observatory > .ad-arrangement-controls { padding-inline: 20px; }

@@ -118,3 +118,14 @@ fn completion_history_remains_bounded() {
     assert_eq!(state.sent.len(), 1024);
     assert!(!state.chat_completed("session", "1999", "Task", true));
 }
+
+#[test]
+fn completion_title_names_the_project_folder() {
+    assert_eq!(
+        completion_title(Some(r"C:\Projects\Atlas\")),
+        "Agentdeck · Atlas"
+    );
+    assert_eq!(completion_title(Some("/Users/qa/café")), "Agentdeck · café");
+    assert_eq!(completion_title(Some("")), "Agentdeck");
+    assert_eq!(completion_title(None), "Agentdeck");
+}

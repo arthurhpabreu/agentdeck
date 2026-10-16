@@ -15,7 +15,6 @@ import { normalizeAgentParents } from "./agentGraph";
 import { graphCopy } from "../graph/graphCopy";
 import "./agentObservatory.css";
 import { SortableCollection, ArrangementControls } from "../ordering/SortableCollection";
-import { usePresentationStore } from "../../store/presentationStore";
 
 export interface AgentNode {
   key: string;
@@ -54,7 +53,6 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [chromeInsets, setChromeInsets] = useState({ top: 44, bottom: 45 });
-  const density = usePresentationStore(state => state.density);
   const dialog = useRef<HTMLElement>(null);
   const closeHandler = useRef(onClose);
   closeHandler.current = onClose;
@@ -188,7 +186,7 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
   </div>;
 
   return <div className="ad-monitor-backdrop" style={chromeInsets} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="ad-agent-observatory" role="dialog" aria-modal="true" aria-labelledby="agent-monitor-title" tabIndex={-1} ref={dialog} data-density={density}>
+    <section className="ad-agent-observatory" role="dialog" aria-modal="true" aria-labelledby="agent-monitor-title" tabIndex={-1} ref={dialog}>
       <header className="ad-monitor-header">
         <div className="ad-monitor-brand"><h1 id="agent-monitor-title">{m.title}</h1><p>{m.subtitle}</p></div>
         <div className="ad-monitor-header-actions"><span className="ad-monitor-sync"><i />{updatedAt ? `${m.updated} ${relativeTime(updatedAt)}` : m.live}</span><button className="ad-monitor-icon-button" disabled={loading || !desktop} onClick={() => setRefreshCount(count => count + 1)} title={m.refresh} aria-label={m.refresh}><RefreshCw size={17} className={loading ? "ad-monitor-spinning" : ""} /></button><button className="ad-monitor-icon-button" onClick={onClose} title={m.close} aria-label={m.close}><X size={20} /></button></div>
@@ -199,7 +197,7 @@ export function AgentObservatory({ onOpenSession, onClose }: { onOpenSession: (s
       </div>
 
       <div className="ad-monitor-controls"><div className="ad-graph-segments" role="group" aria-label={m.title}>{(["map", "tasks", "list"] as const).map(value => <button type="button" key={value} aria-pressed={view === value} onClick={() => setView(value)}>{g[value]}</button>)}</div><label className="ad-monitor-search"><Search size={17} /><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={m.search} aria-label={m.search} /></label><select value={provider} onChange={event => setProvider(event.target.value)} aria-label={m.allProviders}><option value="all">{m.allProviders}</option>{Object.entries(RUNNER_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></div>
-      <ArrangementControls surface={view === "list" ? "agent-roots" : "agent-map"} context={view === "list" ? "monitor" : "all"} density densityOnly={view !== "list"} />
+      {view === "list" && <ArrangementControls surface="agent-roots" context="monitor" />}
       {error && <div className="ad-monitor-notice" role="alert"><CircleAlert size={15} /><span>{m.loadError} {error}</span></div>}
       {!desktop && <div className="ad-monitor-notice"><Activity size={15} /><span>{m.browser}</span></div>}
 

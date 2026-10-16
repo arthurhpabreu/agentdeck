@@ -6,7 +6,7 @@ Agent Deck 0.8 stores manual presentation independently from project identity, p
 
 | Collection | Stable identity and context | Presentation behavior |
 | --- | --- | --- |
-| Project navigation | Workspace ID, navigation surface | Drag or keyboard order; focus leaves it unchanged. |
+| Project navigation | Workspace ID, navigation surface | Automatic groups: **Waiting for you** (unread approvals, questions, errors or finished responses), **Running**, **Recent** (activity within seven days, newest first) and **Other projects**. Only Other projects accepts drag or keyboard order; focus leaves positions unchanged and group headers collapse persistently. |
 | Sessions | Session ID, workspace ID | Free manual order across execution states; reset restores status priority and existing automatic order. |
 | Terminal tabs | Widget and tab IDs, workspace ID | Visual tab order preserves PTY IDs, ownership, selected tab and settings. |
 | Editor tabs | Tab ID, editor group ID | Reordering preserves paths and buffers; existing split and move-to-group actions remain available. |
@@ -39,11 +39,11 @@ Messages, execution events, file lines, memory revisions and tool timelines reta
 
 The grip activates a drag after seven pixels, allowing normal clicks and text selection. Destination marks and auto-scroll assist mouse movement. Space starts keyboard dragging, arrows choose the destination, and Escape cancels; Alt plus an arrow moves an item one place immediately. Each collection exposes Undo and Automatic order controls. Map handles also accept arrow keys, with Shift increasing the movement step.
 
-Manual order is a list of stable IDs keyed by surface and context. A filtered move replaces only the visible slots, keeping hidden items in their original slots. Items that have never appeared in the saved order append after known items. Renaming does not change identity. The presentation store persists layouts, density and the board's presentation mode; its last twenty undo states per context remain in memory.
+Manual order is a list of stable IDs keyed by surface and context. A filtered move replaces only the visible slots, keeping hidden items in their original slots. Items that have never appeared in the saved order append after known items. Renaming does not change identity. The presentation store persists layouts, view modes (including collapsed project groups) and the board's presentation mode; its last twenty undo states per context remain in memory.
 
 Map movement divides pointer distance by the actual viewport scale. The first saved map arrangement captures the remaining card positions, keeping telemetry from recalculating established positions. Escape discards the in-progress preview; pointer release commits one snapshot. Viewport size changes or explicit Fit can adjust the camera without changing saved world coordinates.
 
-Project navigation, agents and subagents support compact and comfortable density. Long names remain available through labels and tooltips, with selected and running states represented separately. The ordering controls provide English, Portuguese and Spanish copy.
+Lists use one comfortable density. A project's status line names the most urgent unread action, the running task or its last activity, and shows its path on hover; a pulsing dot (static under reduced motion) marks running or waiting projects. Project activity combines when sessions start running, conversation messages, session creation and unread attention events. Long names remain available through labels and tooltips, with selected and running states represented separately. The ordering controls provide English, Portuguese and Spanish copy.
 
 ## Rendering and integration
 
@@ -51,7 +51,7 @@ Project navigation, agents and subagents support compact and comfortable density
 
 Dragging freezes displayed IDs until drop or cancellation, while live values for those IDs can still update. Pointer transforms remain in the sortable wrappers; memoized bodies avoid rebuilding their contents for transform-only updates. Persistent storage changes on completed moves, keyboard moves, resets and undo, never on every pointer pixel.
 
-Vertical collections progressively skip offscreen layout and painting when the browser supports `content-visibility`. A ResizeObserver measures the actual row height before activating containment; no estimated height substitutes for a measured row. Dragging makes the collection visible for accurate target measurement. Unsupported browsers retain normal rendering. Horizontal tab strips retain ordinary layout, and terminal process lifetime is handled by the separate PTY runtime.
+Vertical collections progressively skip offscreen layout and painting when the browser supports `content-visibility`. A ResizeObserver measures the actual row height before activating containment and applies size changes on the next animation frame, so writing the observed row never re-enters layout; no estimated height substitutes for a measured row. Dragging makes the collection visible for accurate target measurement. Unsupported browsers retain normal rendering. Horizontal tab strips retain ordinary layout, and terminal process lifetime is handled by the separate PTY runtime.
 
 Editor metadata uses a separate persisted layout; draft contents continue to belong to editor buffers and file-save validation. Drops into another editor group target its displayed tab order. Undo tab move restores group assignments while retaining tabs opened since the move, keeping closed tabs closed and preserving current unsaved buffers. Native mirrors include the presentation and editor layout keys so a missing browser copy can be restored at startup.
 

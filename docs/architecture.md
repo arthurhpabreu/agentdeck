@@ -45,6 +45,12 @@ and eligible cache sizes without following links. Cache cleanup validates Git
 registration, repository ownership, namespace, HEAD and native process use, then
 removes only ignored, untracked dependency/build directories with matching
 manifests. Ordinary checkout cleanup retains its stricter local-file checks.
+Removing a session, or **Clean all** in recovery, archives the folder instead:
+after the same registration, namespace, HEAD and process checks, uncommitted
+tracked and untracked files go to the repository's shared stash, commits without
+a branch receive an `agentdeck/archive/*` branch, and Git deletes the folder with
+its ignored dependencies and builds. Busy and locked folders are kept; folders
+outside the managed namespace fall back to the strict cleanup.
 Legacy namespaces are available for manual recovery without automatic session
 hydration or crossing development/release boundaries.
 
@@ -57,6 +63,7 @@ The React workspace and Rust domain logic are shared across platforms. OS differ
 | Runtime OS, architecture, shell and process PATH | `src-tauri/src/platform.rs`; typed frontend adapter `src/services/platform.ts`. Native facts load before the first UI render. |
 | Window lifecycle and monitor coordinates | `src-tauri/src/window.rs`, target-gated Cocoa/Windows APIs and platform-aware window controls. macOS close hides the window; quitting ends the app. |
 | CLI processes and terminals | Shared chat/runner/PTY services with native shell arguments and executable-aware PATH. macOS uses a login shell; Command shortcuts preserve terminal Ctrl+C. |
+| Completion notifications | `notification.rs`: mac-notification-sys on macOS and WinRT toasts on Windows both route a click through `focus_popup(session_id)`, which selects the session and its project. Titles name the project folder. Other platforms use tauri-plugin-notification. |
 | Provider hook/statusline transport | `native_bridge.rs` provides bounded stdio helpers and Unix sockets on macOS; existing Windows bridges remain platform-gated. No Python runtime is required on the Mac. |
 | Installer discovery and verification | One update service selects EXE/MSI on Windows or universal DMG on macOS, checks SHA-256 and package structure, and opens the OS installer. DMG installation is manual. |
 | Build configuration | `tauri.conf.json` carries shared identity/version; `tauri.windows.conf.json` and `tauri.macos.conf.json` contain target-specific packaging settings. macOS-only Rust features are target dependencies. |

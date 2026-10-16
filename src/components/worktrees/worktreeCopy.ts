@@ -9,7 +9,7 @@ const messages = {
   empty: ["Nenhum worktree de sessão encontrado neste repositório.", "No session worktrees found in this repository.", "No se encontraron worktrees de sesión en este repositorio."],
   noRepository: ["Escolha um repositório para localizar as pastas preservadas.", "Choose a repository to find preserved folders.", "Elige un repositorio para localizar las carpetas conservadas."],
   clean: ["Pasta limpa; disponível para limpeza", "Clean folder; available for cleanup", "Carpeta limpia; disponible para limpieza"],
-  dirty: ["Arquivos locais ou alterações pendentes. Abra a pasta e salve ou mova seu trabalho antes de limpar.", "Local files or pending changes. Open the folder and save or move your work before cleanup.", "Archivos locales o cambios pendientes. Abre la carpeta y guarda o mueve tu trabajo antes de limpiar."],
+  dirty: ["Arquivos locais ou alterações pendentes. Abra a pasta e salve ou mova seu trabalho antes de limpar, ou use Limpar todos para guardar as alterações no git stash.", "Local files or pending changes. Open the folder and save or move your work before cleanup, or use Clean all to keep the changes in git stash.", "Archivos locales o cambios pendientes. Abre la carpeta y guarda o mueve tu trabajo antes de limpiar, o usa Limpiar todos para guardar los cambios en git stash."],
   locked: ["Worktree bloqueado pelo Git", "Worktree locked by Git", "Worktree bloqueado por Git"],
   detached: ["Sem branch associada. Crie uma branch para preservar os commits antes de limpar.", "No attached branch. Create a branch to preserve commits before cleanup.", "Sin rama asociada. Crea una rama para conservar los commits antes de limpiar."],
   in_use: ["Worktree em uso por uma sessão", "Worktree in use by a session", "Worktree en uso por una sesión"],
@@ -29,6 +29,13 @@ const messages = {
   cachesConfirm: ["Confirmar limpeza dos caches", "Confirm cache cleanup", "Confirmar limpieza de cachés"],
   cachesHint: ["Remover somente as dependências e os arquivos de compilação listados abaixo? Será necessário reinstalar ou recompilar ao retomar. O código, os demais arquivos locais e a branch serão preservados.", "Remove only the dependencies and build files listed below? Resuming will require reinstalling or rebuilding. Code, other local files and the branch will be preserved.", "¿Eliminar solo las dependencias y los archivos de compilación indicados abajo? Al retomar habrá que reinstalar o compilar. Se conservarán el código, los demás archivos locales y la rama."],
   cachesCleaned: ["Espaço liberado", "Space reclaimed", "Espacio liberado"],
+  cleanAll: ["Limpar todos", "Clean all", "Limpiar todos"],
+  cleanAllHint: ["Remover todos os worktrees listados abaixo? Os commits continuam nas branches, alterações não commitadas vão para o git stash do repositório e commits sem branch ganham uma branch agentdeck/archive. Dependências, builds e outros arquivos ignorados pelo Git são apagados. Worktrees em uso ou bloqueados são mantidos.", "Remove every worktree listed below? Commits stay on their branches, uncommitted changes go to the repository's git stash and commits without a branch get an agentdeck/archive branch. Dependencies, builds and other files ignored by Git are deleted. Worktrees in use or locked are kept.", "¿Eliminar todos los worktrees listados abajo? Los commits siguen en sus ramas, los cambios sin commit van al git stash del repositorio y los commits sin rama reciben una rama agentdeck/archive. Se eliminan las dependencias, compilaciones y demás archivos ignorados por Git. Se conservan los worktrees en uso o bloqueados."],
+  cleanAllConfirm: ["Confirmar limpeza de todos", "Confirm cleanup of all", "Confirmar limpieza de todos"],
+  cleaning: ["Limpando", "Cleaning", "Limpiando"],
+  cleanAllDone: ["Worktrees removidos", "Worktrees removed", "Worktrees eliminados"],
+  stashed: ["Alterações guardadas no git stash", "Changes kept in git stash", "Cambios guardados en git stash"],
+  cleanAllFailed: ["Não removidos", "Not removed", "No eliminados"],
   notice: ["Há pastas de sessões preservadas. Revise os worktrees para recuperar seus arquivos.", "Session folders were preserved. Review worktrees to recover your files.", "Se conservaron carpetas de sesiones. Revisa los worktrees para recuperar tus archivos."],
 } as const;
 export function worktreeCopy(locale: string) {

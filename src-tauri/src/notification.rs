@@ -100,11 +100,62 @@ pub mod macos {
     }
 }
 
+/// tauri-plugin-notification has no click callback on Windows, so toasts are
+/// shown through WinRT directly and their activation focuses the session.
+#[cfg(target_os = "windows")]
+mod windows_toast {
+    use tauri_winrt_notification::{Sound, Toast};
+
+    /// Windows only displays toasts for a registered AUMID. Installers register the
+    /// bundle identifier; unpackaged cargo builds borrow PowerShell's, like the plugin.
+    fn app_user_model_id(app: &tauri::AppHandle) -> String {
+        let development = tauri::utils::platform::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+            .is_some_and(|dir| {
+                dir.ends_with(std::path::Path::new("target").join("debug"))
+                    || dir.ends_with(std::path::Path::new("target").join("release"))
+            });
+        if development {
+            Toast::POWERSHELL_APP_ID.into()
+        } else {
+            app.config().identifier.clone()
+        }
+    }
+
+    pub fn show(
+        app: &tauri::AppHandle,
+        title: &str,
+        body: &str,
+        sound: bool,
+        session_id: Option<String>,
+    ) -> Result<(), String> {
+        let focus = app.clone();
+        Toast::new(&app_user_model_id(app))
+            .title(title)
+            .text1(body)
+            .sound(sound.then_some(Sound::Default))
+            .on_activated(move |_| {
+                let app = focus.clone();
+                let session_id = session_id.clone();
+                if let Err(err) =
+                    focus.run_on_main_thread(move || crate::window::focus_popup(app, session_id))
+                {
+                    eprintln!("[notification] run_on_main_thread(focus_popup) failed: {err}");
+                }
+                Ok(())
+            })
+            .show()
+            .map_err(|e| e.to_string())
+    }
+}
+
 // Tauri command: shared notification entry point.
 
-/// Send notifications using native macOS callbacks or tauri-plugin-notification elsewhere.
+/// Send notifications with native click callbacks on macOS and Windows, and
+/// tauri-plugin-notification elsewhere.
 ///
-/// On macOS, notification clicks are routed through `focus_popup(session_id)`.
+/// Notification clicks are routed through `focus_popup(session_id)`.
 #[tauri::command]
 pub fn send_notification_with_callback(
     app: tauri::AppHandle,
@@ -135,29 +186,33 @@ pub fn send_notification_with_callback(
         return Ok(());
     }
 
-    // Use tauri-plugin-notification on other platforms.
     #[cfg(not(target_os = "macos"))]
     {
-        use tauri_plugin_notification::NotificationExt;
         let _ = subtitle; // Avoid an unused-variable warning.
-        let _ = play_sound;
-        let _ = session_id;
         eprintln!(
             "[notification] desktop send requested: title={title:?} body_len={}",
             body.chars().count()
         );
-        app.notification()
-            .builder()
-            .title(&title)
-            .body(&body)
-            .show()
-            .map_err(|e| {
-                crate::i18n::translate(
-                    crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>()),
-                    "notifications.send_failed",
-                    &[("error", &e.to_string())],
-                )
-            })?;
+        #[cfg(target_os = "windows")]
+        let sent = windows_toast::show(&app, &title, &body, play_sound, session_id);
+        #[cfg(not(target_os = "windows"))]
+        let sent = {
+            use tauri_plugin_notification::NotificationExt;
+            let _ = (play_sound, session_id);
+            app.notification()
+                .builder()
+                .title(&title)
+                .body(&body)
+                .show()
+                .map_err(|e| e.to_string())
+        };
+        sent.map_err(|error| {
+            crate::i18n::translate(
+                crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>()),
+                "notifications.send_failed",
+                &[("error", &error)],
+            )
+        })?;
         eprintln!("[notification] desktop send queued");
         Ok(())
     }

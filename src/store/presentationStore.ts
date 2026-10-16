@@ -8,7 +8,6 @@ export interface PresentationLayout { order?: string[]; positions?: Record<strin
 interface PresentationState {
   layouts: Record<string, PresentationLayout>;
   history: Record<string, PresentationLayout[]>;
-  density: "comfortable" | "compact";
   views: Record<string, string>;
   moveItem: (surface: string, context: string, allIds: string[], visibleIds: string[], activeId: string, overId: string) => void;
   setOrder: (surface: string, context: string, ids: string[]) => void;
@@ -16,7 +15,6 @@ interface PresentationState {
   setPositions: (surface: string, context: string, positions: Record<string, VisualPoint>) => void;
   reset: (surface: string, context: string) => void;
   undo: (surface: string, context: string) => void;
-  setDensity: (density: "comfortable" | "compact") => void;
   setView: (surface: string, view: string) => void;
 }
 export const presentationKey = (surface: string, context: string) => JSON.stringify([surface, context]);
@@ -53,7 +51,7 @@ function changeLayout(state: PresentationState, key: string, next: PresentationL
 
 /** Presentation is independent from provider state, ownership and source permission. */
 export const usePresentationStore = create<PresentationState>()(persist((set) => ({
-  layouts: {}, history: {}, density: "comfortable", views: {},
+  layouts: {}, history: {}, views: {},
   moveItem: (surface, context, allIds, visibleIds, active, over) => set(state => {
     const key = presentationKey(surface, context);
     const previous = state.layouts[key] ?? {};
@@ -84,9 +82,8 @@ export const usePresentationStore = create<PresentationState>()(persist((set) =>
     if (!history?.length) return state;
     return { layouts: { ...state.layouts, [key]: history[history.length - 1] }, history: { ...state.history, [key]: history.slice(0, -1) } };
   }),
-  setDensity: density => set({ density }),
   setView: (surface, view) => set(state => state.views[surface] === view ? state : ({ views: { ...state.views, [surface]: view } })),
-}), { name: "agentdeck-presentation", version: 1, storage: createJSONStorage(() => mirroredPersistStorage), partialize: state => ({ layouts: state.layouts, density: state.density, views: state.views }) }));
+}), { name: "agentdeck-presentation", version: 1, storage: createJSONStorage(() => mirroredPersistStorage), partialize: state => ({ layouts: state.layouts, views: state.views }) }));
 
 export function usePresentationOrder<T>(surface: string, context: string, items: T[], getId: (item: T) => string): T[] {
   const order = usePresentationStore(state => state.layouts[presentationKey(surface, context)]?.order);

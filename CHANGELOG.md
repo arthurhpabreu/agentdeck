@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.11.0 — 2026-10-15
+
+### Added
+
+- Projects organize themselves into **Waiting for you**, **Running**, **Recent**
+  and **Other projects**. Each project shows its most urgent pending action, the
+  running task or its last activity, with a status dot. Groups collapse and stay
+  collapsed; only Other projects keeps a manual arrangement.
+- **Clean all** in preserved worktrees removes every eligible worktree of the
+  selected project after one confirmation, with progress and freed space.
+  Commits stay on their branches, uncommitted changes go to the repository's
+  `git stash`, and commits without a branch get an `agentdeck/archive/*` branch.
+
+### Changed
+
+- Removing a session archives its worktree the same way instead of preserving
+  the whole folder when it only contains dependencies or builds, so worktrees
+  no longer accumulate gigabytes of `node_modules` and `target` folders.
+- Worktrees that agents create with descriptive names inside the Agent Deck
+  worktree folder are listed and can be cleaned.
+- Lists use a single comfortable density; the density selector was removed.
+- Preserved worktrees opens on the current project and drops notices for
+  folders that no longer exist.
+
+### Fixed
+
+- Clicking a completion notification on Windows opens the finished session,
+  switching to its project. Notification titles name the project.
+- A response that finishes in the conversation on screen no longer stays in
+  Needs you.
+- Opening Needs you or long lists no longer reports "ResizeObserver loop
+  completed with undelivered notifications" as a frontend error.
+
 ## 0.10.0 — 2026-10-15
 
 ### Added

@@ -14,9 +14,6 @@
 .ad-arrangement-controls > button { display: inline-flex; align-items: center; justify-content: center; padding: 3px; border: 0; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; }
 .ad-arrangement-controls > button:disabled { opacity: .35; cursor: default; }
 .ad-arrangement-controls > button:not(:disabled):hover { background: var(--ci-list-hover-bg); color: var(--ci-text); }
-.ad-arrangement-controls select { min-width: 0; max-width: 120px; font-size: 10px; color: var(--ci-text-muted); background: var(--ci-bg); border: 1px solid var(--ci-border); border-radius: 3px; }
-.ad-sortable-collection[data-density="compact"] .ad-workspace-card,
-.ad-sortable-collection[data-density="compact"] .ad-session-card { padding-block: 3px !important; min-height: 26px !important; }
 .ad-editor-group-order > .ad-sortable-content { flex: 1; min-height: 0; }
 .ad-editor-group-order > .ad-sortable-content > .ad-sortable-item { flex: 1; min-height: 0; overflow: hidden; }
 @container (max-width: 300px) {
