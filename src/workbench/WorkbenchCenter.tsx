@@ -5,7 +5,7 @@ import { useAppI18n } from "../i18n";
 import { SplitDetailHost } from "../components/SplitSwapLayout";
 import { lazy, Suspense } from "react";
 const ExploreEditor = lazy(() => import("../components/ExploreMode").then((module) => ({ default: module.ExploreEditor })));
-import { showSessionSurface, showExplorer, showScm } from "../services/workbenchCommands";
+import { openWorkspace, showSessionSurface, showExplorer, showScm } from "../services/workbenchCommands";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
@@ -261,7 +261,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
                 return (
                   <div
                     key={workspace.id}
-                    onClick={() => useWorkspaceStore.getState().bringToFront(workspace.id)}
+                    onClick={() => openWorkspace(workspace.id)}
                     style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "8px 8px", borderTop: "1px solid var(--ci-toolbar-border)", transition: "background 0.12s", cursor: "pointer" }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.background = "var(--ci-list-hover-bg)";
@@ -281,7 +281,7 @@ function WorkbenchWelcome({ session }: { session: ClaudeSession | null }) {
                         </div>
                       )}
                     </div>
-                    <WelcomeAction label={t("workbench.welcome.switch")} onClick={() => useWorkspaceStore.getState().bringToFront(workspace.id)} />
+                    <WelcomeAction label={t("workbench.welcome.switch")} onClick={() => openWorkspace(workspace.id)} />
                   </div>
                 );
               }} />

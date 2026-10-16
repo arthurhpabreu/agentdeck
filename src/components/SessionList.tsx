@@ -3,16 +3,27 @@ import { motion, useReducedMotion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { cleanupSessionWorktree } from "../services/worktreeRecoveryCommands";
 import { useMemo, useState } from "react";
-import { useAppI18n } from "../i18n";
-import { ClaudeSession, SessionStatus, orderWorkspaceSessions, selectSessionNavigation, useSessionStore } from "../store/sessionStore";
+import { formatRelativeTime, useAppI18n } from "../i18n";
+import { ClaudeSession, SessionStatus, useSessionStore } from "../store/sessionStore";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceStore, getWorkspaceColor } from "../store/workspaceStore";
 import { useSettingsStore, RUNNER_LABELS, isGlassTheme } from "../store/settingsStore";
+import type { AttentionKind } from "../store/attentionStore";
+import { useNavigationStore } from "../store/navigationStore";
 import { showExplorer, showSessionSurface } from "../services/workbenchCommands";
 import { SessionRenameControl } from "./session/SessionRenameControl";
 import { SortableCollection } from "./ordering/SortableCollection";
 import { SessionDirectoryControl } from "./session/SessionDirectoryControl";
 import { useNewSession } from "../hooks/useNewSession";
+import { ATTENTION_LABEL, useSessionActivity } from "../hooks/useSessionActivity";
+import "./workspaces/workspaceControls.css";
+
+// Waiting work first, then running agents; everything else follows its latest activity.
+const STATUS_RANK: Partial<Record<SessionStatus, number>> = { waiting: 0, running: 1, suspended: 2 };
+const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
+/** Older conversations fold away, but never below this many visible rows. */
+const MIN_VISIBLE = 5;
+const RECENT_VISITS = 20;
 
 // ── Status configuration using CSS variables ─────────────────
 const STATUS_CONFIG: Record<SessionStatus, {
@@ -81,9 +92,12 @@ function StatusDot({ status }: { status: SessionStatus }) {
 
 // ── Session card ─────────────────────────────────────────────
 function SessionCard({
-  session, isSelected, isOpened, accentColor, isGlass, showExpandButton, isDeleteConfirming, onClick, onCancelDelete, onExpand, onOpenExplore, onRemove, onRotateSuspend,
+  session, attention, activityAt, isSelected, isOpened, accentColor, isGlass, showExpandButton, isDeleteConfirming, onClick, onCancelDelete, onExpand, onOpenExplore, onRemove, onRotateSuspend,
 }: {
   session: ClaudeSession;
+  /** Most urgent unread event, shown instead of the plain status. */
+  attention?: AttentionKind;
+  activityAt: number;
   isSelected: boolean;
   isOpened: boolean;
   accentColor: string;
@@ -97,7 +111,7 @@ function SessionCard({
   onRemove: () => void;
   onRotateSuspend: () => void;
 }) {
-  const { t } = useAppI18n();
+  const { t, locale } = useAppI18n();
   const [hovered, setHovered] = useState(false);
   const reducedMotion = useReducedMotion();
   const runnerLabel = RUNNER_LABELS[session.runner.type];
@@ -199,7 +213,9 @@ function SessionCard({
           }}>
             {runnerLabel}
           </span>
-          {session.status !== "idle" && (
+          {attention ? (
+            <span className="ad-session-attention" data-kind={attention}>{t(ATTENTION_LABEL[attention])}</span>
+          ) : session.status !== "idle" && (
             <span style={{
               fontSize: 11,
               padding: "1px 2px",
@@ -213,6 +229,7 @@ function SessionCard({
               {t(cfg.labelKey)}
             </span>
           )}
+          {!isRunning && !isWaiting && <span className="ad-session-time">{formatRelativeTime(activityAt, locale, "narrow")}</span>}
         </div>
 
         {showSecondary && (session.currentTask ? (
@@ -405,14 +422,9 @@ function SessionCard({
 // ── Main component: SessionList ───────────────────────────────
 export function SessionList() {
   const { t } = useAppI18n();
-  const {
-    sessions,
-    activeSessionId,
-    expandedSessionId,
-    sessionOrderByWorkspace,
-    removeSession,
-    updateSession,
-  } = useSessionStore(useShallow(state => ({ sessions: selectSessionNavigation(state), activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, sessionOrderByWorkspace: state.sessionOrderByWorkspace, removeSession: state.removeSession, updateSession: state.updateSession })));
+  const { activeSessionId, expandedSessionId, removeSession, updateSession } = useSessionStore(useShallow(state => ({ activeSessionId: state.activeSessionId, expandedSessionId: state.expandedSessionId, removeSession: state.removeSession, updateSession: state.updateSession })));
+  const { sessions, activity, now } = useSessionActivity();
+  const recentVisits = useNavigationStore(state => state.recent);
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
   const activeWorkspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === activeWorkspaceId)
@@ -420,13 +432,26 @@ export function SessionList() {
   const settings = useSettingsStore((s) => s.settings);
   const isGlass = isGlassTheme(settings.theme);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
+  const [olderShownFor, setOlderShownFor] = useState<string | null>(null);
   const textShadow = isGlass ? "var(--ci-glass-text-shadow)" : "none";
 
   const accentColor = activeWorkspace ? getWorkspaceColor(activeWorkspace.color) : "var(--ci-accent)";
-  const wsSessions = useMemo(() => {
-    if (!activeWorkspace) return [];
-    return orderWorkspaceSessions(sessions, activeWorkspace.id, sessionOrderByWorkspace);
-  }, [activeWorkspace, sessions, sessionOrderByWorkspace]);
+  const { wsSessions, older } = useMemo(() => {
+    if (!activeWorkspace) return { wsSessions: [], older: new Set<string>() };
+    const at = (session: ClaudeSession) => activity.get(session.id)?.at ?? session.createdAt;
+    const pending = (session: ClaudeSession) => { const kind = activity.get(session.id)?.attention; return !!kind && kind !== "completed"; };
+    const rank = (session: ClaudeSession) => pending(session) ? 0 : STATUS_RANK[session.status] ?? 3;
+    // Active work keeps a stable order while it streams; finished work follows its latest activity.
+    const ordered = sessions.filter(session => session.workspaceId === activeWorkspace.id)
+      .sort((a, b) => rank(a) - rank(b) || (rank(a) < 3 ? b.createdAt - a.createdAt : at(b) - at(a)));
+    // Conversations opened recently stay listed even when their last message is old.
+    const visited = new Set(recentVisits.slice(0, RECENT_VISITS));
+    const keep = (session: ClaudeSession, index: number) => index < MIN_VISIBLE || rank(session) < 3 || !!activity.get(session.id)?.attention
+      || now - at(session) < RECENT_MS || visited.has(`session:${session.id}`) || session.id === activeSessionId || session.id === expandedSessionId;
+    return { wsSessions: ordered, older: new Set(ordered.filter((session, index) => !keep(session, index)).map(session => session.id)) };
+  }, [activeWorkspace, sessions, activity, now, recentVisits, activeSessionId, expandedSessionId]);
+  const showOlder = olderShownFor === activeWorkspace?.id;
+  const visibleSessions = useMemo(() => showOlder ? wsSessions : wsSessions.filter(session => !older.has(session.id)), [showOlder, wsSessions, older]);
 
   const { createSession: handleNewSession, creating, creationError } = useNewSession(activeWorkspace);
 
@@ -462,118 +487,89 @@ export function SessionList() {
   if (!activeWorkspace) return null;
 
   return (
-    <div data-testid="new-session-sidebar" style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      {/* Section header */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "8px 0 8px",
-        marginTop: 4,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{
-            width: 7, height: 7, borderRadius: "50%",
-            background: accentColor, flexShrink: 0,
-          }} />
-          <span style={{
-            fontSize: 11, color: "var(--ci-text-dim)",
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-          }}>
-            {t("session.listTitle")}
-          </span>
-        </div>
-
-        <button
-          onClick={() => void handleNewSession()}
-          disabled={creating}
-          style={{
-            background: "none",
-            border: "none",
-            borderRadius: 0,
-            padding: "6px 2px",
-            color: "var(--ci-accent)",
-            fontSize: 12,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            fontWeight: 600,
-            transition: "color 0.12s, opacity 0.12s",
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.color = "var(--ci-accent)";
-            e.currentTarget.style.opacity = "0.78";
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.color = "var(--ci-accent)";
-            e.currentTarget.style.opacity = "1";
-          }}
-        >
-          <span style={{ fontSize: 13, lineHeight: 1 }}>+</span>
+    <section data-testid="new-session-sidebar" className="ad-nav-sessions" aria-label={t("session.listLabel", { name: activeWorkspace.name })}>
+      <div className="ad-nav-head">
+        <h2 className="ad-nav-title" title={activeWorkspace.path}>
+          <i aria-hidden="true" style={{ background: accentColor }} />
+          <span>{activeWorkspace.name}</span>
+          {wsSessions.length > 0 && <b>{wsSessions.length}</b>}
+        </h2>
+        <button type="button" className="ad-nav-new" onClick={() => void handleNewSession()} disabled={creating}>
+          <span>+</span>
           <span>{t("session.createNew")}</span>
         </button>
       </div>
 
-      <SessionDirectoryControl disabled={creating} />
-      {creationError && <p role="alert" style={{ fontSize: 12, color: "var(--ci-deleted-text)" }}>{creationError}</p>}
+      <div className="ad-nav-session-options">
+        <SessionDirectoryControl compact disabled={creating} />
+        {creationError && <p role="alert">{creationError}</p>}
+      </div>
 
-          {/* Session list */}
-          <SortableCollection surface="sessions" context={activeWorkspace.id} items={wsSessions}
-            getId={session => session.id} getLabel={session => session.name} render={(session, handle) => (
-                  <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
-                    {handle}<div style={{ flex: 1, minWidth: 0 }}>
-                    <SessionCard
-                      session={session}
-                      isSelected={session.id === activeSessionId}
-                      isOpened={session.id === expandedSessionId}
-                      accentColor={accentColor}
-                      isGlass={isGlass}
-                      showExpandButton={false}
-                      isDeleteConfirming={pendingDeleteSessionId === session.id}
-                      onClick={() => {
-                        setPendingDeleteSessionId(null);
-                        showSessionSurface(session.id);
-                      }}
-                      onCancelDelete={() => {
-                        setPendingDeleteSessionId(null);
-                      }}
-                      onExpand={() => {
-                        setPendingDeleteSessionId(null);
-                        showSessionSurface(session.id);
-                      }}
-                      onOpenExplore={() => {
-                        setPendingDeleteSessionId(null);
-                        showExplorer(session.id);
-                      }}
-                      onRemove={() => {
-                        if (pendingDeleteSessionId === session.id) {
-                          void handleRemoveSession(session);
-                          return;
-                        }
-                        setPendingDeleteSessionId(session.id);
-                      }}
-                      onRotateSuspend={() => {
-                        setPendingDeleteSessionId(null);
-                        updateSession(session.id, {
-                          status: session.status === "waiting" ? "suspended" : "waiting",
-                        });
-                      }}
-                    />
-                    </div>
-                  </div>
-                )} />
+      <div className="ad-nav-session-list">
+        <SortableCollection surface="sessions" context={activeWorkspace.id} items={visibleSessions} allIds={wsSessions.map(session => session.id)}
+          getId={session => session.id} getLabel={session => session.name} render={(session, handle) => (
+            <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+              {handle}<div style={{ flex: 1, minWidth: 0 }}>
+              <SessionCard
+                session={session}
+                attention={activity.get(session.id)?.attention}
+                activityAt={activity.get(session.id)?.at ?? session.createdAt}
+                isSelected={session.id === activeSessionId}
+                isOpened={session.id === expandedSessionId}
+                accentColor={accentColor}
+                isGlass={isGlass}
+                showExpandButton={false}
+                isDeleteConfirming={pendingDeleteSessionId === session.id}
+                onClick={() => {
+                  setPendingDeleteSessionId(null);
+                  showSessionSurface(session.id);
+                }}
+                onCancelDelete={() => {
+                  setPendingDeleteSessionId(null);
+                }}
+                onExpand={() => {
+                  setPendingDeleteSessionId(null);
+                  showSessionSurface(session.id);
+                }}
+                onOpenExplore={() => {
+                  setPendingDeleteSessionId(null);
+                  showExplorer(session.id);
+                }}
+                onRemove={() => {
+                  if (pendingDeleteSessionId === session.id) {
+                    void handleRemoveSession(session);
+                    return;
+                  }
+                  setPendingDeleteSessionId(session.id);
+                }}
+                onRotateSuspend={() => {
+                  setPendingDeleteSessionId(null);
+                  updateSession(session.id, {
+                    status: session.status === "waiting" ? "suspended" : "waiting",
+                  });
+                }}
+              />
+              </div>
+            </div>
+          )} />
 
-      {wsSessions.length === 0 && (
-        <div
-          style={{
-          textAlign: "center", padding: "12px 0 6px",
-          color: "var(--ci-text-dim)", fontSize: 12,
-          textShadow,
-        }}>
-          {t("session.emptyList")}
-        </div>
-      )}
-    </div>
+        {older.size > 0 && (
+          <button type="button" className="ad-nav-older" aria-expanded={showOlder} onClick={() => setOlderShownFor(showOlder ? null : activeWorkspace.id)}>
+            {showOlder ? t("session.olderHide") : t("session.olderShow", { count: older.size })}
+          </button>
+        )}
+
+        {wsSessions.length === 0 && (
+          <div
+            style={{
+            textAlign: "center", padding: "12px 0 6px",
+            color: "var(--ci-text-dim)", fontSize: 12,
+            textShadow,
+          }}>
+            {t("session.emptyList")}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

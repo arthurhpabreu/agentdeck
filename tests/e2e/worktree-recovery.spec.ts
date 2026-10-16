@@ -157,7 +157,9 @@ test("preserved worktrees stay discoverable after the last project is removed an
     return saved.state?.notices?.some((notice: any) => notice.path === "C:\\Worktrees\\dirty-session") ?? false;
   })).toBe(true);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-workspaces") ?? "{}").state.workspaces)).toHaveLength(0);
-  await expect(page.getByRole("status").filter({ hasText: "Há pastas de sessões preservadas" })).toBeVisible();
+  const recovery = page.getByRole("button", { name: /^Worktrees preservados \(\d+\)$/ });
+  await expect(recovery).toBeVisible();
+  await expect(recovery).toHaveAccessibleDescription(/Há pastas de sessões preservadas/);
   await page.reload();
   const dialog = await openRecovery(page);
   const dirty = dialog.getByRole("article").filter({ hasText: "C:\\Worktrees\\dirty-session" });

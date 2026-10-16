@@ -1,23 +1,25 @@
 import { NewWorkspaceForm } from "./workspaces/NewWorkspaceForm";
 import { WorkspaceColorControl } from "./workspaces/WorkspaceColorPicker";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { useAppI18n } from "../i18n";
+import { formatRelativeTime, useAppI18n } from "../i18n";
 import {
   useWorkspaceStore,
   useWorkspacesSorted,
   getWorkspaceColor,
   type Workspace,
 } from "../store/workspaceStore";
-import { selectSessionNavigation, useSessionStore, type ClaudeSession } from "../store/sessionStore";
-import { useAttentionStore, type AttentionKind } from "../store/attentionStore";
-import { useChatStore } from "../store/chatStore";
+import { useSessionStore, type ClaudeSession } from "../store/sessionStore";
+import { ATTENTION_RANK, type AttentionKind } from "../store/attentionStore";
 import { usePresentationStore } from "../store/presentationStore";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { WorktreeRecovery } from "./worktrees/WorktreeRecovery";
 import { cleanupSessionWorktree } from "../services/worktreeRecoveryCommands";
+import { openWorkspace } from "../services/workbenchCommands";
 import { useWorktreeRecoveryStore } from "../store/worktreeRecoveryStore";
+import { ATTENTION_LABEL, useSessionActivity } from "../hooks/useSessionActivity";
 import { SortableCollection } from "./ordering/SortableCollection";
 import "./workspaces/workspaceControls.css";
 
@@ -30,13 +32,6 @@ const GROUP_LABEL: Record<ProjectGroup, string> = {
   recent: "workspace.groupRecent",
   other: "workspace.groupOther",
 };
-const ATTENTION_LABEL: Record<AttentionKind, string> = {
-  approval: "workspace.attentionApproval",
-  question: "workspace.attentionQuestion",
-  error: "workspace.attentionError",
-  completed: "workspace.attentionCompleted",
-};
-const ATTENTION_RANK: Record<AttentionKind, number> = { approval: 0, question: 1, error: 2, completed: 3 };
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 const COLLAPSED_VIEW = "projects:collapsed";
 
@@ -53,38 +48,25 @@ interface ProjectActivity {
 
 /** Group projects by what needs the user now, then by recent work. */
 function useProjectActivity(workspaces: Workspace[]) {
-  const sessions = useSessionStore(selectSessionNavigation);
-  const items = useAttentionStore(state => state.items);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 5 * 60 * 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const { sessions, activity: sessionActivity, now } = useSessionActivity();
   return useMemo(() => {
-    // Read conversations without subscribing the sidebar to streaming output.
-    const threads = useChatStore.getState().threads;
-    const owner = new Map<string, string>();
     const result = new Map<string, ProjectActivity>(workspaces.map(ws => [ws.id, {
       group: "other", attention: 0, running: 0, sessions: 0, task: "", activeAt: ws.lastActiveAt ?? 0,
     }]));
     for (const session of sessions) {
       const activity = result.get(session.workspaceId);
       if (!activity) continue;
-      owner.set(session.id, session.workspaceId);
+      const current = sessionActivity.get(session.id);
       activity.sessions += 1;
-      const messages = threads[session.id]?.messages;
-      activity.activeAt = Math.max(activity.activeAt, session.createdAt, messages?.[messages.length - 1]?.at ?? 0);
+      activity.activeAt = Math.max(activity.activeAt, current?.at ?? session.createdAt);
+      if (current?.attention) {
+        activity.attention += current.unread;
+        if (!activity.attentionKind || ATTENTION_RANK[current.attention] < ATTENTION_RANK[activity.attentionKind]) activity.attentionKind = current.attention;
+      }
       if (session.status === "running") {
         activity.running += 1;
         if (!activity.task) activity.task = session.currentTask;
       }
-    }
-    for (const item of items) {
-      const activity = item.read ? undefined : result.get(owner.get(item.sessionId) ?? "");
-      if (!activity) continue;
-      activity.attention += 1;
-      activity.activeAt = Math.max(activity.activeAt, item.at);
-      if (!activity.attentionKind || ATTENTION_RANK[item.kind] < ATTENTION_RANK[activity.attentionKind]) activity.attentionKind = item.kind;
     }
     for (const ws of workspaces) {
       const activity = result.get(ws.id)!;
@@ -94,15 +76,7 @@ function useProjectActivity(workspaces: Workspace[]) {
         : "other";
     }
     return result;
-  }, [workspaces, sessions, items, now]);
-}
-
-function relativeTime(at: number, locale: string) {
-  const seconds = Math.round((at - Date.now()) / 1000);
-  const units: [Intl.RelativeTimeFormatUnit, number][] = [["year", 31536000], ["month", 2592000], ["day", 86400], ["hour", 3600], ["minute", 60]];
-  const format = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
-  for (const [unit, size] of units) if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
-  return format.format(0, "minute");
+  }, [workspaces, sessions, sessionActivity, now]);
 }
 
 // ── Single workspace card in the expanded state ───────────────
@@ -117,6 +91,9 @@ function WorkspaceCardExpanded({
 }) {
   const { t, locale } = useAppI18n();
   const [hovered, setHovered] = useState(false);
+  const row = useRef<HTMLDivElement>(null);
+  // Search and notifications can switch projects while this row is scrolled away.
+  useEffect(() => { if (isActive) row.current?.scrollIntoView({ block: "nearest" }); }, [isActive]);
   const color = getWorkspaceColor(ws.color);
   const showActions = hovered || isActive;
   const status = activity.attentionKind
@@ -124,11 +101,12 @@ function WorkspaceCardExpanded({
     : activity.running
       ? activity.task || `${activity.running} ${t("workspace.summaryRunning")}`
       : activity.activeAt
-        ? t("workspace.lastActive", { time: relativeTime(activity.activeAt, locale) })
+        ? t("workspace.lastActive", { time: formatRelativeTime(activity.activeAt, locale) })
         : activity.sessions ? `${activity.sessions} ${t("workspace.summarySessions")}` : ws.path;
 
   return (
     <div
+      ref={row}
       className="ad-workspace-card"
       data-state={activity.attention ? "attention" : activity.running ? "running" : undefined}
       onMouseEnter={() => setHovered(true)}
@@ -216,15 +194,28 @@ function WorkspaceCardExpanded({
   );
 }
 
+/** Adding a project leaves both navigation lists in place. */
+function NewWorkspaceDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useAppI18n();
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  return createPortal(<dialog ref={dialog} className="ad-project-color-dialog ad-project-form-dialog" aria-label={t("workspace.addWorkspace")}
+    onCancel={event => { event.preventDefault(); onClose(); }}>
+    <NewWorkspaceForm onDone={onClose} />
+  </dialog>, document.body);
+}
+
 // ── Project list grouped by activity ──────────────────────────
 export function WorkspaceStack() {
   const { t } = useAppI18n();
-  const { workspaces, activeWorkspaceId, bringToFront, removeWorkspace } = useWorkspaceStore();
+  const { workspaces, activeWorkspaceId, removeWorkspace } = useWorkspaceStore();
   const removeSessionsByWorkspace = useSessionStore(state => state.removeSessionsByWorkspace);
   const sorted = useWorkspacesSorted();
   const activity = useProjectActivity(sorted);
   const collapsedView = usePresentationStore(state => state.views[COLLAPSED_VIEW] ?? "");
-  const [showForm, setShowForm] = useState(workspaces.length === 0);
+  // The first project is added inline; later ones in a dialog above the lists.
+  const [form, setForm] = useState<"inline" | "dialog" | null>(workspaces.length === 0 ? "inline" : null);
+  const addButton = useRef<HTMLButtonElement>(null);
   const groups = useMemo(() => GROUPS.map(group => {
     const members = sorted.filter(ws => activity.get(ws.id)?.group === group);
     // Stale projects keep the user's arrangement; active ones follow the latest work.
@@ -278,16 +269,19 @@ export function WorkspaceStack() {
   };
   const card = (ws: Workspace, handle?: ReactNode) => <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
     {handle}<div style={{ flex: 1, minWidth: 0 }}><WorkspaceCardExpanded ws={ws} activity={activity.get(ws.id)!} isActive={ws.id === activeWorkspaceId}
-      onClick={() => bringToFront(ws.id)} onRemove={() => void handleRemove(ws.id)} /></div>
+      onClick={() => openWorkspace(ws.id)} onRemove={() => void handleRemove(ws.id)} /></div>
   </div>;
 
-  return <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-      <h2 style={{ fontSize: 12, fontWeight: 600, color: "var(--ci-text-muted)" }}>{t("workspace.title")}</h2>
-      <button className="ad-button" onClick={() => setShowForm(value => !value)}>+ {t("common.add")}</button>
+  return <nav className="ad-nav-projects" aria-label={t("workspace.title")}>
+    <div className="ad-nav-head">
+      <h2>{t("workspace.title")}</h2>
+      <div className="ad-nav-head-actions">
+        <WorktreeRecovery />
+        <button ref={addButton} type="button" className="ad-button" onClick={() => setForm(value => value ? null : workspaces.length ? "dialog" : "inline")}>+ {t("common.add")}</button>
+      </div>
     </div>
-    <div style={{ display: "flex", flexWrap: "wrap" }}><WorktreeRecovery /></div>
-    {showForm && <NewWorkspaceForm onDone={() => setShowForm(false)} />}
+    {form === "inline" && <div className="ad-nav-inline-form"><NewWorkspaceForm onDone={() => setForm(null)} /></div>}
+    {form === "dialog" && <NewWorkspaceDialog onClose={() => { setForm(null); addButton.current?.focus({ preventScroll: true }); }} />}
     <div className="ad-project-groups">
       {groups.map(({ group, items }) => {
         const grouped = groups.length > 1, hidden = grouped && collapsed.has(group);
@@ -301,5 +295,5 @@ export function WorkspaceStack() {
         </div>;
       })}
     </div>
-  </section>;
+  </nav>;
 }

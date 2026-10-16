@@ -725,34 +725,13 @@ export default function App() {
     window.addEventListener("keydown", keydown);
   }, [patchSettings, splitSidebarWidth, direction]);
 
+  // Projects and the active project's sessions each scroll on their own: side by side when wide, stacked when narrow.
   const menuContent = (
-    <div style={{
-      flex: 1,
-      minHeight: 0,
-      overflowY: "auto",
-      overflowX: "hidden",
-      position: "relative",
-      scrollbarWidth: "none",
-      zIndex: 1,
-    }}>
-      <div style={{ padding: "6px 18px 4px" }}>
+    <div className="ad-navigator">
+      <div className="ad-navigator-panes">
         <WorkspaceStack />
-      </div>
-
-      <div style={{ padding: "0 18px 12px" }}>
         <SessionList />
       </div>
-
-      <div style={{
-        position: "sticky",
-        bottom: 0,
-        left: 0,
-        right: 0,
-        height: 28,
-        background: "linear-gradient(to bottom, transparent, var(--ci-bg-grad))",
-        pointerEvents: "none",
-        flexShrink: 0,
-      }} />
     </div>
   );
 

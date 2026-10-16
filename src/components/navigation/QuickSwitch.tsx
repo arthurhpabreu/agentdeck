@@ -13,8 +13,7 @@ import { useAppI18n } from "../../i18n";
 import { RUNNER_LABELS } from "../../store/settingsStore";
 import { selectSessionNavigation, useSessionStore } from "../../store/sessionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { useWorkbenchStore } from "../../store/workbenchStore";
-import { showSessionSurface } from "../../services/workbenchCommands";
+import { openWorkspace, showSessionSurface } from "../../services/workbenchCommands";
 import { getRuntimePlatform } from "../../services/platform";
 import { ProviderIcon } from "../ProviderIcon";
 import { quickSwitchCopy } from "./quickSwitchCopy";
@@ -142,15 +141,7 @@ export function QuickSwitch({ disabled = false, onAgents, onKnowledge, onSetting
         id: `project:${workspace.id}`, title: workspace.name,
         detail: `${copy.project} · ${workspace.path} · ${projectSessions.length} ${copy.conversations}`,
         icon: <FolderOpen size={18} />, current: workspace.id === activeWorkspaceId, score: projectScore,
-        select: () => {
-          if (!useWorkspaceStore.getState().workspaces.some(item => item.id === workspace.id)) return;
-          useWorkspaceStore.getState().setActiveWorkspace(workspace.id);
-          const current = useSessionStore.getState().sessions.find(session => session.workspaceId === workspace.id && session.id === useSessionStore.getState().activeSessionId);
-          const sessionId = current?.id ?? useSessionStore.getState().sessions.find(session => session.workspaceId === workspace.id)?.id ?? null;
-          useSessionStore.getState().setActiveSession(sessionId);
-          useSessionStore.getState().setExpandedSession(null);
-          useWorkbenchStore.getState().resetWorkbenchMode();
-        },
+        select: () => openWorkspace(workspace.id),
       });
       for (const session of projectSessions) {
         const provider = RUNNER_LABELS[session.runner.type];

@@ -7,7 +7,7 @@ Agent Deck 0.8 stores manual presentation independently from project identity, p
 | Collection | Stable identity and context | Presentation behavior |
 | --- | --- | --- |
 | Project navigation | Workspace ID, navigation surface | Automatic groups: **Waiting for you** (unread approvals, questions, errors or finished responses), **Running**, **Recent** (activity within seven days, newest first) and **Other projects**. Only Other projects accepts drag or keyboard order; focus leaves positions unchanged and group headers collapse persistently. |
-| Sessions | Session ID, workspace ID | Free manual order across execution states; reset restores status priority and existing automatic order. |
+| Sessions | Session ID, workspace ID | Free manual order across execution states; reset restores the automatic order: pending actions, waiting and running work, then the most recent activity. Sessions idle for seven days fold below the five most recent unless they are open or were opened recently. |
 | Terminal tabs | Widget and tab IDs, workspace ID | Visual tab order preserves PTY IDs, ownership, selected tab and settings. |
 | Editor tabs | Tab ID, editor group ID | Reordering preserves paths and buffers; existing split and move-to-group actions remain available. |
 | Editor groups | Group ID, session ID | Order groups without changing session ownership or the files in each group. |
@@ -43,7 +43,7 @@ Manual order is a list of stable IDs keyed by surface and context. A filtered mo
 
 Map movement divides pointer distance by the actual viewport scale. The first saved map arrangement captures the remaining card positions, keeping telemetry from recalculating established positions. Escape discards the in-progress preview; pointer release commits one snapshot. Viewport size changes or explicit Fit can adjust the camera without changing saved world coordinates.
 
-Lists use one comfortable density. A project's status line names the most urgent unread action, the running task or its last activity, and shows its path on hover; a pulsing dot (static under reduced motion) marks running or waiting projects. Project activity combines when sessions start running, conversation messages, session creation and unread attention events. Long names remain available through labels and tooltips, with selected and running states represented separately. The ordering controls provide English, Portuguese and Spanish copy.
+Lists use one comfortable density. The project list and the active project's sessions share the sidebar: side by side once its content is at least 480 px wide, stacked below that with projects limited to about 40% of the height. Each pane scrolls on its own, so sessions never wait below the whole project list. Selecting a project opens its most urgent pending conversation, otherwise the last one opened there, a running one or the newest; a project without sessions opens its new-session view. A project's status line names the most urgent unread action, the running task or its last activity, and shows its path on hover; a pulsing dot (static under reduced motion) marks running or waiting projects. Sessions name their unread action and the time of their last activity. Activity combines when sessions start running, conversation messages, session creation and attention events. Long names remain available through labels and tooltips, with selected and running states represented separately. The ordering controls provide English, Portuguese and Spanish copy.
 
 ## Rendering and integration
 

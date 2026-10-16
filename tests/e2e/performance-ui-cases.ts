@@ -7,7 +7,8 @@ export function performanceUiCases(setup: (page: Page, locale?: string) => Promi
       const sessionPath = "/src/store/sessionStore.ts", chatPath = "/src/store/chatStore.ts";
       const { useSessionStore } = await import(/* @vite-ignore */ sessionPath), { useChatStore } = await import(/* @vite-ignore */ chatPath);
       const original = useSessionStore.getState().sessions[0];
-      const extra = Array.from({ length: 7 }, (_, i) => ({ ...original, id: `cache-${i}`, name: `Cache chat ${i}`, createdAt: i + 2 }));
+      // Recent conversations: sessions idle for a week fold out of the sidebar.
+      const extra = Array.from({ length: 7 }, (_, i) => ({ ...original, id: `cache-${i}`, name: `Cache chat ${i}`, createdAt: Date.now() - i }));
       useSessionStore.setState(state => ({ sessions: [...state.sessions, ...extra], worktreeReadyIds: new Set([...state.worktreeReadyIds, ...extra.map(item => item.id)]) }));
       for (const session of extra) useChatStore.getState().patch(session.id, { draft: `Draft preserved ${session.id}` });
     });

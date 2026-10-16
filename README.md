@@ -42,7 +42,7 @@ The repository is public and can be cloned without requesting access. No API key
 | Agents | Flow map, session list, task board, tools and provider-reported subagent relationships. |
 | Conversations | Claude/Codex chat, automatic context compaction, new chats with archived context, follow-up input, attachments, model selection, planning and native terminals. Gemini uses its terminal. |
 | Review and attention | Confirmed actionable events, unread completions, line/range diff comments sent together and stale-reference checks. |
-| Organization | Persistent visual order, keyboard dragging, undo/reset, map positions and display density; execution ownership and real hierarchy stay intact. |
+| Organization | Projects beside their sessions (stacked in a narrow sidebar), one-click project switching into the last conversation, persistent visual order, keyboard dragging, undo/reset and map positions; execution ownership and real hierarchy stay intact. |
 | Commands and skills | Searchable suggestions in chat, native startup and follow-up inputs; metadata from installed providers and local definitions. |
 | Git | Independent worktrees, status, diffs, staging, conflict resolution and recovery of preserved session folders. |
 | Knowledge | Local Markdown/Obsidian sources, source health, searchable note graph and connected-note previews. |
@@ -82,7 +82,7 @@ Vault files remain in their original folders. Relevant excerpts can enter a task
 
 Memory exports are Markdown copies: editing an exported file does not update the memory database. Source health shows unavailable folders and partial indexes. Context sources distinguish prepared excerpts from confirmed delivery to the agent.
 
-Use **Preserved worktrees** below the project list to inspect folders retained after removing sessions or projects. Cleanup rechecks their state, preserves local files and keeps the Git branch. You can also choose a repository to locate folders from earlier sessions.
+Use **Preserved worktrees** (the archive button next to **Projects**) to inspect folders retained after removing sessions or projects. Cleanup rechecks their state, preserves local files and keeps the Git branch. You can also choose a repository to locate folders from earlier sessions.
 
 Code mode enables full machine access by default and can be disabled per conversation; Plan stays read only. Provider credentials remain in native integration. [Security and local data](SECURITY.md).
 

@@ -16,7 +16,7 @@
 .ad-arrangement-controls > button:not(:disabled):hover { background: var(--ci-list-hover-bg); color: var(--ci-text); }
 .ad-editor-group-order > .ad-sortable-content { flex: 1; min-height: 0; }
 .ad-editor-group-order > .ad-sortable-content > .ad-sortable-item { flex: 1; min-height: 0; overflow: hidden; }
-@container (max-width: 300px) {
+@container ad-sessions (max-width: 250px) {
   .ad-session-card { flex-wrap: wrap; }
   .ad-session-card > [data-drag-primary] { flex-basis: calc(100% - 28px) !important; }
   .ad-session-card > [data-session-actions] { margin-inline-start: 14px; }

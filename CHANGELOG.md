@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.12.0 — 2026-10-16
+
+### Changed
+
+- Projects and the active project's sessions share the sidebar side by side
+  once it is wide enough, and stack with separate scrolling when it is narrow,
+  so sessions no longer sit below the whole project list.
+- Selecting a project, in the sidebar or in quick navigation, opens its
+  conversation that needs you, otherwise the last one opened there; a project
+  without sessions opens a new session.
+- Sessions list pending actions, waiting and running work first, then the most
+  recent activity, and show the time of their last activity and any unread
+  approval, question, error or finished response. Sessions idle for seven days
+  that were not opened recently fold under **Show older sessions**.
+- Preserved worktrees became an archive button with a counter next to
+  **Projects**, the new conversation folder became a single-line control with
+  its explanation in the tooltip, and adding a project opens a dialog.
+
 ## 0.11.0 — 2026-10-15
 
 ### Added

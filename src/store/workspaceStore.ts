@@ -53,7 +53,6 @@ interface WorkspaceStore {
   addWorkspace: (path: string, name?: string, color?: WorkspaceColorId) => string;
   removeWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
-  bringToFront: (id: string) => void;
   updateWorkspace: (id: string, patch: Partial<Pick<Workspace, "name" | "color">>) => void;
   touchWorkspace: (id: string, at?: number) => void;
 }
@@ -105,14 +104,6 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         }),
 
       setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
-
-      bringToFront: (id) =>
-        set((state) => {
-          // Focus is independent from navigation order. Retain the legacy action
-          // name for callers and persisted workspaces without moving any item.
-          return state.workspaces.some(workspace => workspace.id === id) && state.activeWorkspaceId !== id
-            ? { activeWorkspaceId: id } : state;
-        }),
 
       updateWorkspace: (id, patch) =>
         set((state) => ({

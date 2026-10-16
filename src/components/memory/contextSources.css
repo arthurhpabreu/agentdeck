@@ -14,4 +14,3 @@
 .ad-source-limit-details li + li { margin-top: 6px; }
 .ad-worktree-dialog select { display: block; width: 100%; margin: 8px 0; padding: 8px; color: var(--ci-text); background: var(--ci-surface); border: 1px solid var(--ci-border); }
 .ad-worktree-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-.ad-worktree-notice { color: var(--ci-text-muted); font-size: 11px; line-height: 1.5; flex-basis: 100%; }

@@ -175,3 +175,67 @@ for (const [locale, title, placeholder, empty] of [
     await expect(dialog.getByText(empty, { exact: true })).toBeVisible();
   });
 }
+
+test("one click on a project opens what needs attention, otherwise its last conversation", async ({ page }) => {
+  await setupNavigation(page);
+  const projects = page.getByRole("navigation", { name: "Projetos", exact: true });
+  const openProject = (name: string) => projects.locator(".ad-workspace-select").filter({ hasText: name }).click();
+  const tab = page.locator(".ad-session-tabs:visible > span");
+  await openProject("Beta project");
+  await expect(page.locator(".ad-project-name")).toHaveText("Beta project");
+  await expect(page.getByRole("region", { name: "Sessões de Beta project", exact: true })).toBeVisible();
+  // Never opened before: the newest conversation.
+  await expect(tab).toContainText("Browser tests");
+  await page.getByTestId("new-session-sidebar").getByRole("button", { name: /^Revisão de permissões/ }).click();
+  await expect(tab).toContainText("Revisão de permissões");
+  await openProject("Alpha project");
+  await expect(tab).toContainText("Alpha review");
+  await openProject("Beta project");
+  await expect(tab).toContainText("Revisão de permissões");
+  await openProject("Alpha project");
+  await page.evaluate(async () => {
+    const path = "/src/store/attentionStore.ts";
+    (await import(/* @vite-ignore */ path)).useAttentionStore.getState().record({ id: "nav-approval", sessionId: "beta-tests", kind: "approval", text: "Approve", source: "provider", at: Date.now() });
+  });
+  await expect(projects.locator('[data-group="attention"]')).toContainText("Beta project");
+  await openProject("Beta project");
+  await expect(tab).toContainText("Browser tests");
+  await openProject("Empty archive");
+  await expect(page.getByTestId("new-session-welcome")).toBeVisible();
+  const state = await page.evaluate(() => ({ active: JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.activeSessionId, calls: (window as any).__navigationCalls }));
+  expect(state.active).toBeNull();
+  expect(state.calls.filter((call: any) => ["start_chat_turn", "start_pty_session", "reserve_session_id"].includes(call.command))).toEqual([]);
+});
+
+test("sessions stay in view below a long project list and move beside it in a wide sidebar", async ({ page }) => {
+  await setupNavigation(page);
+  await page.evaluate(async () => {
+    const workspacePath = "/src/store/workspaceStore.ts", sessionPath = "/src/store/sessionStore.ts";
+    const { useWorkspaceStore } = await import(/* @vite-ignore */ workspacePath);
+    const { useSessionStore } = await import(/* @vite-ignore */ sessionPath);
+    useWorkspaceStore.setState((state: any) => ({ workspaces: [...state.workspaces, ...Array.from({ length: 14 }, (_, index) => ({ id: `extra-${index}`, name: `Extra project ${index}`, path: `C:\Extra\${index}`, color: "blue", createdAt: 10 + index, order: 3 + index }))] }));
+    useSessionStore.setState((state: any) => ({ sessions: [...state.sessions, ...Array.from({ length: 8 }, (_, index) => ({ ...state.sessions[0], id: `alpha-old-${index}`, name: `Old alpha task ${index}`, createdAt: 100 + index }))] }));
+  });
+  const projects = page.locator(".ad-nav-projects"), sessions = page.getByTestId("new-session-sidebar");
+  const rows = sessions.locator('[data-surface="sessions"] .ad-sortable-item');
+  // Stacked: the project list scrolls inside its share and never pushes sessions out of view.
+  let projectBox = (await projects.boundingBox())!, sessionBox = (await sessions.boundingBox())!;
+  expect(sessionBox.y).toBeGreaterThanOrEqual(projectBox.y + projectBox.height - 1);
+  expect(projectBox.height).toBeLessThan(sessionBox.height);
+  await expect(page.locator(".ad-project-groups")).toHaveJSProperty("scrollTop", 0);
+  expect(await page.locator(".ad-project-groups").evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect(rows.first()).toBeInViewport();
+  // Long-idle conversations fold away below the five most recent, the open one and recently opened ones.
+  await expect(rows).toHaveCount(6);
+  await sessions.getByRole("button", { name: "Mostrar sessões antigas (3)", exact: true }).click();
+  await expect(rows).toHaveCount(9);
+  await sessions.getByRole("button", { name: "Ocultar sessões antigas", exact: true }).click();
+  await expect(rows).toHaveCount(6);
+  await page.evaluate(async () => { const path = "/src/store/settingsStore.ts"; (await import(/* @vite-ignore */ path)).useSettingsStore.getState().patchSettings({ splitPaneSidebarWidth: 640 }); });
+  await expect.poll(async () => (await sessions.boundingBox())!.x).toBeGreaterThan((await projects.boundingBox())!.x + 150);
+  projectBox = (await projects.boundingBox())!; sessionBox = (await sessions.boundingBox())!;
+  expect(sessionBox.x).toBeGreaterThanOrEqual(projectBox.x + projectBox.width - 1);
+  expect(Math.abs(sessionBox.y - projectBox.y)).toBeLessThan(2);
+  expect(sessionBox.height).toBeGreaterThan(600);
+  await page.screenshot({ path: "test-results/navigator-side-by-side.png", animations: "disabled" });
+});

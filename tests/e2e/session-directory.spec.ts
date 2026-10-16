@@ -61,7 +61,7 @@ for (const surface of ["sidebar", "welcome"]) {
     await setup(page);
     const control = page.getByTestId(`new-session-${surface}`);
     await expect(control.getByLabel("Pasta da nova conversa")).toHaveValue("project");
-    await expect(control).toContainText("As conversas compartilham os arquivos");
+    await expect(control.getByLabel("Pasta da nova conversa")).toHaveAccessibleDescription(/As conversas compartilham os arquivos/);
     await control.getByRole("button", { name: surface === "sidebar" ? "+ Nova sessão" : "Novo", exact: true }).click();
     await expect.poll(async () => (await sessions(page)).length).toBe(1);
     expect((await sessions(page))[0]).toMatchObject({ id: "101", workdir: projectPath });
@@ -75,7 +75,7 @@ for (const surface of ["sidebar", "welcome"]) {
     await setup(page);
     const control = page.getByTestId(`new-session-${surface}`);
     await control.getByLabel("Pasta da nova conversa").selectOption("worktree");
-    await expect(control).toContainText("Dependências e builds podem ocupar espaço extra");
+    await expect(control.getByLabel("Pasta da nova conversa")).toHaveAccessibleDescription(/Dependências e builds podem ocupar espaço extra/);
     await control.getByRole("button", { name: surface === "sidebar" ? "+ Nova sessão" : "Novo", exact: true }).click();
     await expect.poll(async () => (await sessions(page)).length).toBe(1);
     expect((await sessions(page))[0]).toMatchObject({ workdir: isolatedPath, worktreePath: isolatedPath, branchName: "ci/qa/session-101", baseBranch: "main" });

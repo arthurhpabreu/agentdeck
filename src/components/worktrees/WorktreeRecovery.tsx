@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ArchiveRestore } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppI18n } from "../../i18n";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -72,8 +73,9 @@ export function WorktreeRecovery() {
     if (failed.length) setError(`${c.cleanAllFailed}: ${failed.join("; ")}`);
   });
   return <>
-    <button type="button" ref={trigger} className="ad-button" onClick={() => { setWorkdir(current => activePath || current || choices[0] || ""); setOpen(true); }}>{c.title}{notices.length ? ` (${notices.length})` : ""}</button>
-    {notices.length > 0 && <p role="status" className="ad-worktree-notice">{c.notice}</p>}
+    <button type="button" ref={trigger} className="ad-icon-button ad-worktree-trigger" data-notices={notices.length > 0}
+      aria-label={`${c.title}${notices.length ? ` (${notices.length})` : ""}`} title={notices.length ? `${c.title} (${notices.length}) · ${c.notice}` : c.title}
+      onClick={() => { setWorkdir(current => activePath || current || choices[0] || ""); setOpen(true); }}><ArchiveRestore size={15} aria-hidden="true" />{notices.length > 0 && <b aria-hidden="true">{notices.length}</b>}</button>
     {open && createPortal(<dialog ref={dialog} className="ad-context-dialog ad-worktree-dialog" aria-label={c.title} onCancel={event => { event.preventDefault(); close(); }}>
       <header><h2>{c.title}</h2><button type="button" className="ad-button" disabled={busy} onClick={close}>{c.close}</button></header><p>{c.hint}</p>
       <label>{c.repository}<select value={workdir} disabled={busy} onChange={event => { setFeedback(""); setWorkdir(event.target.value); }}><option value="">—</option>{choices.map(path => <option key={path} value={path}>{path}</option>)}</select></label>

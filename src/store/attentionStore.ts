@@ -4,6 +4,8 @@ import { mirroredPersistStorage } from "./persistStorage";
 import type { ChatEvent } from "./chatStore";
 
 export type AttentionKind = "question" | "approval" | "error" | "completed";
+/** Lower is more urgent. */
+export const ATTENTION_RANK: Record<AttentionKind, number> = { approval: 0, question: 1, error: 2, completed: 3 };
 export interface AttentionItem { id: string; sessionId: string; kind: AttentionKind; text: string; source: string; at: number; read: boolean }
 export const useAttentionStore = create<{
   items: AttentionItem[];
