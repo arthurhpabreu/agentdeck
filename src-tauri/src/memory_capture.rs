@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -334,6 +334,7 @@ pub fn merge_hooks(settings: &mut Value, provider: &str, definition: Value) -> R
     } else {
         &[
             "UserPromptSubmit",
+            "PreToolUse",
             "PostToolUse",
             "PostToolUseFailure",
             "Stop",
@@ -441,7 +442,7 @@ pub fn codex_overrides(
         read_codex_inline(&home.join("config.toml"), &mut stored)?;
     }
     let hooks = stored.as_object_mut().ok_or("Invalid inline hooks")?;
-    for event in ["UserPromptSubmit", "PostToolUse", "Stop"] {
+    for event in ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"] {
         let groups = hooks
             .entry(event)
             .or_insert_with(|| json!([]))
@@ -514,46 +515,179 @@ pub fn stdio_entry() -> Option<i32> {
     if args.get(1).map(String::as_str) != Some("--memory-hook") {
         return None;
     }
-    let run = || -> Result<(), String> {
-        let encoded = args
-            .iter()
-            .position(|v| v == "--context")
-            .and_then(|i| args.get(i + 1))
-            .filter(|s| s.len() < 16000)
-            .ok_or("Missing hook context")?;
-        let context: HookContext =
-            serde_json::from_slice(&STANDARD.decode(encoded).map_err(|e| e.to_string())?)
+    let run =
+        || -> Result<Option<(HookContext, crate::agent_team::TeamDelivery, Value)>, String> {
+            let encoded = args
+                .iter()
+                .position(|v| v == "--context")
+                .and_then(|i| args.get(i + 1))
+                .filter(|s| s.len() < 16000)
+                .ok_or("Missing hook context")?;
+            let context: HookContext =
+                serde_json::from_slice(&STANDARD.decode(encoded).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            if !context.directory.is_absolute() {
+                return Err("Hook storage must be absolute".into());
+            }
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .take(256 * 1024 + 1)
+                .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
-        if !context.directory.is_absolute() {
-            return Err("Hook storage must be absolute".into());
+            if bytes.len() > 256 * 1024 {
+                return Err("Hook payload exceeds limit".into());
+            }
+            let input: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            let capture = || -> Result<(), String> {
+                let engine = Engine::open(&context.directory)?;
+                let project = engine.register_project(&context.project, None)?;
+                for event in normalize(&input) {
+                    engine.record_event(&project, &context.session, &context.provider, &event)?;
+                }
+                Ok(())
+            };
+            if let Err(error) = capture() {
+                eprintln!("Agentdeck memory capture: {error}");
+            }
+            Ok(prepare_team_hook(&context, &input)?
+                .map(|(delivery, output)| (context, delivery, output)))
+        };
+    match run() {
+        Ok(Some((context, delivery, output))) => {
+            let mut stdout = std::io::stdout().lock();
+            let success = writeln!(stdout, "{output}")
+                .and_then(|_| stdout.flush())
+                .is_ok();
+            if let Ok(project) = crate::shared_memory::project_key(Path::new(&context.project)) {
+                let _ = crate::agent_team::finish_delivery(
+                    &context.directory,
+                    &project,
+                    &context.session,
+                    &delivery.token,
+                    success,
+                );
+            }
         }
-        let mut bytes = Vec::new();
-        std::io::stdin()
-            .take(256 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > 256 * 1024 {
-            return Err("Hook payload exceeds limit".into());
+        result => {
+            if let Err(error) = result {
+                eprintln!("Agentdeck context hook: {error}");
+            }
+            println!("{{}}");
         }
-        let input: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        let engine = Engine::open(&context.directory)?;
-        let project = engine.register_project(&context.project, None)?;
-        for event in normalize(&input) {
-            engine.record_event(&project, &context.session, &context.provider, &event)?;
-        }
-        Ok(())
-    };
-    if let Err(error) = run() {
-        eprintln!("Agentdeck memory capture: {error}");
     }
-    // Capture cannot block an agent, grant permissions or inject hook instructions.
-    println!("{{}}");
+    // Context-only output never grants permissions, rewrites tools or starts a turn.
     Some(0)
+}
+
+fn supports_team_context(provider: &str, event: &str) -> bool {
+    match provider {
+        "claude-code" | "codex" => {
+            matches!(event, "UserPromptSubmit" | "PreToolUse" | "PostToolUse")
+        }
+        "gemini" => matches!(event, "BeforeAgent" | "AfterTool"),
+        _ => false,
+    }
+}
+
+fn prepare_team_hook(
+    context: &HookContext,
+    input: &Value,
+) -> Result<Option<(crate::agent_team::TeamDelivery, Value)>, String> {
+    if crate::notification::completion::is_child_event(input) {
+        return Ok(None);
+    }
+    let event = input["hook_event_name"].as_str().unwrap_or_default();
+    if !supports_team_context(&context.provider, event) {
+        return Ok(None);
+    }
+    let project = crate::shared_memory::project_key(Path::new(&context.project))?;
+    let Some(delivery) =
+        crate::agent_team::take_delivery(&context.directory, &project, &context.session, true)?
+    else {
+        return Ok(None);
+    };
+    let mut output = json!({"hookSpecificOutput":{"additionalContext":&delivery.text}});
+    if context.provider != "gemini" {
+        output["hookSpecificOutput"]["hookEventName"] = json!(event);
+    }
+    Ok(Some((delivery, output)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_cross_project_teams_deliver_context_only_at_supported_native_boundaries() {
+        for (provider, event) in [
+            ("codex", "PreToolUse"),
+            ("claude-code", "PostToolUse"),
+            ("gemini", "BeforeAgent"),
+            ("gemini", "AfterTool"),
+        ] {
+            let directory =
+                std::env::temp_dir().join(format!("agentdeck-team-hook-{}", uuid::Uuid::new_v4()));
+            let first = directory.join("first-project");
+            let second = directory.join("second-project");
+            fs::create_dir_all(&first).unwrap();
+            fs::create_dir_all(&second).unwrap();
+            let a = crate::shared_memory::project_key(&first).unwrap();
+            let b = crate::shared_memory::project_key(&second).unwrap();
+            let db = crate::agent_team::open(&directory).unwrap();
+            for (key, path, id) in [(&a, &first, "one"), (&b, &second, "two")] {
+                db.execute("INSERT INTO coordination_sessions(project,id,name,provider,workdir,status,activity,updated,enabled) VALUES(?1,?2,?2,?3,?4,'running','Reviewing the assigned task',0,1)",rusqlite::params![key,id,provider,path.to_string_lossy().to_string()]).unwrap();
+            }
+            let mut configuration = json!({"name":"Integration team","objective":"Coordinate existing tasks across projects","automatic":false,"members":[{"projectPath":first,"sessionId":"one"},{"projectPath":second,"sessionId":"two"}]});
+            let board: Value = serde_json::from_str(
+                &crate::agent_team::configure(&directory, &a, "one", &configuration).unwrap(),
+            )
+            .unwrap();
+            configuration["teamId"] = board["team"]["id"].clone();
+            let context = HookContext {
+                directory: directory.clone(),
+                project: first.to_string_lossy().to_string(),
+                session: "one".into(),
+                provider: provider.into(),
+            };
+            let input = json!({"hook_event_name":event});
+            assert!(prepare_team_hook(&context, &input).unwrap().is_none());
+            configuration["automatic"] = json!(true);
+            crate::agent_team::configure(&directory, &a, "one", &configuration).unwrap();
+            // A stop/error or a child cannot consume the root chat's pending note.
+            assert!(
+                prepare_team_hook(&context, &json!({"hook_event_name":"Stop"}))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(prepare_team_hook(
+                &context,
+                &json!({"hook_event_name":event,"agent_id":"child"})
+            )
+            .unwrap()
+            .is_none());
+            let (delivery, output) = prepare_team_hook(&context, &input).unwrap().unwrap();
+            assert!(output["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains("team_board"));
+            assert!(output.get("decision").is_none());
+            assert!(output.get("continue").is_none());
+            assert!(output["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none());
+            assert!(prepare_team_hook(&context, &input).unwrap().is_none());
+            crate::agent_team::finish_delivery(&directory, &a, "one", &delivery.token, true)
+                .unwrap();
+            assert!(prepare_team_hook(&context, &input).unwrap().is_none());
+            // The independent project's root still has its own pending delivery.
+            assert!(
+                crate::agent_team::take_delivery(&directory, &b, "two", true)
+                    .unwrap()
+                    .is_some()
+            );
+            drop(db);
+            fs::remove_dir_all(&directory).unwrap();
+        }
+    }
     #[test]
     fn rtk_override_merges_explicit_hooks_once_without_a_later_override_winning() {
         let existing =

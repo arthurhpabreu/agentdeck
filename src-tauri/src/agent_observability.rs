@@ -10,6 +10,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_TRANSCRIPT_BYTES: u64 = 4 * 1024 * 1024;
+// session_meta includes the provider's base instructions, which exceed 16 KiB.
+const MAX_CODEX_HEADER_BYTES: u64 = 1024 * 1024;
 const MAX_EVENTS: usize = 60;
 const MAX_AGENTS: usize = 64;
 
@@ -481,6 +483,19 @@ fn transcript_files(
 
 type IndexCache = Option<(Instant, PathBuf, Vec<IndexedSession>)>;
 static CODEX_INDEX: OnceLock<Mutex<IndexCache>> = OnceLock::new();
+
+fn read_codex_header(path: PathBuf) -> Option<IndexedSession> {
+    let file = File::open(&path).ok()?;
+    let mut line = Vec::new();
+    BufReader::new(file.take(MAX_CODEX_HEADER_BYTES + 1))
+        .read_until(b'\n', &mut line)
+        .ok()?;
+    if line.len() as u64 > MAX_CODEX_HEADER_BYTES {
+        return None;
+    }
+    parse_codex_header(&serde_json::from_slice::<Value>(&line).ok()?, path)
+}
+
 fn codex_index(home: &Path) -> Vec<IndexedSession> {
     let mut cache = CODEX_INDEX
         .get_or_init(|| Mutex::new(None))
@@ -505,12 +520,7 @@ fn codex_index(home: &Path) -> Vec<IndexedSession> {
     let entries: Vec<_> = files
         .into_iter()
         .take(600)
-        .filter_map(|(_, path)| {
-            let file = File::open(&path).ok()?;
-            let mut line = String::new();
-            BufReader::new(file.take(16384)).read_line(&mut line).ok()?;
-            parse_codex_header(&serde_json::from_str::<Value>(&line).ok()?, path)
-        })
+        .filter_map(|(_, path)| read_codex_header(path))
         .collect();
     *cache = Some((Instant::now(), home.to_path_buf(), entries.clone()));
     entries
@@ -610,6 +620,15 @@ fn observe(requests: Vec<ObserveSession>) -> Vec<Observation> {
     let codex_home = provider_dir("CODEX_HOME", ".codex");
     let claude_home = provider_dir("CLAUDE_CONFIG_DIR", ".claude");
     let gemini_home = provider_dir("GEMINI_CLI_HOME", ".gemini");
+    observe_with_homes(requests, codex_home, claude_home, gemini_home)
+}
+
+fn observe_with_homes(
+    requests: Vec<ObserveSession>,
+    codex_home: Option<PathBuf>,
+    claude_home: Option<PathBuf>,
+    gemini_home: Option<PathBuf>,
+) -> Vec<Observation> {
     let gemini = gemini_home
         .as_ref()
         .map(|home| gemini::index(home, &requests))
@@ -837,6 +856,121 @@ mod tests {
             events: vec![],
             truncated: false,
         }
+    }
+
+    struct CodexHome(PathBuf);
+
+    impl CodexHome {
+        fn new() -> Self {
+            let home = std::env::temp_dir()
+                .join(format!("agentdeck-observe-codex-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(home.join("sessions/2026/10/20")).unwrap();
+            Self(home)
+        }
+
+        fn write(&self, id: &str, parent_id: Option<&str>, records: &[Value]) -> PathBuf {
+            let source = parent_id.map_or_else(
+                || json!("cli"),
+                |parent| {
+                    json!({"subagent":{"thread_spawn":{"parent_thread_id":parent,"agent_nickname":"Ada","agent_role":"reviewer"}}})
+                },
+            );
+            let header = json!({
+                "type":"session_meta",
+                "payload":{
+                    "id":id,
+                    "cwd":"/same-project",
+                    "source":source,
+                    "base_instructions":{"text":"Instructions with Unicode: ação 🦀. ".repeat(1000)}
+                }
+            });
+            let mut contents = format!("{header}\n");
+            assert!(contents.len() > 16384);
+            for record in records {
+                contents.push_str(&format!("{record}\n"));
+            }
+            let path = self
+                .0
+                .join("sessions/2026/10/20")
+                .join(format!("rollout-{id}.jsonl"));
+            fs::write(&path, contents).unwrap();
+            path
+        }
+    }
+
+    impl Drop for CodexHome {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn codex_monitor_discovers_large_headers_and_only_the_requested_family() {
+        let home = CodexHome::new();
+        home.write(
+            "root",
+            None,
+            &[json!({"type":"event_msg","payload":{"type":"task_started"}})],
+        );
+        home.write("child", Some("root"), &[
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"Review authentication"}}),
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":"read","name":"exec_command","arguments":"{\"cmd\":\"cargo test\"}"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"read","output":"ok"}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete"}}),
+        ]);
+        home.write("grandchild", Some("child"), &[]);
+        // Sharing a working directory never establishes a parent relationship.
+        home.write("unrelated", None, &[]);
+
+        let result = observe_with_homes(
+            vec![ObserveSession {
+                session_id: "ui-session".into(),
+                provider: "codex".into(),
+                provider_session_id: Some("root".into()),
+                workdir: "/same-project".into(),
+            }],
+            Some(home.0.clone()),
+            None,
+            None,
+        );
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].available);
+        assert!(result[0].reason.is_none());
+        assert_eq!(result[0].agents.len(), 3);
+        assert!(result[0]
+            .agents
+            .iter()
+            .all(|agent| agent.session_id == "ui-session"));
+        assert!(!result[0].agents.iter().any(|agent| agent.id == "unrelated"));
+        let child = result[0]
+            .agents
+            .iter()
+            .find(|agent| agent.id == "child")
+            .unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some("root"));
+        assert_eq!(child.name, "Ada");
+        assert_eq!(child.role.as_deref(), Some("reviewer"));
+        assert_eq!(child.task, "Review authentication");
+        assert_eq!(child.status, "done");
+        assert_eq!(child.events[0].detail, "cargo test");
+        assert_eq!(child.events[0].status, "completed");
+    }
+
+    #[test]
+    fn codex_headers_remain_bounded_and_incomplete_records_can_be_retried() {
+        let home = CodexHome::new();
+        let path = home.0.join("sessions/2026/10/20/incomplete.jsonl");
+        fs::write(&path, b"{\"type\":\"session_meta\",\"payload\":").unwrap();
+        assert!(read_codex_header(path.clone()).is_none());
+        let header = json!({"type":"session_meta","payload":{"id":"root"}});
+        fs::write(&path, header.to_string()).unwrap();
+        assert_eq!(read_codex_header(path.clone()).unwrap().id, "root");
+        let oversized = json!({"type":"session_meta","payload":{
+            "id":"root", "base_instructions":{"text":"x".repeat(MAX_CODEX_HEADER_BYTES as usize)}
+        }});
+        fs::write(&path, oversized.to_string()).unwrap();
+        assert!(read_codex_header(path).is_none());
     }
 
     #[test]

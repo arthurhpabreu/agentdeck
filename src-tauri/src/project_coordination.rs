@@ -120,6 +120,7 @@ fn sync(db: &mut Connection, entries: Vec<Presence>) -> Result<(), String> {
     if entries.len() > 500 {
         return Err("Too many coordination sessions.".into());
     }
+    crate::agent_team::init(db)?;
     let tx = db.transaction().map_err(error)?;
     let mut projects = HashSet::new();
     for entry in entries {
@@ -157,6 +158,9 @@ fn sync(db: &mut Connection, entries: Vec<Presence>) -> Result<(), String> {
             ],
         )
         .map_err(error)?;
+        if !entry.enabled {
+            crate::agent_team::disable_member(&tx, &project, &entry.session_id)?;
+        }
     }
     // Bounded retention; no transcripts or provider credentials are stored here.
     tx.execute(
@@ -195,6 +199,9 @@ pub fn call(
     name: &str,
     input: &Value,
 ) -> Result<String, String> {
+    if name.starts_with("team_") {
+        return crate::agent_team::call(directory, project, session, name, input);
+    }
     let mut db = open(directory)?;
     allowed(&db, project, session)?;
     let result = match name {
@@ -399,7 +406,70 @@ pub async fn coordination_remove_session(
             params![project, session_id],
         )
         .map_err(error)?;
-        tx.commit().map_err(error)
+        tx.commit().map_err(error)?;
+        crate::agent_team::remove_session(&directory, &project, &session_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn coordination_team_configure(
+    app: tauri::AppHandle,
+    project_path: String,
+    session_id: String,
+    input: Value,
+) -> Result<String, String> {
+    let directory = crate::memory_runtime::data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = crate::shared_memory::project_key(Path::new(&project_path))?;
+        crate::agent_team::configure(&directory, &project, &session_id, &input)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamDeliveryTarget {
+    project_path: String,
+    session_id: String,
+    allow_updates: bool,
+}
+
+#[tauri::command]
+pub async fn coordination_team_pending(
+    app: tauri::AppHandle,
+    targets: Vec<TeamDeliveryTarget>,
+) -> Result<Value, String> {
+    let directory = crate::memory_runtime::data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if targets.len() > 500 { return Err("Too many delivery targets.".into()); }
+        let mut pending = Vec::new();
+        for target in targets {
+            if pending.len() >= 8 { break; }
+            let Ok(project) = crate::shared_memory::project_key(Path::new(&target.project_path)) else { continue; };
+            // Membership and automatic mode are revalidated for every lease.
+            if let Some(delivery) = crate::agent_team::take_delivery(&directory, &project, &target.session_id, target.allow_updates)? {
+                pending.push(json!({"sessionId":target.session_id,"projectPath":target.project_path,"delivery":delivery}));
+            }
+        }
+        Ok(Value::Array(pending))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn coordination_team_finish_delivery(
+    app: tauri::AppHandle,
+    project_path: String,
+    session_id: String,
+    token: String,
+    success: bool,
+) -> Result<(), String> {
+    let directory = crate::memory_runtime::data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = crate::shared_memory::project_key(Path::new(&project_path))?;
+        crate::agent_team::finish_delivery(&directory, &project, &session_id, &token, success)
     })
     .await
     .map_err(|e| e.to_string())?

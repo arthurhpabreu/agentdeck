@@ -184,7 +184,53 @@ fn ensure_windows_hook_bridge_assets() -> Result<(), String> {
 #[cfg(not(unix))]
 fn hook_bridge_command(source: HookSource) -> Result<String, String> {
     ensure_windows_hook_bridge_assets()?;
-    powershell_script_command(source)
+    let script = powershell_script_command(source)?;
+    if source != HookSource::Codex {
+        return Ok(script);
+    }
+    Ok(codex_windows_hook_command(&script))
+}
+
+#[cfg(not(unix))]
+fn codex_windows_hook_command(script: &str) -> String {
+    // Codex command hooks do not use Claude's `shell` field. Invoke PowerShell
+    // explicitly so the same bridge works with the Windows hook command runner.
+    use base64::Engine;
+    let bytes = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    format!(
+        "{WINDOWS_POWERSHELL} -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}",
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    )
+}
+
+fn codex_hook_specs(command: String) -> Vec<HookCommandSpec> {
+    let mut specs = ["SessionStart", "UserPromptSubmit"]
+        .into_iter()
+        .map(|event_name| HookCommandSpec {
+            event_name,
+            matcher: None,
+            command: command.clone(),
+            shell: None,
+            timeout: Some(5),
+            status_message: None,
+        })
+        .collect::<Vec<_>>();
+    // Windows retains its existing notify callback as the completion bridge.
+    // Startup/prompt hooks supply the native ID before the first turn ends.
+    if cfg!(unix) {
+        specs.push(HookCommandSpec {
+            event_name: "Stop",
+            matcher: None,
+            command,
+            shell: None,
+            timeout: Some(5),
+            status_message: None,
+        });
+    }
+    specs
 }
 
 fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
@@ -229,27 +275,7 @@ fn hook_specs(source: HookSource) -> Result<Vec<HookCommandSpec>, String> {
                 status_message: None,
             },
         ]),
-        #[cfg(unix)]
-        HookSource::Codex => Ok(vec![
-            HookCommandSpec {
-                event_name: "UserPromptSubmit",
-                matcher: None,
-                command: command.clone(),
-                shell: None,
-                timeout: Some(5),
-                status_message: None,
-            },
-            HookCommandSpec {
-                event_name: "Stop",
-                matcher: None,
-                command,
-                shell: None,
-                timeout: Some(5),
-                status_message: None,
-            },
-        ]),
-        #[cfg(not(unix))]
-        HookSource::Codex => Ok(Vec::new()),
+        HookSource::Codex => Ok(codex_hook_specs(command)),
     }
 }
 
@@ -278,7 +304,17 @@ fn is_managed_windows_command(command: &str, source: HookSource) -> bool {
                 .to_string_lossy()
                 .replace('\\', "/")
                 .to_ascii_lowercase();
-            if normalized.contains(&bridge) || normalized.contains(&bridge.replace('\'', "''")) {
+            let own_source = [
+                format!("-source '{}'", source.label()),
+                format!("-source \"{}\"", source.label()),
+                format!("-source {}", source.label()),
+            ]
+            .iter()
+            .any(|argument| normalized.contains(argument));
+            if own_source
+                && (normalized.contains(&bridge)
+                    || normalized.contains(&bridge.replace('\'', "''")))
+            {
                 return true;
             }
         }
@@ -311,6 +347,9 @@ fn is_managed_windows_command(command: &str, source: HookSource) -> bool {
     let Ok(script) = String::from_utf16(&words) else {
         return false;
     };
+    if is_managed_windows_command(&script, source) {
+        return true;
+    }
     let script = script.to_ascii_lowercase();
     script.contains("agentdeck_session_id")
         && script.contains("tcpclient")
@@ -690,7 +729,6 @@ fn save_toml_file(path: &PathBuf, table: &toml::Table) -> Result<(), String> {
         .map_err(|e| crate::i18n::native_text("native.write", &format!("{} : {e}", path.display())))
 }
 
-#[cfg(unix)]
 fn ensure_codex_feature_flag() -> Result<String, String> {
     let config_path = resolve_provider_file_path("codex", "", "config.toml")
         .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
@@ -711,7 +749,11 @@ fn ensure_codex_feature_flag() -> Result<String, String> {
         )
     })?;
 
-    let already_enabled = features_table.get("codex_hooks").and_then(|v| v.as_bool()) == Some(true);
+    let already_enabled = features_table
+        .get("hooks")
+        .or_else(|| features_table.get("codex_hooks"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     if already_enabled {
         return Ok(crate::i18n::native_text(
@@ -720,7 +762,7 @@ fn ensure_codex_feature_flag() -> Result<String, String> {
         ));
     }
 
-    features_table.insert("codex_hooks".to_string(), toml::Value::Boolean(true));
+    features_table.insert("hooks".to_string(), toml::Value::Boolean(true));
     save_toml_file(&config_path, &config)?;
 
     Ok(crate::i18n::native_text(
@@ -761,7 +803,6 @@ fn ensure_codex_notify_settings() -> Result<String, String> {
     ))
 }
 
-#[cfg(unix)]
 fn ensure_codex_hook_settings() -> Result<String, String> {
     let hooks_path = resolve_provider_file_path("codex", "", "hooks.json")
         .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
@@ -789,11 +830,6 @@ fn ensure_codex_hook_settings() -> Result<String, String> {
     ))
 }
 
-#[cfg(not(unix))]
-fn ensure_codex_hook_settings() -> Result<String, String> {
-    ensure_codex_notify_settings()
-}
-
 #[cfg(unix)]
 fn disable_codex_feature_flag() -> Result<String, String> {
     let config_path = resolve_provider_file_path("codex", "", "config.toml")
@@ -808,15 +844,16 @@ fn disable_codex_feature_flag() -> Result<String, String> {
     };
 
     let already_disabled = features
-        .get("codex_hooks")
+        .get("hooks")
+        .or_else(|| features.get("codex_hooks"))
         .and_then(|value| value.as_bool())
-        != Some(true);
+        .is_some_and(|enabled| !enabled);
 
     if already_disabled {
         return Ok(crate::i18n::native_text("native.disabled", "Codex hooks feature").to_string());
     }
 
-    features.insert("codex_hooks".to_string(), toml::Value::Boolean(false));
+    features.insert("hooks".to_string(), toml::Value::Boolean(false));
     save_toml_file(&config_path, &config)?;
     Ok(crate::i18n::native_text(
         "native.disabled",
@@ -847,6 +884,12 @@ fn disable_codex_hook_settings() -> Result<String, String> {
 
 #[cfg(not(unix))]
 fn disable_codex_hook_settings() -> Result<String, String> {
+    let hooks_path = resolve_provider_file_path("codex", "", "hooks.json")
+        .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
+    let mut hooks = load_json_file(&hooks_path)?;
+    if strip_managed_hooks(&mut hooks, HookSource::Codex) {
+        save_json_file(&hooks_path, &hooks)?;
+    }
     let config_path = resolve_provider_file_path("codex", "", "config.toml")
         .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
     let mut config = load_toml_file(&config_path)?;
@@ -889,13 +932,12 @@ fn claude_hooks_configured() -> Result<bool, String> {
 }
 
 fn codex_hooks_configured() -> Result<bool, String> {
-    #[cfg(unix)]
-    {
-        let hooks_path = resolve_provider_file_path("codex", "", "hooks.json")
-            .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
-        let hooks = load_json_file(&hooks_path)?;
-        let specs = hook_specs(HookSource::Codex)?;
-        return Ok(missing_managed_events(&hooks, &specs).is_empty());
+    let hooks_path = resolve_provider_file_path("codex", "", "hooks.json")
+        .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
+    let hooks = load_json_file(&hooks_path)?;
+    let specs = hook_specs(HookSource::Codex)?;
+    if !missing_managed_events(&hooks, &specs).is_empty() {
+        return Ok(false);
     }
 
     #[cfg(not(unix))]
@@ -907,27 +949,21 @@ fn codex_hooks_configured() -> Result<bool, String> {
             matches!(config.get("notify"), Some(toml::Value::Array(values)) if !values.is_empty()),
         );
     }
+
+    #[cfg(unix)]
+    Ok(true)
 }
 
 fn codex_feature_enabled() -> Result<bool, String> {
-    #[cfg(unix)]
-    {
-        let config_path = resolve_provider_file_path("codex", "", "config.toml")
-            .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
-        let config = load_toml_file(&config_path)?;
-        let enabled = config
-            .get("features")
-            .and_then(|value| value.as_table())
-            .and_then(|table| table.get("codex_hooks"))
-            .and_then(|value| value.as_bool())
-            == Some(true);
-        return Ok(enabled);
-    }
-
-    #[cfg(not(unix))]
-    {
-        Ok(true)
-    }
+    let config_path = resolve_provider_file_path("codex", "", "config.toml")
+        .ok_or(crate::i18n::native_text("native.parse", "Codex"))?;
+    let config = load_toml_file(&config_path)?;
+    Ok(config
+        .get("features")
+        .and_then(|value| value.as_table())
+        .and_then(|table| table.get("hooks").or_else(|| table.get("codex_hooks")))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true))
 }
 
 fn hook_listener_ready(source: HookSource) -> bool {
@@ -950,20 +986,17 @@ pub fn setup_claude_hooks() -> Result<String, String> {
 
 #[tauri::command]
 pub fn setup_codex_hooks() -> Result<String, String> {
+    let feature = ensure_codex_feature_flag()?;
+    let hooks = ensure_codex_hook_settings()?;
     #[cfg(unix)]
     {
-        let feature = ensure_codex_feature_flag()?;
-        let hooks = ensure_codex_hook_settings()?;
         return Ok(format!("{feature}\n{hooks}"));
     }
 
     #[cfg(not(unix))]
     {
-        let notify = ensure_codex_hook_settings()?;
-        return Ok(crate::i18n::native_text(
-            "native.nativeHooks",
-            &format!("Codex Windows hooks notify \n{notify}"),
-        ));
+        let notify = ensure_codex_notify_settings()?;
+        return Ok(format!("{feature}\n{hooks}\n{notify}"));
     }
 
     #[allow(unreachable_code)]
@@ -973,24 +1006,8 @@ pub fn setup_codex_hooks() -> Result<String, String> {
 #[tauri::command]
 pub fn setup_all_hooks() -> Result<String, String> {
     let claude = ensure_claude_hook_settings()?;
-    #[cfg(unix)]
-    {
-        let codex_feature = ensure_codex_feature_flag()?;
-        let codex_hooks = ensure_codex_hook_settings()?;
-        return Ok(format!("{claude}\n{codex_feature}\n{codex_hooks}"));
-    }
-
-    #[cfg(not(unix))]
-    {
-        let codex_notify = ensure_codex_hook_settings()?;
-        return Ok(crate::i18n::native_text(
-            "native.nativeHooks",
-            &format!("{claude}\nCodex Windows hooks notify \n{codex_notify}"),
-        ));
-    }
-
-    #[allow(unreachable_code)]
-    Ok(claude)
+    let codex = setup_codex_hooks()?;
+    Ok(format!("{claude}\n{codex}"))
 }
 
 pub fn reconcile_integrations_on_startup(app: &tauri::AppHandle) -> Result<String, String> {
@@ -1194,6 +1211,19 @@ fn hook_session_id(json: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn is_provider_binding_hook(source: HookSource, event: &str, json: &Value) -> bool {
+    if crate::notification::completion::is_child_event(json) {
+        return false;
+    }
+    match source {
+        HookSource::ClaudeCode => event == "UserPromptSubmit",
+        HookSource::Codex => {
+            matches!(event, "SessionStart" | "UserPromptSubmit")
+                || is_completion_hook(source, event, json)
+        }
+    }
+}
+
 fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value) {
     let locale = crate::i18n::current_locale(&app.state::<crate::i18n::LocaleState>());
     if !crate::integration_control::notifications_and_hooks_enabled(app) {
@@ -1228,10 +1258,13 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
         routing.cwd
     );
 
+    if is_provider_binding_hook(source, event_name, json) {
+        emit_provider_session_bound(app, &routing, json);
+    }
+
     match source {
         HookSource::ClaudeCode => match event_name {
             "UserPromptSubmit" => {
-                emit_provider_session_bound(app, &routing, json);
                 emit_session_lifecycle(
                     app,
                     routing,
@@ -1279,7 +1312,6 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
                 );
             }
             "UserPromptSubmit" => {
-                emit_provider_session_bound(app, &routing, json);
                 emit_session_lifecycle(
                     app,
                     routing,
@@ -1593,6 +1625,144 @@ mod namespace_tests {
         }
     }
 
+    #[test]
+    fn codex_startup_hooks_bind_before_completion_and_reconcile_additively() {
+        let specs = codex_hook_specs("agentdeck-test-bridge".into());
+        let events = specs.iter().map(|spec| spec.event_name).collect::<Vec<_>>();
+        assert!(events.contains(&"SessionStart"));
+        assert!(events.contains(&"UserPromptSubmit"));
+        assert_eq!(events.contains(&"Stop"), cfg!(unix));
+        assert!(specs.iter().all(|spec| spec.shell.is_none()));
+
+        let unrelated = serde_json::json!({"hooks":{
+            "SessionStart":[{"hooks":[{"type":"command","command":"company-audit"}]}],
+            "Stop":[{"hooks":[{"type":"command","command":"company-completion"}]}]
+        }});
+        let mut hooks = unrelated.clone();
+        merge_hook_specs(&mut hooks, HookSource::Codex, &specs, "fixture").unwrap();
+        assert_eq!(
+            hooks["hooks"]["SessionStart"][0],
+            unrelated["hooks"]["SessionStart"][0]
+        );
+        assert_eq!(hooks["hooks"]["Stop"][0], unrelated["hooks"]["Stop"][0]);
+        assert!(missing_managed_events(&hooks, &specs).is_empty());
+        assert!(
+            merge_hook_specs(&mut hooks, HookSource::Codex, &specs, "fixture")
+                .unwrap()
+                .is_empty()
+        );
+
+        for payload in [
+            serde_json::json!({"hook_event_name":"SessionStart","session_id":"native-root","source":"startup"}),
+            serde_json::json!({"hook_event_name":"SessionStart","session_id":"native-root","source":"resume"}),
+            serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"native-root","prompt":"Review auth"}),
+        ] {
+            assert!(is_provider_binding_hook(
+                HookSource::Codex,
+                payload["hook_event_name"].as_str().unwrap(),
+                &payload
+            ));
+        }
+        let notify = serde_json::json!({"type":"agent-turn-complete","thread-id":"native-root"});
+        assert_eq!(
+            is_provider_binding_hook(HookSource::Codex, "", &notify),
+            cfg!(not(unix))
+        );
+        for payload in [
+            serde_json::json!({"agent_id":"child"}),
+            serde_json::json!({"parent_tool_use_id":"tool"}),
+        ] {
+            assert!(!is_provider_binding_hook(
+                HookSource::Codex,
+                "SessionStart",
+                &payload
+            ));
+        }
+        assert!(!is_provider_binding_hook(
+            HookSource::Codex,
+            "PreToolUse",
+            &serde_json::json!({})
+        ));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn windows_startup_bridge_delivers_native_and_agentdeck_session_ids() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+
+        let directory =
+            std::env::temp_dir().join(format!("Agentdeck hook café {}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let script_path = directory.join("fixture.ps1");
+        fs::write(&script_path, WINDOWS_BRIDGE_SCRIPT).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let script = format!(
+            "& '{}' -Source 'codex' -Port {}",
+            escape_powershell_single_quoted(&script_path.to_string_lossy()),
+            listener.local_addr().unwrap().port()
+        );
+        let mut child = crate::util::background_command("cmd.exe")
+            .args(["/d", "/c", &codex_windows_hook_command(&script)])
+            .env("AGENTDECK_SESSION_ID", "fixture-app-session")
+            .env("AGENTDECK_RUNNER_TYPE", "codex")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(
+            br#"{"hook_event_name":"SessionStart","session_id":"native-root","source":"startup","cwd":"C:/work/project"}"#
+        ).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            if let Ok((stream, _)) = listener.accept() {
+                break stream;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Windows startup hook did not reach its session-specific bridge");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // The fixture has only a small payload. Wait for its writer to close
+        // before applying the receiver's timeout, independent of test load.
+        let write_deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= write_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Windows startup bridge did not finish writing its fixture");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success());
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let payload = read_hook_payload(stream).unwrap();
+        assert_eq!(payload["session_id"], "native-root");
+        assert_eq!(
+            hook_session_id(&payload).as_deref(),
+            Some("fixture-app-session")
+        );
+        assert_eq!(payload["agentdeck_runner_type"], "codex");
+        assert!(is_provider_binding_hook(
+            HookSource::Codex,
+            "SessionStart",
+            &payload
+        ));
+        fs::remove_file(script_path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
     #[cfg(not(unix))]
     #[test]
     fn windows_reconciliation_preserves_unrelated_powershell_hooks() {
@@ -1628,6 +1798,15 @@ mod namespace_tests {
                 home.join(".agentdeck/hooks/hook-bridge.ps1").display()
             );
             assert!(is_managed_command(&managed_bridge, HookSource::ClaudeCode));
+            assert!(!is_managed_command(&managed_bridge, HookSource::Codex));
+            let codex_bridge = format!(
+                "& '{}' -Source 'codex' -Port 46332",
+                home.join(".agentdeck/hooks/hook-bridge.ps1").display()
+            );
+            let codex_command = codex_windows_hook_command(&codex_bridge);
+            assert!(codex_command.starts_with(WINDOWS_POWERSHELL));
+            assert!(is_managed_command(&codex_command, HookSource::Codex));
+            assert!(!is_managed_command(&codex_command, HookSource::ClaudeCode));
         }
     }
 

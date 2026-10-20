@@ -322,6 +322,9 @@ pub(super) fn initial_input(request: &ChatTurnRequest) -> Result<String, String>
         && request.provider_session_id.is_some()
     {
         let mut compact = request.clone();
+        // Compaction is a separate native input, not receipt of the queued
+        // coordination note. Reusing its UUID could deduplicate the real note.
+        compact.coordination = false;
         compact.prompt = "/compact Preserve the user's objective, constraints, decisions, changed files, verification results, and unfinished work so the conversation can continue.".into();
         compact.attachments.clear();
         return build_input(&compact);
@@ -350,6 +353,7 @@ pub(super) struct LiveProtocol {
     claude_results: std::collections::HashSet<String>,
     claude_state: Option<String>,
     claude_result_ready: bool,
+    claude_coordination_accepted: bool,
     claude_cleanup_current: bool,
     claude_tasks: std::collections::HashSet<String>,
     claude_all_tasks: std::collections::HashSet<String>,
@@ -396,6 +400,7 @@ impl LiveProtocol {
             claude_results: Default::default(),
             claude_state: None,
             claude_result_ready: false,
+            claude_coordination_accepted: false,
             claude_cleanup_current: false,
             claude_tasks: Default::default(),
             claude_all_tasks: Default::default(),
@@ -718,6 +723,21 @@ impl LiveProtocol {
                 out.push(record);
             }
             return Ok(());
+        }
+        if top_level && self.request.coordination && !self.claude_coordination_accepted {
+            let initial_id = self.request.turn_id.as_str();
+            let echo = record["type"] == "user" && record["uuid"].as_str() == Some(initial_id);
+            let result = record["type"] == "result"
+                && (record["user_message_uuid"].as_str() == Some(initial_id)
+                    || record["user_message_uuids"]
+                        .as_array()
+                        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(initial_id))));
+            if echo || result {
+                self.claude_coordination_accepted = true;
+                out.push(
+                    json!({"type":"agentdeck.input","message_id":initial_id,"status":"accepted"}),
+                );
+            }
         }
         if record["type"] == "result" && top_level {
             let id = record["uuid"]
@@ -1093,6 +1113,106 @@ pub(super) fn normalize_item(item: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_coordination_receipt_requires_its_native_input_uuid_and_is_idempotent() {
+        let mut req = super::super::tests::request("claude-code");
+        req.coordination = true;
+        let initial: Value = serde_json::from_str(&initial_input(&req).unwrap()).unwrap();
+        assert_eq!(initial["uuid"], req.turn_id);
+        let mut ordinary = req.clone();
+        ordinary.coordination = false;
+        assert!(
+            serde_json::from_str::<Value>(&initial_input(&ordinary).unwrap())
+                .unwrap()
+                .get("uuid")
+                .is_none()
+        );
+        let mut compact = req.clone();
+        compact.compact_before_turn = true;
+        compact.provider_session_id = Some("native-session".into());
+        assert!(
+            serde_json::from_str::<Value>(&initial_input(&compact).unwrap())
+                .unwrap()
+                .get("uuid")
+                .is_none()
+        );
+        let accepted = |records: &[String]| {
+            records
+                .iter()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|record| {
+                    record["type"] == "agentdeck.input"
+                        && record["message_id"] == req.turn_id
+                        && record["status"] == "accepted"
+                })
+                .count()
+        };
+        for record in [
+            json!({"type":"agentdeck.initial-delivered"}),
+            json!({"type":"system","subtype":"init","session_id":"native-session"}),
+            json!({"type":"assistant","message":{"content":[]}}),
+            json!({"type":"user","uuid":"another-input"}),
+            json!({"type":"user","uuid":req.turn_id,"parent_tool_use_id":"child-tool"}),
+            json!({"type":"result","uuid":req.turn_id,"user_message_uuid":"another-input","usage":{}}),
+        ] {
+            let mut protocol = LiveProtocol::new(&req);
+            let mut input = LiveInput::with_writer(Box::new(Vec::new()), false);
+            assert_eq!(
+                accepted(&protocol.ingest(&record.to_string(), &mut input)),
+                0,
+                "{record}"
+            );
+        }
+        let mut protocol = LiveProtocol::new(&req);
+        let mut input = LiveInput::with_writer(Box::new(Vec::new()), false);
+        let echo=json!({"type":"user","uuid":req.turn_id,"session_id":"native-session","message":{"role":"user","content":[]}}).to_string();
+        assert_eq!(accepted(&protocol.ingest(&echo, &mut input)), 1);
+        assert_eq!(accepted(&protocol.ingest(&echo, &mut input)), 0);
+        let result = json!({"type":"result","uuid":"native-result","user_message_uuids":[req.turn_id],"usage":{}});
+        assert_eq!(
+            accepted(&protocol.ingest(&result.to_string(), &mut input)),
+            0
+        );
+    }
+
+    #[test]
+    fn claude_coordination_receipt_can_use_explicit_native_result_input_references() {
+        for multiple in [false, true] {
+            let mut req = super::super::tests::request("claude-code");
+            req.coordination = true;
+            let mut protocol = LiveProtocol::new(&req);
+            let mut input = LiveInput::with_writer(Box::new(Vec::new()), false);
+            let mut result = json!({"type":"result","uuid":"native-result","usage":{}});
+            if multiple {
+                result["user_message_uuids"] = json!(["other-input", req.turn_id]);
+            } else {
+                result["user_message_uuid"] = json!(req.turn_id);
+            }
+            let out = protocol.ingest(&result.to_string(), &mut input);
+            let receipts = out
+                .iter()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|record| {
+                    record["type"] == "agentdeck.input"
+                        && record["message_id"] == req.turn_id
+                        && record["status"] == "accepted"
+                })
+                .count();
+            assert_eq!(receipts, 1);
+            assert!(!protocol
+                .ingest(&result.to_string(), &mut input)
+                .iter()
+                .any(|line| line.contains("agentdeck.input")));
+            req.coordination = false;
+            let mut ordinary = LiveProtocol::new(&req);
+            let mut ordinary_input = LiveInput::with_writer(Box::new(Vec::new()), false);
+            assert!(!ordinary
+                .ingest(&result.to_string(), &mut ordinary_input)
+                .iter()
+                .any(|line| line.contains("agentdeck.input")));
+        }
+    }
+
     #[test]
     fn successful_native_turn_closes_input_without_waiting_for_process_exit() {
         let req = super::super::tests::request("codex");

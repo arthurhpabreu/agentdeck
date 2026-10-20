@@ -2,6 +2,8 @@
 mod agent_catalog;
 mod agent_models;
 mod agent_observability;
+mod agent_team;
+mod agent_team_claims;
 mod app_updates;
 mod chat;
 mod cli_detect;
@@ -223,6 +225,9 @@ pub fn run() {
             project_coordination::coordination_sync_sessions,
             project_coordination::coordination_call,
             project_coordination::coordination_remove_session,
+            project_coordination::coordination_team_configure,
+            project_coordination::coordination_team_pending,
+            project_coordination::coordination_team_finish_delivery,
             window::focus_popup,
             window::resize_popup,
             window::resize_popup_full,

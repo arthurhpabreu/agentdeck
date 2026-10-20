@@ -204,6 +204,108 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn desktop_sub_agent_activity_without_sender_preserves_native_id_and_timestamp() {
+        let mut agent = super::super::tests::agent();
+        for (event_id, kind, timestamp, occurred_at_ms) in [
+            (
+                "started-event",
+                "started",
+                "2026-10-20T12:00:00Z",
+                1792497600000_u64,
+            ),
+            (
+                "interaction-event",
+                "interacted",
+                "2026-10-20T12:00:02Z",
+                1792497602000_u64,
+            ),
+        ] {
+            parse_record(
+                &mut agent,
+                &json!({
+                    "type": "event_msg",
+                    "timestamp": timestamp,
+                    "payload": {
+                        "type": "sub_agent_activity",
+                        "event_id": event_id,
+                        "occurred_at_ms": occurred_at_ms,
+                        "agent_thread_id": "child-thread",
+                        "agent_path": "/root/reviewer",
+                        "kind": kind
+                    }
+                }),
+                "codex",
+            );
+            let event = agent.events.last().unwrap();
+            assert_eq!(event.id, format!("{event_id}:child-thread"));
+            assert_eq!(event.kind, "agent_status");
+            assert_eq!(event.timestamp.as_deref(), Some(timestamp));
+            assert_eq!(event.delegated_agent_id.as_deref(), Some("child-thread"));
+            assert_eq!(event.delegated_status.as_deref(), Some("running"));
+        }
+        assert_eq!(agent.events.len(), 2);
+        assert!(agent.parent_id.is_none());
+    }
+
+    #[test]
+    fn desktop_spawn_task_name_is_not_a_native_thread_id() {
+        let mut agent = super::super::tests::agent();
+        parse_record(
+            &mut agent,
+            &json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "call_id": "spawn",
+                    "name": "spawn_agent",
+                    "arguments": "{\"message\":\"Review auth\",\"task_name\":\"reviewer\"}"
+                }
+            }),
+            "codex",
+        );
+        parse_record(
+            &mut agent,
+            &json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "spawn",
+                    "output": "{\"task_name\":\"/root/reviewer\"}"
+                }
+            }),
+            "codex",
+        );
+        assert_eq!(agent.events.len(), 1);
+        let event = &agent.events[0];
+        assert_eq!(event.kind, "delegation");
+        assert_eq!(event.status, "completed");
+        assert!(event.delegated_agent_id.is_none());
+        assert!(event.delegated_name.is_none());
+        assert!(event.delegated_status.is_none());
+    }
+
+    #[test]
+    fn desktop_other_subagent_uses_explicit_top_level_parent() {
+        let header = parse_codex_header(
+            &json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": "child-thread",
+                    "parent_thread_id": "root",
+                    "source": { "subagent": { "other": "guardian" } },
+                    "agent_nickname": "Reviewer"
+                }
+            }),
+            PathBuf::from("child.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(header.id, "child-thread");
+        assert_eq!(header.parent_id.as_deref(), Some("root"));
+        assert_eq!(header.name.as_deref(), Some("Reviewer"));
+        assert_eq!(header.path, PathBuf::from("child.jsonl"));
+    }
+
+    #[test]
     fn native_lifecycle_events_track_code_mode_delegation_and_do_not_reparent_receivers() {
         let mut agent = super::super::tests::agent();
         for payload in [

@@ -58,6 +58,8 @@ pub struct ChatTurnRequest {
     #[serde(default)]
     pub compact_before_turn: bool,
     #[serde(default)]
+    pub coordination: bool,
+    #[serde(default)]
     pub cli_path: String,
     pub provider_session_id: Option<String>,
     pub model: Option<String>,
@@ -568,13 +570,16 @@ fn build_input(request: &ChatTurnRequest) -> Result<String, String> {
             }
         }));
     }
-    Ok(format!(
-        "{}\n",
-        serde_json::json!({
-            "type": "user", "message": {"role": "user", "content": content},
-            "parent_tool_use_id": null,
-        })
-    ))
+    let mut message = serde_json::json!({
+        "type": "user", "message": {"role": "user", "content": content},
+        "parent_tool_use_id": null,
+    });
+    // Claude replays this native input UUID, permitting coordination receipts
+    // to distinguish CLI acceptance from merely writing a local pipe.
+    if request.coordination {
+        message["uuid"] = serde_json::json!(request.turn_id);
+    }
+    Ok(format!("{message}\n"))
 }
 
 fn append_knowledge_context(prompt: &mut String, context: &str) {
@@ -957,15 +962,17 @@ pub async fn start_chat_turn(
         compacting.status = Some("compacting".into());
         emit_event(&app, &request.runner_type, compacting);
     }
-    crate::memory_runtime::capture_events(
-        &app,
-        &project_path,
-        &request.session_id,
-        &request.runner_type,
-        crate::memory_capture::normalize(
-            &serde_json::json!({"hook_event_name":"UserPromptSubmit","event_id":request.turn_id,"prompt":original_prompt}),
-        ),
-    );
+    if !request.coordination {
+        crate::memory_runtime::capture_events(
+            &app,
+            &project_path,
+            &request.session_id,
+            &request.runner_type,
+            crate::memory_capture::normalize(
+                &serde_json::json!({"hook_event_name":"UserPromptSubmit","event_id":request.turn_id,"prompt":original_prompt}),
+            ),
+        );
+    }
     // Bound queued output bytes to the previous 256 MiB worst case even with
     // larger JSONL frames needed for long additional messages.
     let (sender, receiver) = mpsc::sync_channel(16);
@@ -1071,6 +1078,12 @@ pub async fn start_chat_turn(
                                 }
                                 if let Some(memory) = &memory {
                                     crate::memory_runtime::mark_delivered(&app, memory);
+                                }
+                                if request.coordination && request.runner_type == "codex" {
+                                    let mut event = parser.event("input");
+                                    event.item_id = Some(request.turn_id.clone());
+                                    event.status = Some("accepted".into());
+                                    emit_event(&app, &request.runner_type, event);
                                 }
                                 continue;
                             }
@@ -1429,14 +1442,16 @@ pub async fn start_chat_turn(
             drained,
             live.compacting(),
         );
-        crate::notification::completion::chat_completed(
-            &app,
-            &request.session_id,
-            &request.turn_id,
-            &request.prompt,
-            confirmed,
-            &project_path,
-        );
+        if !request.coordination {
+            crate::notification::completion::chat_completed(
+                &app,
+                &request.session_id,
+                &request.turn_id,
+                &request.prompt,
+                confirmed,
+                &project_path,
+            );
+        }
     });
     Ok(())
 }
@@ -1800,6 +1815,7 @@ mod tests {
             project_path: None,
             prompt: "Help with $(untrusted) & a file".into(),
             compact_before_turn: false,
+            coordination: false,
             cli_path: String::new(),
             provider_session_id: None,
             model: None,

@@ -72,12 +72,16 @@ fn extract_codex_session_id(json: &Value) -> Option<String> {
     extract_string_by_paths(
         json,
         &[
+            &["thread-id"],
+            &["thread_id"],
             &["session_id"],
             &["sessionId"],
             &["session", "id"],
             &["payload", "session_id"],
             &["payload", "sessionId"],
             &["payload", "session", "id"],
+            &["payload", "thread-id"],
+            &["payload", "thread_id"],
         ],
     )
 }
@@ -90,6 +94,15 @@ fn resolve_provider_session_id(routing: &SessionRoutingHint, json: &Value) -> Op
 }
 
 pub fn emit_provider_session_bound(app: &AppHandle, routing: &SessionRoutingHint, json: &Value) {
+    // The bridge inherits this ID from the particular Agentdeck process. A cwd
+    // match alone cannot prove which native conversation belongs to a PTY.
+    if routing
+        .agentdeck_session_id
+        .as_deref()
+        .is_none_or(|id| id.trim().is_empty())
+    {
+        return;
+    }
     let session_ids = resolve_session_ids(app, routing);
     if session_ids.is_empty() {
         return;
@@ -111,6 +124,36 @@ pub fn emit_provider_session_bound(app: &AppHandle, routing: &SessionRoutingHint
                 "runner_type": runner_type,
                 "provider_session_id": provider_session_id,
             }),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn codex_binding_accepts_session_start_and_windows_notify_native_ids() {
+        let routing = SessionRoutingHint {
+            source: HookSource::Codex,
+            agentdeck_session_id: Some("app-session".into()),
+            cwd: Some("C:/work/project".into()),
+        };
+        for payload in [
+            json!({"hook_event_name":"SessionStart","source":"startup","session_id":"native-start","cwd":"C:/work/project"}),
+            json!({"type":"agent-turn-complete","thread-id":"native-start","turn-id":"turn"}),
+            json!({"type":"agent-turn-complete","thread_id":"native-start","turn_id":"turn"}),
+            json!({"payload":{"thread_id":"native-start"}}),
+        ] {
+            assert_eq!(
+                resolve_provider_session_id(&routing, &payload).as_deref(),
+                Some("native-start")
+            );
+        }
+        assert_eq!(
+            resolve_provider_session_id(&routing, &json!({"cwd":"C:/work/project"})),
+            None
         );
     }
 }
