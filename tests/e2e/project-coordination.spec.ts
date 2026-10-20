@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { setupImprovements } from "./improvements-fixtures";
 
-async function setupTeam(page: Page, options: { existing?: boolean; historyCount?: number } = {}) {
+async function setupTeam(page: Page, options: { existing?: boolean; historyCount?: number; unfocusedTrigger?: boolean } = {}) {
   await setupImprovements(page);
   await page.evaluate(async ({ existing, historyCount }) => {
     const { useWorkspaceStore } = await import("/src/store/workspaceStore.ts" as string);
@@ -53,12 +53,19 @@ async function setupTeam(page: Page, options: { existing?: boolean; historyCount
     };
     window.dispatchEvent(new Event("agentdeck-team-changed"));
   }, options);
-  await page.getByRole("button", { name: "Equipe de agentes", exact: true }).click();
+  const trigger = page.getByRole("button", { name: "Equipe de agentes", exact: true });
+  if (options.unfocusedTrigger) {
+    await page.locator(".ad-chat-composer textarea:visible").focus();
+    // Reproduce Safari's pointer policy: the click opens the drawer without
+    // moving document.activeElement to its button first.
+    await trigger.evaluate(element => element.addEventListener("mousedown", event => event.preventDefault(), { once: true }));
+  }
+  await trigger.click();
   return page.getByRole("dialog", { name: "Equipe de agentes", exact: true });
 }
 
 test("agent team selects chats across projects, shows work context, and pauses automation @macos", async ({ page }) => {
-  const panel = await setupTeam(page);
+  const panel = await setupTeam(page, { unfocusedTrigger: true });
   await expect(panel.getByRole("heading", { name: "Criar equipe", exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Criar equipe", exact: true })).toBeDisabled();
   await expect(panel.getByRole("checkbox", { name: /Conversa 0/ })).toBeChecked();
@@ -98,6 +105,25 @@ test("agent team selects chats across projects, shows work context, and pauses a
   await expect(panel).toBeHidden();
   await expect(page.getByRole("button", { name: "Equipe de agentes", exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: "Equipe de agentes", exact: true })).toContainText("Equipe · 3 agentes");
+  const trigger = page.getByRole("button", { name: "Equipe de agentes", exact: true });
+  await trigger.click();
+  await panel.getByRole("button", { name: "Fechar equipe", exact: true }).click();
+  await expect(panel).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page.locator(".ad-team-backdrop").click({ position: { x: 12, y: 100 } });
+  await expect(panel).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await trigger.evaluate(element => {
+    (window as any).__teamReturnedFocus = 0;
+    element.addEventListener("focus", () => { (window as any).__teamReturnedFocus++; });
+  });
+  await panel.locator("summary").click();
+  await panel.getByRole("button", { name: "Conversa 2", exact: true }).click();
+  await expect(panel).toBeHidden();
+  await expect.poll(() => page.evaluate(async () => (await import("/src/store/sessionStore.ts" as string)).useSessionStore.getState().activeSessionId)).toBe("session-2");
+  expect(await page.evaluate(() => (window as any).__teamReturnedFocus)).toBe(0);
 });
 
 test("team timeline keeps earlier pages and refreshes without consuming agent inbox @macos", async ({ page }) => {

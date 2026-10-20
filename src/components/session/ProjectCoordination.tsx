@@ -83,12 +83,16 @@ export function ProjectCoordination({ session, visible }: { session: ClaudeSessi
   const mutation = useRef(0);
   const currentSession = useRef(session);
   const fetching = useRef(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const currentVisibility = useRef(visible);
+  const restoreTriggerFocus = useRef(true);
   const dialog = useRef<HTMLElement>(null);
   const timeline = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const olderScroll = useRef<{ height: number; top: number } | null>(null);
   const sendKey = useRef<string | null>(null);
   currentSession.current = session;
+  currentVisibility.current = visible;
   const jumpToLatest = () => requestAnimationFrame(() => { if (timeline.current) { timeline.current.scrollTop = timeline.current.scrollHeight; followBottom.current = true; } });
 
   const acceptBoard = useCallback((incoming: TeamBoard, older = false) => {
@@ -134,7 +138,9 @@ export function ProjectCoordination({ session, visible }: { session: ClaudeSessi
 
   useEffect(() => {
     if (!open || !visible) return;
-    const previous = document.activeElement as HTMLElement | null;
+    // Safari may leave focus on the composer when a button is clicked.
+    // The explicit opener remains the return target regardless of that policy.
+    const opener = trigger.current;
     dialog.current?.focus();
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); }
@@ -147,7 +153,10 @@ export function ProjectCoordination({ session, visible }: { session: ClaudeSessi
       else if (!event.shiftKey && (outside || document.activeElement === last)) { event.preventDefault(); first.focus(); }
     };
     document.addEventListener("keydown", keydown, true);
-    return () => { document.removeEventListener("keydown", keydown, true); if (previous?.isConnected) previous.focus(); };
+    return () => {
+      document.removeEventListener("keydown", keydown, true);
+      if (restoreTriggerFocus.current && currentVisibility.current && opener?.isConnected && opener.getClientRects().length) opener.focus({ preventScroll: true });
+    };
   }, [open, visible]);
 
   useEffect(() => {
@@ -229,12 +238,13 @@ export function ProjectCoordination({ session, visible }: { session: ClaudeSessi
   const projectName = (path: string, fallback?: string) => fallback || workspaces.find(workspace => workspace.path.replace(/\\/g, "/").toLowerCase() === path.replace(/\\/g, "/").toLowerCase())?.name || pathName(path) || c.unavailable;
   const memberName = (id?: string | null) => board?.members.find(member => member.memberId === id)?.name || c.member;
   const deliveryLabels: Record<string, string> = { queued: c.queued, delivered: c.delivered, read: c.read, failed: c.failed };
+  const openMember = (sessionId: string) => { restoreTriggerFocus.current = false; setOpen(false); showSessionSurface(sessionId); };
 
   return <div className="ad-project-coordination">
-    <button type="button" className="ad-team-trigger" aria-label={c.title} aria-expanded={open} aria-haspopup="dialog" onClick={() => { setOpen(true); if (enabled) void refresh(); }}>
+    <button ref={trigger} type="button" className="ad-team-trigger" aria-label={c.title} aria-expanded={open} aria-haspopup="dialog" onClick={() => { restoreTriggerFocus.current = true; setOpen(true); if (enabled) void refresh(); }}>
       <Users size={14}/><span>{board?.team ? `${c.team} · ${board.members.length} ${c.agents}` : c.connect}</span>{board?.team && <span className="ad-team-indicator" data-active={board.team.automatic}/>}<ChevronDown size={12}/>
     </button>
-    {open && visible && createPortal(<div className="ad-team-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false); }}>
+    {open && visible && createPortal(<div className="ad-team-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) { event.preventDefault(); setOpen(false); } }}>
       <section ref={dialog} className="ad-team-panel" role="dialog" aria-modal="true" aria-label={c.title} tabIndex={-1}>
         <header className="ad-team-header"><div><span className="ad-team-eyebrow"><Users size={13}/>{c.title}</span><h2>{editing ? board?.team ? c.edit : c.create : board?.team?.name || c.connect}</h2></div><div className="ad-team-header-actions"><button type="button" className="ad-team-icon" disabled={loading || saving || !enabled} aria-label={c.refresh} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? "is-spinning" : ""}/></button><button type="button" className="ad-team-icon" aria-label={c.close} onClick={() => setOpen(false)}><X size={18}/></button></div></header>
         {!enabled ? <div className="ad-team-empty"><MessagesSquare size={28}/><p>{c.disabled}</p><button type="button" className="ad-button" onClick={() => useSessionStore.getState().updateSession(session.id, { coordinationEnabled: true })}>{c.enable}</button></div> : !loaded ? <div className="ad-team-empty" role="status">{loading ? c.loading : c.empty}</div> : editing ? <>
@@ -250,7 +260,7 @@ export function ProjectCoordination({ session, visible }: { session: ClaudeSessi
           <footer className="ad-team-editor-actions">{board?.team && <button type="button" className="ad-button ad-button-ghost" disabled={saving} onClick={() => setEditing(false)}><ArrowLeft size={14}/>{c.cancel}</button>}<button type="button" className="ad-button ad-team-primary" disabled={saving || !name.trim() || nameOverLimit || objectiveOverLimit || selected.length < 2 || selected.length > 12} onClick={() => void saveTeam()}><Plus size={14}/>{saving ? c.saving : board?.team ? c.save : c.create}</button></footer>
         </> : board?.team ? <>
           <div className="ad-team-overview"><p className="ad-team-objective">{board.team.objective || c.objectiveHint}</p><div className="ad-team-setting"><div><strong>{c.automatic}</strong><span>{board.team.automatic ? c.automaticOn : c.automaticOff}</span></div><button type="button" role="switch" aria-label={c.automatic} aria-checked={board.team.automatic} className="ad-team-switch" disabled={saving} onClick={() => void toggleAutomatic()}><span/></button></div><p className="ad-team-description">{c.automaticHint}</p></div>
-          <details className="ad-team-member-details"><summary><Users size={14}/>{c.members}<small>{board.members.length}</small><ChevronDown size={12}/></summary><div className="ad-team-members">{board.members.map(member => <article key={member.memberId}><div><button type="button" onClick={() => { setOpen(false); showSessionSurface(member.sessionId); }}>{member.name}</button><span data-stale={member.stale}>{member.stale ? c.stale : c.states[member.status] || member.status}</span></div><small>{projectName(member.projectPath, member.projectName)} · {providerNames[member.provider] || member.provider}</small><p>{member.summary || member.activity || c.activity}</p><code title={member.workdir}>{member.workdir}</code>{board.claims?.filter(claim => claim.memberId === member.memberId && claim.expiresAt > Date.now()).map(claim => <span className="ad-team-claim" key={`${claim.memberId}:${claim.projectPath || claim.workdir}:${claim.path}`} title={c.claimHint}>{claim.projectPath ? `${projectName(claim.projectPath, claim.projectName)} · ` : ""}{claim.path}</span>)}</article>)}</div><button type="button" className="ad-button ad-button-ghost" disabled={saving} onClick={beginEdit}><Settings2 size={13}/>{c.edit}</button></details>
+          <details className="ad-team-member-details"><summary><Users size={14}/>{c.members}<small>{board.members.length}</small><ChevronDown size={12}/></summary><div className="ad-team-members">{board.members.map(member => <article key={member.memberId}><div><button type="button" onClick={() => openMember(member.sessionId)}>{member.name}</button><span data-stale={member.stale}>{member.stale ? c.stale : c.states[member.status] || member.status}</span></div><small>{projectName(member.projectPath, member.projectName)} · {providerNames[member.provider] || member.provider}</small><p>{member.summary || member.activity || c.activity}</p><code title={member.workdir}>{member.workdir}</code>{board.claims?.filter(claim => claim.memberId === member.memberId && claim.expiresAt > Date.now()).map(claim => <span className="ad-team-claim" key={`${claim.memberId}:${claim.projectPath || claim.workdir}:${claim.path}`} title={c.claimHint}>{claim.projectPath ? `${projectName(claim.projectPath, claim.projectName)} · ` : ""}{claim.path}</span>)}</article>)}</div><button type="button" className="ad-button ad-button-ghost" disabled={saving} onClick={beginEdit}><Settings2 size={13}/>{c.edit}</button></details>
           <div ref={timeline} className="ad-team-timeline" role="log" aria-label={c.conversation} aria-live="polite" aria-relevant="additions" onScroll={event => { const element = event.currentTarget; followBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 60; }}>
             {board.hasMore && board.beforeCursor != null && <button type="button" className="ad-button ad-button-ghost ad-team-earlier" disabled={loading} onClick={() => { if (timeline.current) olderScroll.current = { height: timeline.current.scrollHeight, top: timeline.current.scrollTop }; void refresh(board.beforeCursor!); }}>{c.earlier}</button>}
             {!board.messages.length && <div className="ad-team-empty"><MessagesSquare size={24}/><p>{c.noMessages}</p></div>}
