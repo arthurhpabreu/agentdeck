@@ -33,6 +33,8 @@ export async function setupImprovements(page: Page) {
     localStorage.setItem("agentdeck-sessions", JSON.stringify({ state: { sessions, activeSessionId: "session-0" }, version: 0 }));
   });
   await page.goto("/"); await expect(page.locator(".ad-quick-switch-trigger")).toBeVisible();
-  await page.getByText("Conversa 0", { exact: true }).first().click();
+  // Sidebar names are drag surfaces; a slow CI click can activate a hold.
+  // Enter through the real dashboard action when navigation is just setup.
+  await page.getByText("Abrir sessão atual", { exact: true }).click();
   await expect(page.locator(".ad-chat-composer textarea:visible")).toBeVisible();
 }
