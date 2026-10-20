@@ -113,14 +113,19 @@ async function setup(page: Page, locale = "pt-BR") {
             if (w.__autoComplete) emit({ kind: "done", status: "completed" });
           };
           if (req.compactBeforeTurn) {
-            w.__compactionPending = { sessionId: req.sessionId, turnId: req.turnId, input: [] };
+            const pending = { sessionId: req.sessionId, turnId: req.turnId, input: [] as string[], confirmed: false, release: () => {} };
+            w.__compactionPending = pending;
             emit({ kind: "status", status: "compacting" });
-            setTimeout(() => {
-              if (w.__failCompact) { emit({ kind: "error", text: "Context compaction was not confirmed. Your next request was not sent." }); emit({ kind: "done", status: "error" }); w.__compactionPending = undefined; return; }
+            pending.release = () => {
+              if (pending.confirmed) return;
+              pending.confirmed = true;
+              if (w.__failCompact) { emit({ kind: "error", text: "Context compaction was not confirmed. Your next request was not sent." }); emit({ kind: "done", status: "error" }); if (w.__compactionPending === pending) w.__compactionPending = undefined; return; }
               emit({ kind: "compaction", itemId: req.turnId + ":before-turn", status: "before-turn" });
-              for (const id of w.__compactionPending?.input ?? []) emit({ kind: "input", itemId: id, status: "accepted" });
-              w.__compactionPending = undefined; output();
-            }, w.__compactionDelay ?? 50);
+              for (const id of pending.input) emit({ kind: "input", itemId: id, status: "accepted" });
+              if (w.__compactionPending === pending) w.__compactionPending = undefined;
+              output();
+            };
+            if (!w.__holdCompaction) setTimeout(pending.release, 50);
           } else setTimeout(output, 30);
           return;
         }

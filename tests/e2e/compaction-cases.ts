@@ -10,11 +10,19 @@ export function compactionCases(setup: (page: Page, locale?: string) => Promise<
   }
   const state = (page: Page) => page.evaluate(async () => { const path = "/src/store/chatStore.ts"; return (await import(/* @vite-ignore */ path)).useChatStore.getState().threads.session; });
   async function send(page: Page, text = "Continue preservando as decisões anteriores") { await page.locator(".ad-chat-composer textarea").fill(text); await page.getByRole("button", { name: "Enviar", exact: true }).click(); }
+  async function confirmCompaction(page: Page) {
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__compactionPending?.release)).toBe("function");
+    // Native compaction/status/done records flush the event buffer themselves.
+    await page.evaluate(() => { (window as any).__compactionPending.release(); });
+  }
   for (const provider of ["Claude Code", "OpenAI Codex"]) test(`${provider} compacts by prompt count, preserves identity and resets only after confirmation`, async ({ page }) => {
     await setup(page); await openSession(page); await page.getByRole("button", { name: provider, exact: true }).click(); await seed(page);
-    await page.evaluate(() => { (window as any).__compactionDelay = 500; });
+    await page.evaluate(() => { (window as any).__holdCompaction = true; });
     await send(page); await expect(page.locator(".ad-chat-progress")).toContainText("Compactando contexto");
     expect((await state(page)).compactionCount ?? 0).toBe(0);
+    expect((await state(page)).compacting).toBe(true);
+    expect((await state(page)).contextPrompts).toBe(21);
+    await confirmCompaction(page);
     await expect.poll(async () => (await state(page)).compactionCount).toBe(1);
     await expect.poll(async () => (await state(page)).busy).toBe(false);
     const request = await page.evaluate(() => (window as any).__calls.find((c: any) => c.command === "start_chat_turn").args.request);
@@ -98,8 +106,11 @@ export function compactionCases(setup: (page: Page, locale?: string) => Promise<
     await expect(page.getByRole("alert").filter({ hasText: "compaction" })).toBeVisible();
   });
   test("additional input waits through compaction and remains in the same turn", async ({ page }) => {
-    await setup(page); await openSession(page); await seed(page); await page.evaluate(() => { (window as any).__compactionDelay = 1000; (window as any).__autoComplete = false; });
+    await setup(page); await openSession(page); await seed(page); await page.evaluate(() => { (window as any).__holdCompaction = true; (window as any).__autoComplete = false; });
     await send(page); await page.locator(".ad-chat-composer textarea").fill("Também preserve os testes"); await page.getByRole("button", { name: "Enviar complemento", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__compactionPending?.input.length)).toBe(1);
+    const pending = await state(page); expect(pending.compactionCount ?? 0).toBe(0); expect(pending.contextPrompts).toBe(21); expect(pending.compacting).toBe(true);
+    await confirmCompaction(page);
     await expect(page.getByText("Complemento entregue", { exact: true })).toBeVisible();
     const thread = await state(page); expect(thread.contextPrompts).toBe(2); expect(thread.compactionCount).toBe(1);
     expect(await page.evaluate(() => (window as any).__calls.filter((c: any) => c.command === "start_chat_turn").length)).toBe(1);
@@ -172,11 +183,11 @@ export function compactionCases(setup: (page: Page, locale?: string) => Promise<
     expect(flags).toEqual([false, false]);
   });
   test("stopping compaction keeps the pending request and ignores late completion", async ({ page }) => {
-    await setup(page); await openSession(page); await seed(page); await page.evaluate(() => { (window as any).__compactionDelay = 2000; });
+    await setup(page); await openSession(page); await seed(page); await page.evaluate(() => { (window as any).__holdCompaction = true; });
     await send(page, "Continuar depois de interromper"); await expect(page.locator(".ad-chat-progress")).toContainText("Compactando contexto");
     await page.getByRole("button", { name: "Parar resposta", exact: true }).click();
     await expect(page.locator(".ad-chat-composer textarea")).toHaveValue("Continuar depois de interromper");
-    await page.evaluate(() => { const w = window as any; w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "compaction", itemId: "late", status: "before-turn" }); });
+    await confirmCompaction(page);
     const thread = await state(page); expect(thread.busy).toBe(false); expect(thread.compacting).toBe(false); expect(thread.compactionCount ?? 0).toBe(0); expect(thread.providerSessionId).toBe("existing-session");
   });
 }
