@@ -445,7 +445,7 @@ fn configure_agents(
     let mut agents = read_overlay(args, "--agents", workdir)?;
     agents["agentdeck-economy-explorer"] = json!({
         "description":"Read-only exploration of files and documentation. Use for independent bounded searches before implementing changes.",
-        "prompt":"Explore only the requested question. Do not edit files, launch other agents or consult the advisor. Prefer targeted search. Return at most 8 concise findings with file/line evidence; do not paste complete files or repeat the parent conversation.",
+        "prompt":"Explore only the requested question. Do not edit files, launch other agents or consult the advisor. Search the named paths first; reuse supplied evidence until the underlying files change. Return at most 8 concise findings within 400 words with file/line evidence; do not paste complete files or repeat the parent conversation. Preserve applicable RTK and security rules supplied in the brief.",
         "model":profile.explorer.model,
         "tools":["Read","Grep","Glob","WebFetch","WebSearch"],
         "maxTurns":8
@@ -456,7 +456,7 @@ fn configure_agents(
     if profile.advisor_mode == "subagent" {
         agents["agentdeck-economy-advisor"] = json!({
             "description":"Read-only independent review for consequential decisions, repeated failures or risky changes. Use sparingly.",
-            "prompt":"Review only the supplied concise brief and evidence. Do not edit files, launch agents or consult the native advisor. Return at most 8 concise findings with evidence and recommended next steps. Do not repeat the parent conversation.",
+            "prompt":"Review only the supplied concise brief and evidence. Do not edit files, launch agents or consult the native advisor. Return at most 8 concise findings within 400 words with evidence and recommended next steps. Identify missing evidence precisely instead of rescanning the entire project. Do not repeat the parent conversation.",
             "model":profile.advisor.model,
             "tools":["Read","Grep","Glob","WebFetch","WebSearch"],
             "maxTurns":8
@@ -511,7 +511,7 @@ pub fn guidance(profile: &Profile, provider: &str) -> String {
     } else {
         format!("For a consequential plan decision, a repeated failure, or a risky final review, use the read-only agentdeck-economy-advisor subagent (model={}). Send a concise problem brief and relevant evidence, not the full conversation. No nested delegation. Avoid routine or repeated consultations.", profile.advisor.model)
     };
-    format!("\n[Agentdeck multi-agent economy]\nYou coordinate and implement with the user's selected main model, effort and speed options. Do not switch the main model to enact this mode. Use at most two independent read-only explorers in parallel when a task benefits from separate investigation; simple work stays local. Exploration model: {}{}{}. Give narrow questions and ask for short evidence-based summaries (at most 8 findings); do not duplicate scans, paste whole files, copy the full parent history, or spawn agents recursively. {} Preserve all user choices, approvals, sandbox rules and selected knowledge scope. This mode does not authorize external actions.\n[/Agentdeck multi-agent economy]\n", profile.explorer.model,
+    format!("\n[Agentdeck multi-agent economy]\nYou coordinate and implement with the user's selected main model, effort and speed options. Do not switch the main model to enact this mode. Use at most two independent read-only explorers in parallel when a task benefits from separate investigation; simple work stays local. Exploration model: {}{}{}. Give narrow questions, scoped paths and applicable RTK/security rules; prefer fresh context when supported. Ask for at most 8 evidence-based findings within 400 words; reuse findings until source files change. Do not duplicate scans, paste whole files, copy the full parent history, or spawn agents recursively. {} Consult at most one advisor per unresolved decision; retry only with new evidence. RTK output compression and auxiliary model routing are independent and may be used together. Preserve all user choices, approvals, sandbox rules and selected knowledge scope. This mode does not authorize external actions.\n[/Agentdeck multi-agent economy]\n", profile.explorer.model,
         if provider == "claude-code" { " (agentdeck-economy-explorer)" } else { "" },
         profile.explorer.effort.as_ref().map(|effort| format!(", reasoning_effort={effort}")).unwrap_or_default(), advisor)
 }
@@ -657,6 +657,62 @@ mod tests {
             read_overlay(&args, "--agents", "").unwrap()["agentdeck-economy-explorer"]["effort"],
             "low"
         );
+    }
+
+    #[test]
+    fn claude_routing_rtk_and_memory_capture_compose_using_effective_settings() {
+        let directory = std::env::temp_dir().join(format!(
+            "agentdeck-economy-composition-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let root = directory.to_str().unwrap();
+        let routing = profile("claude-code", &claude_models(), Some("opus"), Some("max")).unwrap();
+        let mut args = vec![
+            "--model=opus".into(),
+            "--effort=max".into(),
+            "--settings={\"first\":true}".into(),
+            "--settings".into(),
+            json!({"permissions":{"deny":["Bash(rm*)"]},"hooks":{"Stop":[{"hooks":[{"command":"user-notify"}]}]},"fastMode":true,"ultracode":true}).to_string(),
+        ];
+        let tail = ["--", "user prompt", "--settings=literal"].map(str::to_owned);
+        args.extend_from_slice(&tail);
+        configure(&routing, "claude-code", root, &mut args).unwrap();
+        let agents = read_overlay(&args, "--agents", root).unwrap();
+        crate::token_economy::write_claude_overlay(
+            root,
+            &mut args,
+            &directory.join("rtk-overlay.json"),
+        )
+        .unwrap();
+        crate::memory_capture::claude_overlay(&directory, root, root, "session", &mut args)
+            .unwrap();
+        let boundary = args.iter().position(|arg| arg == "--").unwrap();
+        let settings = read_overlay(&args[..boundary], "--settings", root).unwrap();
+        assert_eq!(&args[boundary..], &tail);
+        assert_eq!(args[0], "--model=opus");
+        assert_eq!(args[1], "--effort=max");
+        assert_eq!(args[2], "--settings={\"first\":true}");
+        assert_eq!(settings["permissions"]["deny"][0], "Bash(rm*)");
+        assert_eq!(settings["fastMode"], true);
+        assert_eq!(settings["ultracode"], true);
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "rtk hook claude"
+        );
+        assert_eq!(
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "user-notify"
+        );
+        assert!(settings["hooks"]["UserPromptSubmit"].is_array());
+        assert_eq!(
+            read_overlay(&args[..boundary], "--agents", root).unwrap(),
+            agents
+        );
+        assert!(args[..boundary]
+            .windows(2)
+            .any(|pair| pair == ["--advisor", "claude-opus-5-5"]));
+        fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn claude_native_advisor_only_for_known_explicit_compatible_main_models() {

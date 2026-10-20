@@ -315,6 +315,7 @@ fn start_runner_inner(
     };
     let launch = crate::memory_runtime::configure_launch(
         &app,
+        &expanded_dir.to_string_lossy(),
         &project_path,
         &session_id,
         &runner_type,

@@ -139,7 +139,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
 
   test("continuity rejects an oversized prompt without launching and keeps it available for editing", async ({ page }) => {
     await setup(page); await openSession(page); await seed(page, { contextWindow: 32000 });
-    const prompt = "x".repeat(120000);
+    const prompt = "x".repeat(2 * 1024 ** 2 + 1);
     await page.locator(".ad-chat-composer textarea").fill(prompt);
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.locator(".ad-chat-composer textarea")).toHaveValue(prompt);
@@ -155,7 +155,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
     const before = await state(page);
-    const prompt = "x".repeat(120000);
+    const prompt = "x".repeat(2 * 1024 ** 2 + 1);
     await page.locator(".ad-chat-composer textarea").fill(prompt);
     await page.getByRole("button", { name: "Enviar complemento", exact: true }).click();
     await expect(page.locator(".ad-chat-composer textarea")).toHaveValue(prompt);

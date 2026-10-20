@@ -9,6 +9,7 @@ import { SessionRunnerSurface } from "./session/SessionRunnerSurface";
 import { useSessionRunnerController } from "../hooks/useSessionRunnerController";
 import { AgentSessionToolbar } from "./session/AgentSessionToolbar";
 import { SessionFollowup } from "./session/SessionFollowup";
+import { ProjectCoordination } from "./session/ProjectCoordination";
 import { createAgentSessionArgs } from "../services/agentAdapters";
 import { MessageSquare, TerminalSquare } from "lucide-react";
 import { useWorkspaceStore } from "../store/workspaceStore";
@@ -466,6 +467,7 @@ function SessionPanel(props: PanelProps) {
     setNative(true); setNativeMounted(true); setAutoLaunch(true);
   };
   return <div style={{ position: props.presentation === "overlay" ? "fixed" : "absolute", inset: props.presentation === "overlay" ? "44px 6px 6px" : 0, display: props.isOpen ? "flex" : "none", flexDirection: "column", background: "var(--ci-bg)", minHeight: 0, zIndex: props.presentation === "overlay" ? 200 : 1 }}>
+    <ProjectCoordination session={session} visible={props.isOpen}/>
     <div className="ad-session-tabs" role="tablist" aria-label={c.chat}>
       <button role="tab" aria-selected={!native} disabled={session.runner.type === "gemini"} title={c.chat} onClick={() => setNative(false)}><MessageSquare size={14} />{c.chat}</button>
       <button role="tab" aria-selected={native} disabled={busy} title={busy ? c.runningSwitch : c.nativeHint} onClick={() => { setNative(true); setNativeMounted(true); }}><TerminalSquare size={14} />{c.native}</button>

@@ -225,6 +225,15 @@ impl CompletionEvidence {
         if is_child_event(record) {
             return;
         }
+        // Native JSON-RPC responses may arrive after the completion notification
+        // for that same turn. An acknowledged input already covered by that
+        // completion must not revoke it or resurrect work that has finished.
+        if record["completed_turn"] == true
+            && (record["type"] == "agentdeck.initial-delivered"
+                || (record["type"] == "agentdeck.input" && record["status"] == "accepted"))
+        {
+            return;
+        }
         match record["type"].as_str().unwrap_or("") {
             "turn.started"
             | "agentdeck.initial-delivered"

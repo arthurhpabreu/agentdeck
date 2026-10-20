@@ -359,21 +359,30 @@ pub fn merge_hooks(settings: &mut Value, provider: &str, definition: Value) -> R
 pub fn claude_overlay(
     directory: &Path,
     project: &str,
+    workdir: &str,
     session: &str,
     args: &mut Vec<String>,
 ) -> Result<(), String> {
-    let position = args
+    let boundary = args
         .iter()
-        .position(|arg| arg == "--settings" || arg.starts_with("--settings="));
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let position = args[..boundary]
+        .iter()
+        .rposition(|arg| arg == "--settings" || arg.starts_with("--settings="));
     let mut settings = if let Some(position) = position {
         let value = args[position]
             .strip_prefix("--settings=")
-            .or_else(|| args.get(position + 1).map(String::as_str))
+            .or_else(|| {
+                args.get(position + 1)
+                    .filter(|_| position + 1 < boundary)
+                    .map(String::as_str)
+            })
             .ok_or("Missing Claude settings")?;
         if value.trim_start().starts_with('{') {
             serde_json::from_str(value).map_err(|e| format!("Cannot merge Claude settings: {e}"))?
         } else {
-            let path = crate::util::resolve_path_from_workdir(project, value);
+            let path = crate::util::resolve_path_from_workdir(workdir, value);
             let mut bytes = Vec::new();
             fs::File::open(path)
                 .and_then(|file| file.take(256 * 1024 + 1).read_to_end(&mut bytes))
@@ -407,7 +416,7 @@ pub fn claude_overlay(
             args[position + 1] = value;
         }
     } else {
-        args.extend(["--settings".into(), value]);
+        args.splice(boundary..boundary, ["--settings".into(), value]);
     }
     Ok(())
 }

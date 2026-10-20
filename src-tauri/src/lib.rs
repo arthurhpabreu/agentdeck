@@ -22,6 +22,7 @@ mod multi_agent_terminal;
 pub mod native_bridge;
 mod notification;
 mod platform;
+mod project_coordination;
 mod provider_sessions;
 pub mod provider_usage;
 mod pty;
@@ -219,6 +220,9 @@ pub fn run() {
             chat::stop_chat_turn,
             chat::get_chat_turn_status,
             chat::save_chat_attachment,
+            project_coordination::coordination_sync_sessions,
+            project_coordination::coordination_call,
+            project_coordination::coordination_remove_session,
             window::focus_popup,
             window::resize_popup,
             window::resize_popup_full,

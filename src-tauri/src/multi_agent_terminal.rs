@@ -59,6 +59,10 @@ pub async fn configure(
 }
 
 fn joined(base: &str, suffix: &str) -> String {
+    // Reusing an already configured launch must not repeat the same guidance.
+    if base == suffix || base.contains(&format!("\n\n{suffix}")) {
+        return base.to_owned();
+    }
     if base.is_empty() {
         suffix.to_owned()
     } else {
@@ -66,7 +70,7 @@ fn joined(base: &str, suffix: &str) -> String {
     }
 }
 
-fn claude_suffix(cwd: &str, args: &mut Vec<String>, suffix: &str) -> Result<(), String> {
+pub(crate) fn claude_suffix(cwd: &str, args: &mut Vec<String>, suffix: &str) -> Result<(), String> {
     let flags = ["--append-system-prompt", "--append-system-prompt-file"];
     let positions: Vec<_> = args
         .iter()
@@ -275,6 +279,18 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "ação\nBASE");
         fs::remove_file(path).unwrap();
         fs::remove_dir(directory).unwrap();
+    }
+    #[test]
+    fn claude_composed_suffixes_are_not_repeated_on_launch_retry() {
+        let mut args = strings(&["--append-system-prompt", "user instructions"]);
+        claude_suffix("", &mut args, "RTK guidance").unwrap();
+        claude_suffix("", &mut args, "model routing").unwrap();
+        claude_suffix("", &mut args, "memory routing").unwrap();
+        let configured = args.clone();
+        for suffix in ["RTK guidance", "model routing", "memory routing"] {
+            claude_suffix("", &mut args, suffix).unwrap();
+        }
+        assert_eq!(args, configured);
     }
     #[test]
     fn probe_forwards_only_config_flags_and_rejects_unresolvable_profiles() {

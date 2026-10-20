@@ -324,24 +324,6 @@ fn add_claude_overlay(
     session_id: &str,
     args: &mut Vec<String>,
 ) {
-    let settings_position = args
-        .iter()
-        .position(|arg| arg == "--settings" || arg.starts_with("--settings="));
-    let mut settings = match settings_position {
-        Some(position) => {
-            let value = args[position]
-                .strip_prefix("--settings=")
-                .or_else(|| args.get(position + 1).map(String::as_str));
-            let Some(settings) = value.and_then(|value| read_settings(value, workdir)) else {
-                return;
-            };
-            settings
-        }
-        None => json!({}),
-    };
-    if merge_claude_hook(&mut settings).is_err() {
-        return;
-    }
     // Never use the caller's identifier as a path component without sanitizing it.
     let name: String = session_id
         .chars()
@@ -355,12 +337,41 @@ fn add_claude_overlay(
         "claude-{}-settings.json",
         if name.is_empty() { "session" } else { &name }
     ));
-    let Ok(bytes) = serde_json::to_vec(&settings) else {
-        return;
+    let _ = write_claude_overlay(workdir, args, &overlay);
+}
+
+pub(crate) fn write_claude_overlay(
+    workdir: &str,
+    args: &mut Vec<String>,
+    overlay: &Path,
+) -> Result<(), ()> {
+    let boundary = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    // Native flags use the last setting. Updating an earlier occurrence lets
+    // a later user overlay silently discard RTK or another integration's hooks.
+    let settings_position = args[..boundary]
+        .iter()
+        .rposition(|arg| arg == "--settings" || arg.starts_with("--settings="));
+    let mut settings = match settings_position {
+        Some(position) => {
+            let value = args[position].strip_prefix("--settings=").or_else(|| {
+                args.get(position + 1)
+                    .filter(|_| position + 1 < boundary)
+                    .map(String::as_str)
+            });
+            value
+                .and_then(|value| read_settings(value, workdir))
+                .ok_or(())?
+        }
+        None => json!({}),
     };
-    if fs::write(&overlay, bytes).is_err() {
-        return;
-    }
+    merge_claude_hook(&mut settings)?;
+    let Ok(bytes) = serde_json::to_vec(&settings) else {
+        return Err(());
+    };
+    fs::write(overlay, bytes).map_err(|_| ())?;
     let value = overlay.to_string_lossy().into_owned();
     if let Some(position) = settings_position {
         if args[position].starts_with("--settings=") {
@@ -369,25 +380,13 @@ fn add_claude_overlay(
             *argument = value;
         }
     } else {
-        args.extend(["--settings".into(), value]);
+        args.splice(boundary..boundary, ["--settings".into(), value]);
     }
+    Ok(())
 }
 
-fn add_claude_guidance(args: &mut Vec<String>, guidance: &str) {
-    if let Some(position) = args.iter().position(|arg| arg == "--append-system-prompt") {
-        if let Some(value) = args.get_mut(position + 1) {
-            value.push_str(&format!("\n\n{guidance}"));
-        }
-    } else if let Some(value) = args
-        .iter_mut()
-        .find(|arg| arg.starts_with("--append-system-prompt="))
-    {
-        value.push_str(&format!("\n\n{guidance}"));
-    } else if !args.iter().any(|arg| {
-        arg == "--append-system-prompt-file" || arg.starts_with("--append-system-prompt-file=")
-    }) {
-        args.extend(["--append-system-prompt".into(), guidance.into()]);
-    }
+fn add_claude_guidance(workdir: &str, args: &mut Vec<String>, guidance: &str) -> bool {
+    crate::multi_agent_terminal::claude_suffix(workdir, args, guidance).is_ok()
 }
 
 fn minimum_configured_limit(paths: &[PathBuf]) -> Option<u64> {
@@ -455,11 +454,12 @@ pub fn prepare_launch(
     if let Some(path) = &caps.path {
         environment.push(("AGENTDECK_RTK_PATH".into(), path.clone()));
     }
+    let mut system_guidance = false;
     if provider == "claude-code" {
         if caps.claude_hook {
             add_claude_overlay(app, workdir, session_id, args);
         }
-        add_claude_guidance(args, guidance);
+        system_guidance = add_claude_guidance(workdir, args, guidance);
     }
     if provider == "codex"
         && !args
@@ -499,7 +499,7 @@ pub fn prepare_launch(
     }
     LaunchEconomy {
         env: environment,
-        guidance: if provider == "claude-code" || !needs_guidance(provider, session_id) {
+        guidance: if system_guidance || !needs_guidance(provider, session_id) {
             String::new()
         } else {
             guidance.into()
@@ -509,7 +509,10 @@ pub fn prepare_launch(
 
 pub fn append_guidance(prompt: &mut String, guidance: &str) {
     if !guidance.is_empty() && !prompt.trim_start().starts_with('/') {
-        prompt.push_str(&format!("\n\n[Agentdeck session guidance]\n{guidance}"));
+        let suffix = format!("\n\n[Agentdeck session guidance]\n{guidance}");
+        if !prompt.contains(&suffix) {
+            prompt.push_str(&suffix);
+        }
     }
 }
 
@@ -689,6 +692,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn guidance_is_retry_safe_and_preserves_native_prompt_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "agentdeck-economy-guidance-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let original = directory.join("instructions.txt");
+        fs::write(&original, "User instructions\nAção").unwrap();
+        let tail = ["--", "--append-system-prompt=literal", "prompt"].map(str::to_owned);
+        let mut args = vec!["--append-system-prompt-file=instructions.txt".into()];
+        args.extend_from_slice(&tail);
+        assert!(add_claude_guidance(
+            directory.to_str().unwrap(),
+            &mut args,
+            GUIDANCE
+        ));
+        let configured = args.clone();
+        assert!(add_claude_guidance(
+            directory.to_str().unwrap(),
+            &mut args,
+            GUIDANCE
+        ));
+        assert_eq!(args, configured);
+        assert!(args[1].starts_with("User instructions\nAção\n\nToken economy:"));
+        assert_eq!(&args[2..], &tail);
+        assert_eq!(
+            fs::read_to_string(original).unwrap(),
+            "User instructions\nAção"
+        );
+        let mut prompt = "User context".into();
+        append_guidance(&mut prompt, GUIDANCE);
+        let once = prompt.clone();
+        append_guidance(&mut prompt, GUIDANCE);
+        assert_eq!(prompt, once);
+        let mut slash = "/compact retain goal".into();
+        append_guidance(&mut slash, GUIDANCE);
+        assert_eq!(slash, "/compact retain goal");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn claude_overlay_preserves_hooks_statusline_and_approval_settings() {
         let mut settings = json!({
             "fastMode": false, "ultracode": false,
@@ -803,7 +847,7 @@ mod tests {
             "--append-system-prompt".into(),
             "Existing user instructions".into(),
         ];
-        add_claude_guidance(&mut args, GUIDANCE);
+        assert!(add_claude_guidance("", &mut args, GUIDANCE));
         assert!(args[1].starts_with("Existing user instructions\n\n"));
         assert!(args[1].contains("saved full-output log"));
         let mut command = "/compact".to_owned();

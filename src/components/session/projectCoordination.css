@@ -1,0 +1,13 @@
+.ad-project-coordination { flex-shrink:0; position:relative; border-bottom:1px solid var(--ci-border); }
+.ad-project-coordination > button { font-size:11px; margin:2px 8px; }
+.ad-project-coordination section { max-height:42vh; overflow:auto; padding:10px 14px; font-size:12px; }
+.ad-project-coordination label { display:flex; gap:8px; align-items:center; margin:6px 0; }
+.ad-project-coordination label:has(textarea), .ad-project-coordination label:has(select) { align-items:stretch; flex-direction:column; }
+.ad-project-coordination textarea, .ad-project-coordination select { background:var(--ci-bg); color:var(--ci-text); border:1px solid var(--ci-border); border-radius:6px; padding:7px; font:inherit; width:100%; }
+.ad-project-coordination textarea { resize:vertical; }
+.ad-project-coordination ul, .ad-project-coordination ol { list-style:none; padding:0; }
+.ad-project-coordination li { padding:7px 0; border-bottom:1px solid var(--ci-border); overflow-wrap:anywhere; }
+.ad-project-coordination li > button { background:none; color:var(--ci-text); border:0; cursor:pointer; text-decoration:underline; }
+.ad-project-coordination small { opacity:.7; margin-inline-start:6px; }
+.ad-project-coordination p { white-space:pre-wrap; margin:5px 0; }
+.ad-project-coordination code { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.6; font-size:10px; }

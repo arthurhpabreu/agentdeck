@@ -267,6 +267,85 @@ fn codex_supports_no_daemon(command: &str) -> bool {
     supported
 }
 
+fn gemini_supports_session_id(command: &str) -> bool {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(known) = cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(command)
+        .copied()
+    {
+        return known;
+    }
+    let supported = crate::cli_updates::run_bounded(
+        command,
+        &["--help".into()],
+        std::time::Duration::from_secs(8),
+    )
+    .is_ok_and(|help| help.contains("--session-id"));
+    cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(command.into(), supported);
+    supported
+}
+
+/// Bind only explicit native IDs. A cwd or `--resume latest` is not an identity.
+fn gemini_session_id(args: &mut Vec<String>, supports_creation: bool) -> Option<String> {
+    let valid = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 180
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    let boundary = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let options = &args[..boundary];
+    for (index, arg) in options.iter().enumerate() {
+        if arg == "--session-id" || arg.starts_with("--session-id=") {
+            return arg
+                .strip_prefix("--session-id=")
+                .or_else(|| options.get(index + 1).map(String::as_str))
+                .filter(|value| valid(value))
+                .map(str::to_string);
+        }
+        if arg == "--resume"
+            || arg == "-r"
+            || arg.starts_with("--resume=")
+            || (arg.starts_with("-r") && !arg.starts_with("--"))
+        {
+            let value = arg
+                .strip_prefix("--resume=")
+                .or_else(|| {
+                    if arg.len() > 2 && arg.starts_with("-r") && !arg.starts_with("--") {
+                        Some(arg[2..].trim_start_matches('='))
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| options.get(index + 1).map(String::as_str))?;
+            return (valid(value)
+                && value != "latest"
+                && !value.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| value.into());
+        }
+        if arg == "--session-file" || arg.starts_with("--session-file=") {
+            return None;
+        }
+    }
+    if !supports_creation {
+        return None;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    args.splice(boundary..boundary, ["--session-id".into(), id.clone()]);
+    Some(id)
+}
+
 // ── Tauri Commands ────────────────────────────────────────────────
 
 /// Start a PTY session.
@@ -318,6 +397,16 @@ pub async fn start_pty_session(
         });
 
     let mut args = args;
+    let gemini_native_id = if runner_type == "gemini" {
+        let resolved = resolve_command_path(&command);
+        let supported =
+            tauri::async_runtime::spawn_blocking(move || gemini_supports_session_id(&resolved))
+                .await
+                .unwrap_or(false);
+        gemini_session_id(&mut args, supported)
+    } else {
+        None
+    };
     let (selected_model, selected_effort) = crate::multi_agent::selection(&runner_type, &args);
     let multi_agent = crate::multi_agent::prepare(
         &app,
@@ -384,6 +473,7 @@ pub async fn start_pty_session(
     );
     let memory_launch = crate::memory_runtime::configure_launch(
         &app,
+        &expanded,
         &project_path,
         &session_id,
         &runner_type,
@@ -573,6 +663,11 @@ pub async fn start_pty_session(
         .map_err(|e| crate::i18n::interface_text(&app, "native.ptyStart", &e.to_string()))?;
 
     let pid = child.process_id();
+    if let Some(provider_session_id) = gemini_native_id {
+        let _ = app.emit("provider-session-bound", serde_json::json!({
+            "session_id": session_id, "runner_type": "gemini", "provider_session_id": provider_session_id,
+        }));
+    }
     if delivered_guidance {
         crate::token_economy::mark_guidance_delivered(&runner_type, &session_id);
     }
@@ -1096,6 +1191,74 @@ mod unix_tests {
                 .unwrap();
         assert!(output.contains("AGENTDECK_PTY_OK café"), "{output:?}");
         std::fs::remove_dir(workdir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod gemini_binding_tests {
+    use super::gemini_session_id;
+
+    #[test]
+    fn literal_prompt_after_the_options_boundary_is_preserved_and_never_bound_as_an_id() {
+        let mut args: Vec<String> = [
+            "--model",
+            "gemini-test",
+            "--",
+            "--resume",
+            "literal-id",
+            "--session-id=literal-prompt",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let original = args.clone();
+        assert!(gemini_session_id(&mut args, false).is_none());
+        assert_eq!(args, original);
+        let id = gemini_session_id(&mut args, true).unwrap();
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        assert_eq!(&args[..4], &["--model", "gemini-test", "--session-id", &id]);
+        assert_eq!(&args[4..], &original[2..]);
+        let mut missing: Vec<String> = ["--resume", "--", "prompt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let original = missing.clone();
+        assert!(gemini_session_id(&mut missing, true).is_none());
+        assert_eq!(missing, original);
+    }
+
+    #[test]
+    fn fresh_sessions_get_distinct_native_ids_only_if_the_installed_cli_supports_them() {
+        let mut args = vec!["--model".into(), "gemini-test".into()];
+        assert!(gemini_session_id(&mut args, false).is_none());
+        assert_eq!(args.len(), 2);
+        let id = gemini_session_id(&mut args, true).unwrap();
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        assert_eq!(
+            gemini_session_id(&mut args, true).as_deref(),
+            Some(id.as_str())
+        );
+        assert_ne!(gemini_session_id(&mut Vec::new(), true).unwrap(), id);
+    }
+
+    #[test]
+    fn native_resume_ids_are_preserved_and_latest_indices_or_files_are_never_guessed() {
+        for args in [
+            vec!["--resume", "latest"],
+            vec!["-r", "5"],
+            vec!["--session-file", "saved.json"],
+        ] {
+            let mut args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            let original = args.clone();
+            assert!(gemini_session_id(&mut args, true).is_none());
+            assert_eq!(args, original);
+        }
+        let mut explicit = vec!["--resume=known-native-id".into()];
+        assert_eq!(
+            gemini_session_id(&mut explicit, false).as_deref(),
+            Some("known-native-id")
+        );
+        assert_eq!(explicit.len(), 1);
     }
 }
 

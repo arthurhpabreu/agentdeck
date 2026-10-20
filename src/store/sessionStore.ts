@@ -47,6 +47,7 @@ export interface ClaudeSession {
   baseBranch?: string;     // Base branch at task start (for example, main/master).
   worktreePath?: string;   // Git worktree path.
   providerSessionId?: string; // Bound native provider session ID, used by Codex/Claude resume.
+  coordinationEnabled?: boolean;
 }
 
 interface SessionStore {

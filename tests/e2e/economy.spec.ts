@@ -172,6 +172,61 @@ test("model distribution works without RTK and saves its own global toggle witho
   await expect(toggle).not.toBeChecked();
 });
 
+test("RTK and model distribution remain independent in all four combinations", async ({ page }) => {
+  await setupEconomy(page);
+  const panel = page.getByRole("dialog", { name: "Economia de tokens" });
+  const rtk = panel.getByRole("switch", { name: "Economia em todas as conversas" });
+  const multi = panel.getByRole("switch", { name: "Distribuir tarefas entre modelos" });
+  const trigger = page.getByRole("button", { name: "Economia de tokens", exact: true });
+  await expect(panel).toContainText("As duas opções são independentes e podem ficar ligadas juntas");
+  await expect(rtk).toBeChecked();
+  await expect(multi).toBeChecked();
+  await rtk.click();
+  await expect(rtk).not.toBeChecked();
+  await expect(multi).toBeChecked();
+  await expect(trigger.locator("small")).toHaveText("RTK Desligada");
+  await expect(trigger).toHaveAttribute("data-enabled", "true");
+  await multi.click();
+  await expect(rtk).not.toBeChecked();
+  await expect(multi).not.toBeChecked();
+  await expect(trigger).toHaveAttribute("data-enabled", "false");
+  await rtk.click();
+  await expect(rtk).toBeChecked();
+  await expect(multi).not.toBeChecked();
+  await expect(trigger.locator("small")).toHaveText("RTK Ligada");
+  await multi.click();
+  await expect(rtk).toBeChecked();
+  await expect(multi).toBeChecked();
+  expect(await page.evaluate(() => (window as any).__economyCalls.filter((call: any) => ["set_token_economy_enabled", "set_multi_agent_enabled"].includes(call.command)).map((call: any) => [call.command, call.args.enabled]))).toEqual([
+    ["set_token_economy_enabled", false], ["set_multi_agent_enabled", false],
+    ["set_token_economy_enabled", true], ["set_multi_agent_enabled", true],
+  ]);
+});
+
+test("an obsolete RTK query cannot revert a setting synchronized from another window", async ({ page }) => {
+  await setupEconomy(page);
+  const toggle = page.getByRole("switch", { name: "Economia em todas as conversas" });
+  const enabled = await page.evaluate(async () => {
+    const path = "/src/store/tokenEconomyStore.ts";
+    const { useTokenEconomyStore } = await import(/* @vite-ignore */ path);
+    const w = window as any, invoke = w.__TAURI_INTERNALS__.invoke;
+    let release: (() => void) | undefined;
+    w.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
+      const result = await invoke(command, args);
+      if (command === "get_token_economy_status" && args.scope === "project") await new Promise<void>(resolve => { release = resolve; });
+      return result;
+    };
+    const pending = useTokenEconomyStore.getState().refresh(true, "C:\\Delayed project", "project");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    w.__economyEmit("token-economy-changed", { enabled: false });
+    release!();
+    await pending;
+    return Object.values(useTokenEconomyStore.getState().entries).filter((entry: any) => entry.status).map((entry: any) => entry.status.enabled);
+  });
+  expect(enabled).toEqual([false]);
+  await expect(toggle).not.toBeChecked();
+});
+
 test("economy preserves the selected main model, effort, Fast and Ultra in the actual chat request", async ({ page }) => {
   await setupEconomy(page);
   const section = page.getByRole("region", { name: "Distribuição de modelos" });

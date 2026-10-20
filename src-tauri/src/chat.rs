@@ -29,8 +29,9 @@ use protocol::{bounded_text, ChatEvent, ChatParser};
 const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 40 * 1024 * 1024;
 const MAX_ATTACHMENTS: usize = 12;
-const MAX_PROTOCOL_LINE: usize = 2 * 1024 * 1024;
-const MAX_PROMPT_BYTES: usize = 256 * 1024;
+// A 2 MiB prompt can expand up to sixfold when JSON escapes control characters.
+const MAX_PROTOCOL_LINE: usize = 16 * 1024 * 1024;
+const MAX_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_KNOWLEDGE_CONTEXT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -200,8 +201,14 @@ impl CompletionShutdown {
         false
     }
 
-    fn successful_exit(&self, exited_successfully: bool, failed: bool, cancelled: bool) -> bool {
-        !failed && !cancelled && (self.cleaned || exited_successfully)
+    fn successful_exit(
+        &self,
+        exited_successfully: bool,
+        native_completed: bool,
+        failed: bool,
+        cancelled: bool,
+    ) -> bool {
+        !failed && !cancelled && (self.cleaned || (exited_successfully && native_completed))
     }
 }
 
@@ -348,7 +355,7 @@ fn validate_request(request: &ChatTurnRequest) -> Result<(), String> {
         return Err("Readable chat is available for Codex and Claude Code.".into());
     }
     if request.prompt.len() > MAX_PROMPT_BYTES {
-        return Err("The message is too large. Attach a file instead.".into());
+        return Err(format!("The message contains {} UTF-8 bytes; the limit is {} bytes (2 MiB). Attach a file for larger context.", request.prompt.len(), MAX_PROMPT_BYTES));
     }
     if request.prompt.trim().is_empty() && request.attachments.is_empty() {
         return Err("Write a message or attach a file.".into());
@@ -593,9 +600,12 @@ fn read_output(reader: impl Read, stdout: bool, sender: SyncSender<ProcessOutput
         let buffer = match reader.fill_buf() {
             Ok(buffer) if !buffer.is_empty() => buffer,
             Err(error) => {
-                let _ = sender.send(ProcessOutput::Warning(format!(
-                    "Provider output could not be read: {error}"
-                )));
+                let text = format!("Provider output could not be read: {error}");
+                let _ = sender.send(if stdout {
+                    ProcessOutput::Failure(text)
+                } else {
+                    ProcessOutput::Warning(text)
+                });
                 break;
             }
             _ => break,
@@ -612,9 +622,7 @@ fn read_output(reader: impl Read, stdout: bool, sender: SyncSender<ProcessOutput
         reader.consume(consumed);
         if newline.is_some() {
             let output = if oversized {
-                ProcessOutput::Warning(
-                    "A large tool output was omitted from the conversation.".into(),
-                )
+                oversized_output(stdout)
             } else {
                 let text = String::from_utf8_lossy(&line)
                     .trim_end_matches(['\r', '\n'])
@@ -633,9 +641,7 @@ fn read_output(reader: impl Read, stdout: bool, sender: SyncSender<ProcessOutput
         }
     }
     if oversized {
-        let _ = sender.send(ProcessOutput::Warning(
-            "A large tool output was omitted from the conversation.".into(),
-        ));
+        let _ = sender.send(oversized_output(stdout));
     } else if !line.is_empty() {
         let text = String::from_utf8_lossy(&line).into_owned();
         let _ = sender.send(if stdout {
@@ -645,6 +651,16 @@ fn read_output(reader: impl Read, stdout: bool, sender: SyncSender<ProcessOutput
         });
     }
     let _ = sender.send(ProcessOutput::Closed);
+}
+
+fn oversized_output(stdout: bool) -> ProcessOutput {
+    if stdout {
+        // A discarded JSONL record may be a turn ACK or completion, not merely
+        // display output. Continuing would leave the chat waiting forever.
+        ProcessOutput::Failure(format!("A provider protocol record exceeded {} bytes (16 MiB). The conversation is preserved, but delivery or completion could not be confirmed. Check the native conversation before retrying.", MAX_PROTOCOL_LINE))
+    } else {
+        ProcessOutput::Warning("A large provider diagnostic was omitted.".into())
+    }
 }
 
 fn emit_event(app: &tauri::AppHandle, provider: &str, event: ChatEvent) {
@@ -804,6 +820,7 @@ pub async fn start_chat_turn(
     );
     if let Err(error) = crate::memory_runtime::configure_launch(
         &app,
+        &request.workdir,
         &project_path,
         &request.session_id,
         &request.runner_type,
@@ -949,7 +966,9 @@ pub async fn start_chat_turn(
             &serde_json::json!({"hook_event_name":"UserPromptSubmit","event_id":request.turn_id,"prompt":original_prompt}),
         ),
     );
-    let (sender, receiver) = mpsc::sync_channel(128);
+    // Bound queued output bytes to the previous 256 MiB worst case even with
+    // larger JSONL frames needed for long additional messages.
+    let (sender, receiver) = mpsc::sync_channel(16);
     let sender_out = sender.clone();
     std::thread::spawn(move || read_output(stdout, true, sender_out));
     let sender_err = sender.clone();
@@ -1182,6 +1201,17 @@ pub async fn start_chat_turn(
                 Ok(ProcessOutput::Closed) => closed += 1,
                 Err(_) => {}
             }
+            if !parser.failed {
+                let transport_error = process
+                    .input
+                    .lock()
+                    .ok()
+                    .and_then(|input| input.transport_error());
+                if let Some(error) = transport_error {
+                    parser.failed = true;
+                    emit_event(&app, &request.runner_type, parser.message("error", &error));
+                }
+            }
             if !parser.failed && !process.cancelled.load(Ordering::SeqCst) && exit.is_none() {
                 if let Some(reason) = watchdog.observe(
                     live.phase(),
@@ -1224,11 +1254,7 @@ pub async fn start_chat_turn(
                     // Completion is already confirmed by the native protocol;
                     // only stop a transport that ignored the closed input pipe.
                     termination_requested = true;
-                    if request.runner_type == "claude-code" {
-                        kill_transport(&process);
-                    } else {
-                        kill_process(&process);
-                    }
+                    kill_transport(&process);
                 }
             }
             if let Some(notice) =
@@ -1276,8 +1302,15 @@ pub async fn start_chat_turn(
             }
         }
         let cancelled = process.cancelled.load(Ordering::SeqCst);
+        let drained = process
+            .input
+            .lock()
+            .map(|input| input.completion_drained())
+            .unwrap_or(false);
+        let native_completed = notification_evidence.confirmed(true, drained, live.compacting());
         let successful_exit = completion_shutdown.successful_exit(
             exit.is_some_and(|status| status.success()),
+            native_completed,
             parser.failed,
             cancelled,
         );
@@ -1289,6 +1322,16 @@ pub async fn start_chat_turn(
                 stderr_tail
             };
             emit_event(&app, &request.runner_type, parser.message("error", &detail));
+        }
+        if cancelled || parser.failed {
+            if let Ok(mut input) = process.input.lock() {
+                for (id, reason) in input.abort() {
+                    let mut event = parser.message("input", reason);
+                    event.item_id = Some(id);
+                    event.status = Some("failed".into());
+                    emit_event(&app, &request.runner_type, event);
+                }
+            }
         }
         let final_status = if cancelled {
             "stopped"
@@ -1510,21 +1553,100 @@ pub fn uses_workdir(app: &tauri::AppHandle, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn codex_successful_transport_cleanup_preserves_intentional_background_work() {
+        let prefix =
+            std::env::temp_dir().join(format!("agentdeck-completion-{}", uuid::Uuid::new_v4()));
+        let ready = prefix.with_extension("ready");
+        let release = prefix.with_extension("release");
+        let done = prefix.with_extension("done");
+        let quoted = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "''"));
+        let encode = |script: &str| {
+            STANDARD.encode(
+                script
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let child_script = format!(
+            "[IO.File]::WriteAllText({},'ready'); $until = [DateTime]::UtcNow.AddSeconds(10); while (!(Test-Path -LiteralPath {}) -and [DateTime]::UtcNow -lt $until) {{ Start-Sleep -Milliseconds 20 }}; if (Test-Path -LiteralPath {}) {{ [IO.File]::WriteAllText({},'completed') }}",
+            quoted(&ready), quoted(&release), quoted(&release), quoted(&done),
+        );
+        let parent_script = format!(
+            "Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','{}') | Out-Null; Start-Sleep -Seconds 15",
+            encode(&child_script),
+        );
+        let mut child = background_command("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                &encode(&parent_script),
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let process = ChatProcess {
+            turn_id: "completed".into(),
+            provider: "codex".into(),
+            project_path: String::new(),
+            workdir: String::new(),
+            input: Mutex::new(live::LiveInput::new(
+                child.stdin.take().unwrap(),
+                true,
+                false,
+            )),
+            child: Mutex::new(child),
+            cancelled: AtomicBool::new(false),
+            last_output_at: AtomicU64::new(0),
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let started = ready.exists();
+        kill_transport(&process);
+        let _ = process.child.lock().unwrap().wait();
+        fs::write(&release, "continue").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let completed = fs::read_to_string(&done).ok();
+        for path in [&ready, &release, &done] {
+            let _ = fs::remove_file(path);
+        }
+        assert!(started, "The background fixture never started");
+        assert_eq!(
+            completed.as_deref(),
+            Some("completed"),
+            "Successful Codex cleanup terminated intentional background work"
+        );
+        assert!(!process.cancelled.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn confirmed_completion_cleanup_waits_for_all_acknowledgements_and_preserves_failures() {
         let mut shutdown = CompletionShutdown::default();
         // A top-level completion with pending input has no confirmed completion.
         assert!(!shutdown.observe("codex", false, Duration::from_secs(3600)));
-        assert!(!shutdown.successful_exit(false, false, false));
+        assert!(!shutdown.successful_exit(false, false, false, false));
+        // A CLI that exits zero without a native completion is incomplete.
+        assert!(!shutdown.successful_exit(true, false, false, false));
+        assert!(shutdown.successful_exit(true, true, false, false));
         assert!(!shutdown.observe("codex", true, Duration::from_secs(3600)));
         assert!(!shutdown.observe("codex", true, Duration::from_secs(3609)));
         assert!(shutdown.observe("codex", true, Duration::from_secs(3610)));
-        assert!(shutdown.successful_exit(false, false, false));
-        assert!(!shutdown.successful_exit(false, true, false));
-        assert!(!shutdown.successful_exit(true, false, true));
+        assert!(shutdown.successful_exit(false, true, false, false));
+        assert!(!shutdown.successful_exit(false, true, true, false));
+        assert!(!shutdown.successful_exit(true, true, false, true));
         // A late protocol failure or newly pending input invalidates cleanup.
         assert!(!shutdown.observe("codex", false, Duration::from_secs(3611)));
-        assert!(!shutdown.successful_exit(false, false, false));
+        assert!(!shutdown.successful_exit(false, true, false, false));
         assert!(!shutdown.observe("codex", true, Duration::from_secs(3612)));
         assert!(!shutdown.observe("codex", true, Duration::from_secs(3621)));
         assert!(shutdown.observe("codex", true, Duration::from_secs(3622)));
@@ -1827,10 +1949,41 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(8);
         read_output(data.as_bytes(), true, sender);
         let outputs: Vec<_> = receiver.try_iter().collect();
-        assert!(matches!(&outputs[0], ProcessOutput::Warning(_)));
+        assert!(
+            matches!(&outputs[0], ProcessOutput::Failure(text) if text.contains("protocol record") && text.contains("preserved"))
+        );
         assert!(
             matches!(&outputs[1], ProcessOutput::Stdout(line) if line.contains("turn.started"))
         );
         assert!(matches!(&outputs[2], ProcessOutput::Closed));
+    }
+
+    #[test]
+    fn large_prompts_use_utf8_bytes_and_provider_echoes_stay_parseable() {
+        for provider in ["codex", "claude-code"] {
+            let mut request = request(provider);
+            request.prompt = "é".repeat(MAX_PROMPT_BYTES / 2);
+            validate_request(&request).unwrap();
+            assert_eq!(request.prompt.len(), MAX_PROMPT_BYTES);
+            request.prompt.push('x');
+            assert!(validate_request(&request)
+                .unwrap_err()
+                .contains("2097153 UTF-8 bytes"));
+        }
+        // Control characters have the highest JSON expansion. A provider echo
+        // of a valid prompt must fit even when every character needs escaping.
+        let prompt = "\u{1}".repeat(MAX_PROMPT_BYTES);
+        let record = serde_json::json!({"type":"user","message":{"content":[{"type":"text","text":prompt}]}}).to_string();
+        assert!(record.len() < MAX_PROTOCOL_LINE);
+        let (sender, receiver) = mpsc::sync_channel(4);
+        read_output(record.as_bytes(), true, sender);
+        let output = receiver.recv().unwrap();
+        match output {
+            ProcessOutput::Stdout(line) => {
+                let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(value["message"]["content"][0]["text"], prompt);
+            }
+            _ => panic!("A valid prompt echo was discarded"),
+        }
     }
 }

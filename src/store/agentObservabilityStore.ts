@@ -10,6 +10,10 @@ export interface AgentToolEvent {
   timestamp?: string;
   parentId?: string;
   input?: string;
+  delegatedAgentId?: string;
+  delegatedRole?: string;
+  delegatedName?: string;
+  delegatedStatus?: string;
 }
 
 export interface ObservedAgent {

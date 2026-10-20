@@ -137,3 +137,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 @keyframes ad-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; } }
 @media (max-width: 1050px) { .ad-welcome { padding: 20px; } .ad-welcome h2 { font-size: 20px; } }
+
+/* Avoid intrinsic sizing of every line when pasting a large context block. */
+.ad-composer .has-large-draft textarea { field-sizing: fixed; height: 180px; }

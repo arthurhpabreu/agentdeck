@@ -5,12 +5,105 @@ use std::{
     collections::{HashMap, VecDeque},
     io::Write,
     process::ChildStdin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{self, SyncSender, TrySendError},
+        Arc, Mutex,
+    },
 };
+
+const MAX_QUEUED_INPUT_BYTES: usize = 96 * 1024 * 1024;
+
+// Never write to a potentially full provider pipe while holding LiveInput's
+// mutex. The output worker also needs that mutex to drain provider responses.
+// Keeping pipe IO on its own thread prevents a large steer and verbose tool
+// output from blocking each other indefinitely.
+struct PipeWriter {
+    sender: SyncSender<Vec<u8>>,
+    pending_bytes: Arc<AtomicUsize>,
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+impl PipeWriter {
+    fn new(mut writer: impl Write + Send + 'static) -> Self {
+        let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(32);
+        let pending_bytes = Arc::new(AtomicUsize::new(0));
+        let failure = Arc::new(Mutex::new(None));
+        let remaining = pending_bytes.clone();
+        let failed = failure.clone();
+        std::thread::spawn(move || {
+            while let Ok(bytes) = receiver.recv() {
+                let result = writer.write_all(&bytes).and_then(|_| writer.flush());
+                remaining.fetch_sub(bytes.len(), Ordering::Relaxed);
+                if let Err(error) = result {
+                    if let Ok(mut failure) = failed.lock() {
+                        *failure = Some(format!("Could not write to the provider: {error}. Delivery of pending messages is unconfirmed; check the native conversation before retrying."));
+                    }
+                    break;
+                }
+            }
+        });
+        Self {
+            sender,
+            pending_bytes,
+            failure,
+        }
+    }
+}
+
+impl Write for PipeWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if let Some(error) = self.failure.lock().ok().and_then(|failure| failure.clone()) {
+            return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, error));
+        }
+        self.pending_bytes
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+                pending
+                    .checked_add(bytes.len())
+                    .filter(|total| *total <= MAX_QUEUED_INPUT_BYTES)
+            })
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::WouldBlock,
+            "The provider input queue is full (96 MiB). Wait for pending messages before retrying.")
+            })?;
+        match self.sender.try_send(bytes.to_vec()) {
+            Ok(()) => Ok(bytes.len()),
+            Err(error) => {
+                self.pending_bytes.fetch_sub(bytes.len(), Ordering::Relaxed);
+                let (kind, message) = match error {
+                    TrySendError::Full(_) => (
+                        std::io::ErrorKind::WouldBlock,
+                        "The provider input queue is full. Wait before retrying.",
+                    ),
+                    TrySendError::Disconnected(_) => (
+                        std::io::ErrorKind::BrokenPipe,
+                        "The provider input stream has closed.",
+                    ),
+                };
+                Err(std::io::Error::new(kind, message))
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 struct Message {
     id: String,
     input: Value,
+    bytes: usize,
+}
+impl Message {
+    fn new(id: &str, input: Value) -> Self {
+        let bytes = input.to_string().len();
+        Self {
+            id: id.into(),
+            input,
+            bytes,
+        }
+    }
 }
 #[derive(Default)]
 struct ClaudeMessage {
@@ -22,6 +115,8 @@ pub(super) struct LiveInput {
     codex: bool,
     thread: Option<String>,
     turn: Option<String>,
+    completed_turn: Option<String>,
+    initial_pending: bool,
     sequence: u64,
     queued: VecDeque<Message>,
     pending: HashMap<u64, Message>,
@@ -30,12 +125,14 @@ pub(super) struct LiveInput {
     claude_messages: HashMap<String, ClaudeMessage>,
     started: bool,
     compacting: bool,
+    transport_failure: Arc<Mutex<Option<String>>>,
 }
 impl LiveInput {
     pub fn completion_drained(&self) -> bool {
         self.writer.is_none()
             && self.queued.is_empty()
             && self.pending.is_empty()
+            && !self.initial_pending
             && (self.codex || self.claude_pending == 0)
     }
     pub fn abort(&mut self) -> Vec<(String, &'static str)> {
@@ -58,9 +155,22 @@ impl LiveInput {
         unconfirmed
     }
     pub fn new(stdin: ChildStdin, codex: bool, compacting: bool) -> Self {
-        let mut input = Self::with_writer(Box::new(stdin), codex);
+        let mut input = Self::with_buffered_writer(stdin, codex);
         input.compacting = compacting;
         input
+    }
+    fn with_buffered_writer(writer: impl Write + Send + 'static, codex: bool) -> Self {
+        let writer = PipeWriter::new(writer);
+        let failure = writer.failure.clone();
+        let mut input = Self::with_writer(Box::new(writer), codex);
+        input.transport_failure = failure;
+        input
+    }
+    pub fn transport_error(&self) -> Option<String> {
+        self.transport_failure
+            .lock()
+            .ok()
+            .and_then(|failure| failure.clone())
     }
     fn with_writer(writer: Box<dyn Write + Send>, codex: bool) -> Self {
         Self {
@@ -68,6 +178,8 @@ impl LiveInput {
             codex,
             thread: None,
             turn: None,
+            completed_turn: None,
+            initial_pending: false,
             sequence: 100,
             queued: VecDeque::new(),
             pending: HashMap::new(),
@@ -76,6 +188,7 @@ impl LiveInput {
             claude_messages: HashMap::new(),
             started: false,
             compacting: false,
+            transport_failure: Arc::new(Mutex::new(None)),
         }
     }
     pub fn write_text(&mut self, text: &str) -> Result<(), String> {
@@ -98,7 +211,7 @@ impl LiveInput {
         if self.writer.is_none() {
             return Err("This response has already ended".into());
         }
-        if self.queued.len() + self.pending.len() + self.claude_pending > 24 {
+        if self.queued.len() + self.pending.len() + self.claude_pending >= 24 {
             return Err("Too many additional messages in flight".into());
         }
         if !self.codex {
@@ -106,10 +219,9 @@ impl LiveInput {
                 serde_json::from_str(&build_input(request)?).map_err(|e| e.to_string())?;
             input["uuid"] = json!(id);
             if self.compacting {
-                self.queued.push_back(Message {
-                    id: id.into(),
-                    input,
-                });
+                let message = Message::new(id, input);
+                self.check_message_capacity(&message)?;
+                self.queued.push_back(message);
                 return Ok("queued");
             }
             self.write(input)?;
@@ -118,10 +230,8 @@ impl LiveInput {
             self.update_claude_pending();
             return Ok("queued");
         }
-        let message = Message {
-            id: id.into(),
-            input: codex_input(request)?,
-        };
+        let message = Message::new(id, codex_input(request)?);
+        self.check_message_capacity(&message)?;
         if let (Some(thread), Some(turn)) = (self.thread.clone(), self.turn.clone()) {
             self.sequence += 1;
             let rpc = self.sequence;
@@ -132,6 +242,21 @@ impl LiveInput {
             self.queued.push_back(message);
             Ok("queued")
         }
+    }
+    fn check_message_capacity(&self, message: &Message) -> Result<(), String> {
+        let pending: usize = self
+            .queued
+            .iter()
+            .chain(self.pending.values())
+            .map(|message| message.bytes)
+            .sum();
+        if pending.saturating_add(message.bytes) > MAX_QUEUED_INPUT_BYTES {
+            return Err(
+                "Additional messages exceed the 96 MiB input queue limit. Wait before retrying."
+                    .into(),
+            );
+        }
+        Ok(())
     }
     fn update_claude_pending(&mut self) {
         self.claude_pending = usize::from(self.claude_initial_pending) + self.claude_messages.len();
@@ -170,13 +295,20 @@ impl LiveInput {
         self.update_claude_pending();
     }
     fn start_queued(&mut self) -> Result<(), String> {
-        if self.compacting || self.turn.is_some() || !self.pending.is_empty() {
+        if self.compacting
+            || self.turn.is_some()
+            || self.initial_pending
+            || !self.pending.is_empty()
+        {
             return Ok(());
         }
         if let Some(message) = self.queued.pop_front() {
             self.sequence += 1;
             let rpc = self.sequence;
-            self.write(json!({"id":rpc,"method":"turn/start","params":{"threadId":self.thread,"input":message.input}}))?;
+            if let Err(error) = self.write(json!({"id":rpc,"method":"turn/start","params":{"threadId":self.thread,"input":message.input}})) {
+                self.queued.push_front(message);
+                return Err(error);
+            }
             self.pending.insert(rpc, message);
         } else if self.started {
             self.writer.take();
@@ -569,7 +701,10 @@ impl LiveProtocol {
                     self.claude_state = Some("running".into());
                 }
                 while let Some(message) = input.queued.pop_front() {
-                    input.write(message.input)?;
+                    if let Err(error) = input.write(message.input.clone()) {
+                        input.queued.push_front(message);
+                        return Err(error);
+                    }
                     input
                         .claude_messages
                         .insert(message.id, ClaudeMessage::default());
@@ -704,22 +839,34 @@ impl LiveProtocol {
                 if !record["error"].is_null() {
                     return Err(error_message(record));
                 }
-                input.turn = record["result"]["turn"]["id"].as_str().map(str::to_owned);
+                let turn = record["result"]["turn"]["id"]
+                    .as_str()
+                    .ok_or("Codex did not return an active turn ID")?;
+                input.initial_pending = false;
+                if input.completed_turn.as_deref() != Some(turn) {
+                    input.turn = Some(turn.into());
+                }
                 input.started = true;
                 self.phase = ProtocolPhase::Running;
-                if input.turn.is_none() {
-                    return Err("Codex did not return an active turn ID".into());
+                out.push(json!({"type":"agentdeck.initial-delivered","completed_turn":input.completed_turn.as_deref() == Some(turn)}));
+                if input.turn.is_some() {
+                    self.drain_steers(input)?;
+                } else {
+                    input.start_queued()?;
+                    if !input.pending.is_empty() {
+                        self.phase = ProtocolPhase::StartingTurn;
+                    }
                 }
-                out.push(json!({"type":"agentdeck.initial-delivered"}));
-                self.drain_steers(input)?;
             } else if let Some(message) = input.pending.remove(&id) {
                 if record["error"].is_null() {
                     if let Some(turn) = record["result"]["turn"]["id"].as_str() {
-                        input.turn = Some(turn.into());
-                        self.phase = ProtocolPhase::Running;
-                        self.drain_steers(input)?;
+                        if input.completed_turn.as_deref() != Some(turn) {
+                            input.turn = Some(turn.into());
+                            self.phase = ProtocolPhase::Running;
+                            self.drain_steers(input)?;
+                        }
                     }
-                    out.push(json!({"type":"agentdeck.input","message_id":message.id,"status":"accepted"}));
+                    out.push(json!({"type":"agentdeck.input","message_id":message.id,"status":"accepted","completed_turn":input.turn.is_none() && input.completed_turn.is_some()}));
                 } else {
                     let error = error_message(record);
                     let lower = error.to_lowercase();
@@ -868,7 +1015,7 @@ impl LiveProtocol {
                 if params["turn"]["status"]=="failed" {out.push(json!({"type":"error","message":params["turn"]["error"]["message"].as_str().unwrap_or("Codex turn failed")}));}
                 self.totals=sum_usage(&self.totals,&self.usage);self.usage=json!({});
                 out.push(json!({"type":"turn.completed","status":params["turn"]["status"],"usage":self.totals}));
-                if input.turn.as_deref()==params["turn"]["id"].as_str(){input.turn=None;}
+                if input.turn.as_deref()==params["turn"]["id"].as_str(){input.completed_turn=input.turn.take();}
                 input.start_queued()?;
                 if input.turn.is_none() && !input.pending.is_empty() {self.phase=ProtocolPhase::StartingTurn;}
             }
@@ -881,6 +1028,7 @@ impl LiveProtocol {
     }
     fn start_initial(&mut self, input: &mut LiveInput) -> Result<(), String> {
         input.write(json!({"id":3,"method":"turn/start","params":{"threadId":input.thread,"input":codex_input(&self.request)?}}))?;
+        input.initial_pending = true;
         self.phase = ProtocolPhase::StartingTurn;
         Ok(())
     }
@@ -888,7 +1036,10 @@ impl LiveProtocol {
         while let Some(message) = input.queued.pop_front() {
             input.sequence += 1;
             let id = input.sequence;
-            input.write(json!({"id":id,"method":"turn/steer","params":{"threadId":input.thread,"expectedTurnId":input.turn,"input":message.input}}))?;
+            if let Err(error) = input.write(json!({"id":id,"method":"turn/steer","params":{"threadId":input.thread,"expectedTurnId":input.turn,"input":message.input}})) {
+                input.queued.push_front(message);
+                return Err(error);
+            }
             input.pending.insert(id, message);
         }
         Ok(())
@@ -1056,6 +1207,197 @@ mod tests {
     }
     fn written(bytes: &Arc<Mutex<Vec<u8>>>) -> String {
         String::from_utf8(bytes.lock().unwrap().clone()).unwrap()
+    }
+
+    struct BlockedSink {
+        started: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl Write for BlockedSink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let _ = self.started.send(());
+            self.release
+                .recv()
+                .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn blocked_stdin_does_not_block_large_additions_or_native_output() {
+        let mut req = super::super::tests::request("codex");
+        req.prompt = "ação 🦀\n".repeat(30_000);
+        super::super::validate_request(&req).unwrap();
+        let (started, writing) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let input = Arc::new(Mutex::new(LiveInput::with_buffered_writer(
+            BlockedSink {
+                started,
+                release: released,
+            },
+            true,
+        )));
+        {
+            let mut input = input.lock().unwrap();
+            input.thread = Some("thread".into());
+            input.turn = Some("native-turn".into());
+            input.started = true;
+        }
+        let (done, completed) = mpsc::channel();
+        let control = input.clone();
+        std::thread::spawn(move || {
+            let result = control
+                .lock()
+                .unwrap()
+                .submit(&req, "large-addition")
+                .map(str::to_owned);
+            let _ = done.send(result);
+        });
+        // Always release the fake pipe before asserting so a failing test does
+        // not strand a blocked writer or poison later tests.
+        let result = completed.recv_timeout(std::time::Duration::from_secs(2));
+        let pipe_started = writing.recv_timeout(std::time::Duration::from_secs(2));
+        let mut protocol = LiveProtocol::new(&super::super::tests::request("codex"));
+        let output = input.try_lock().map(|mut input| protocol.ingest(
+            r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread","itemId":"answer","delta":"still running"}}"#,
+            &mut input,
+        ));
+        let _ = release.send(());
+        assert_eq!(result.unwrap().unwrap(), "sending");
+        assert!(pipe_started.is_ok());
+        assert!(output
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("still running")));
+    }
+
+    #[test]
+    fn large_unicode_steer_is_exact_and_only_delivered_on_provider_ack() {
+        let mut req = super::super::tests::request("codex");
+        req.prompt = "á🦀".repeat(super::super::MAX_PROMPT_BYTES / 6);
+        super::super::validate_request(&req).unwrap();
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        input.thread = Some("native-thread".into());
+        input.turn = Some("native-turn".into());
+        assert_eq!(input.submit(&req, "large-input").unwrap(), "sending");
+        assert_eq!(input.pending.len(), 1);
+        let record: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
+        assert_eq!(record["params"]["input"][0]["text"], req.prompt);
+        assert_eq!(record["params"]["expectedTurnId"], "native-turn");
+        let mut protocol = LiveProtocol::new(&req);
+        let ack = protocol.ingest(
+            r#"{"id":101,"result":{"turnId":"native-turn"}}"#,
+            &mut input,
+        );
+        assert!(ack.iter().any(|line| line.contains("accepted")));
+        assert!(input.pending.is_empty());
+        req.prompt.push('🦀');
+        let error = super::super::validate_request(&req).unwrap_err();
+        assert!(error.contains(&req.prompt.len().to_string()));
+        assert!(error.contains("2 MiB"));
+    }
+
+    #[test]
+    fn completion_before_initial_ack_keeps_queued_input_and_never_resurrects_old_turn() {
+        let req = super::super::tests::request("codex");
+        let bytes = Arc::new(Mutex::new(vec![]));
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        let mut protocol = LiveProtocol::new(&req);
+        protocol.ingest(r#"{"id":1,"result":{}}"#, &mut input);
+        protocol.ingest(
+            r#"{"id":2,"result":{"thread":{"id":"thread"}}}"#,
+            &mut input,
+        );
+        input.submit(&req, "queued-addition").unwrap();
+        protocol.ingest(
+            r#"{"method":"turn/started","params":{"threadId":"thread","turn":{"id":"first"}}}"#,
+            &mut input,
+        );
+        protocol.ingest(r#"{"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"first","status":"completed"}}}"#, &mut input);
+        assert!(input.initial_pending);
+        assert!(input.writer.is_some());
+        assert!(input.pending.is_empty());
+        protocol.ingest(r#"{"id":3,"result":{"turn":{"id":"first"}}}"#, &mut input);
+        assert!(input.turn.is_none());
+        assert_eq!(protocol.phase(), ProtocolPhase::StartingTurn);
+        assert!(input.queued.is_empty());
+        let records: Vec<Value> = written(&bytes)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["method"] == "turn/start")
+                .count(),
+            2
+        );
+        assert!(!records
+            .iter()
+            .any(|record| record["method"] == "turn/steer"));
+    }
+
+    #[test]
+    fn late_native_acks_preserve_successful_completion_and_close_transport() {
+        for initial in [false, true] {
+            let req = super::super::tests::request("codex");
+            let mut input = LiveInput::with_writer(Box::new(Vec::new()), true);
+            let mut protocol = LiveProtocol::new(&req);
+            let mut evidence = crate::notification::completion::CompletionEvidence::default();
+            if initial {
+                protocol.ingest(r#"{"id":1,"result":{}}"#, &mut input);
+                protocol.ingest(
+                    r#"{"id":2,"result":{"thread":{"id":"thread"}}}"#,
+                    &mut input,
+                );
+            } else {
+                input.thread = Some("thread".into());
+                input.turn = Some("native-turn".into());
+                input.started = true;
+                input.submit(&req, "addition").unwrap();
+            }
+            protocol.ingest(r#"{"method":"turn/started","params":{"threadId":"thread","turn":{"id":"native-turn"}}}"#, &mut input);
+            for line in protocol.ingest(r#"{"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"native-turn","status":"completed"}}}"#, &mut input) {
+                evidence.observe(&serde_json::from_str::<Value>(&line).unwrap());
+            }
+            assert!(!input.completion_drained());
+            let ack = if initial {
+                json!({"id":3,"result":{"turn":{"id":"native-turn"}}})
+            } else {
+                json!({"id":101,"result":{"turnId":"native-turn"}})
+            };
+            for line in protocol.ingest(&ack.to_string(), &mut input) {
+                evidence.observe(&serde_json::from_str::<Value>(&line).unwrap());
+            }
+            assert!(input.turn.is_none());
+            assert!(input.completion_drained());
+            assert!(evidence.confirmed(true, input.completion_drained(), false));
+        }
+    }
+
+    #[test]
+    fn buffered_writer_failures_are_visible_without_more_provider_output() {
+        struct BrokenSink;
+        impl Write for BrokenSink {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut input = LiveInput::with_buffered_writer(BrokenSink, true);
+        input.initialize().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while input.transport_error().is_none() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(input.transport_error().unwrap().contains("unconfirmed"));
+        assert!(input.initialize().is_err());
     }
     #[test]
     fn resuming_large_threads_excludes_turn_payloads_without_changing_the_native_id() {

@@ -132,7 +132,7 @@ fn claude_background_work_survives_the_first_result_and_stdin_eof_until_process_
             confirmed && protocol.completion_cleanup_ready(),
             std::time::Duration::from_secs(seconds)
         ));
-        assert!(!shutdown.successful_exit(false, false, false));
+        assert!(!shutdown.successful_exit(false, confirmed, false, false));
     }
 
     // Native notifications and the follow-up answer must still be consumed;
@@ -159,10 +159,11 @@ fn claude_background_work_survives_the_first_result_and_stdin_eof_until_process_
     assert_eq!(result["usage"]["input_tokens"], 30);
     assert_eq!(result["usage"]["output_tokens"], 7);
     observe(&mut evidence, final_records);
-    assert!(!shutdown.successful_exit(false, false, false));
-    assert!(shutdown.successful_exit(true, false, false));
-    assert!(!shutdown.successful_exit(true, true, false));
-    assert!(!shutdown.successful_exit(true, false, true));
+    let confirmed = evidence.confirmed(true, input.completion_drained(), false);
+    assert!(!shutdown.successful_exit(false, confirmed, false, false));
+    assert!(shutdown.successful_exit(true, confirmed, false, false));
+    assert!(!shutdown.successful_exit(true, confirmed, true, false));
+    assert!(!shutdown.successful_exit(true, confirmed, false, true));
     assert!(evidence.confirmed(true, input.completion_drained(), false));
 }
 
@@ -470,7 +471,7 @@ fn claude_idle_with_no_native_tasks_cleans_only_a_retained_transport_after_grace
         protocol.completion_cleanup_ready(),
         std::time::Duration::from_secs(10)
     ));
-    assert!(shutdown.successful_exit(false, false, false));
+    assert!(shutdown.successful_exit(false, true, false, false));
     // A new native turn revokes proof; even a delayed idle cannot reuse its result.
     claude_state(&mut protocol, &mut input, "running");
     claude_state(&mut protocol, &mut input, "idle");
@@ -480,7 +481,7 @@ fn claude_idle_with_no_native_tasks_cleans_only_a_retained_transport_after_grace
         protocol.completion_cleanup_ready(),
         std::time::Duration::from_secs(20)
     ));
-    assert!(!shutdown.successful_exit(false, false, false));
+    assert!(!shutdown.successful_exit(false, false, false, false));
 }
 
 #[test]

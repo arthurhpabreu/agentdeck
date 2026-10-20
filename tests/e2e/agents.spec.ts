@@ -1,5 +1,24 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test("Gemini native subagents use the same hierarchy and activity details as Codex", async ({ page }) => {
+  await setupMonitor(page);
+  await page.evaluate(async () => {
+    const modulePath = "/src/store/sessionStore.ts";
+    const { useSessionStore } = await import(/* @vite-ignore */ modulePath);
+    useSessionStore.setState((state: any) => ({ sessions: state.sessions.map((session: any) => session.id === "main" ? { ...session, runner: { type: "gemini" } } : session) }));
+    const root = { id: "native-main", sessionId: "main", parentId: null, name: "Main", provider: "gemini", task: "Coordinate work", status: "done", lastMessage: "", events: [], truncated: false };
+    (window as any).__agents = [root, { ...root, id: "gemini-child", parentId: "native-main", name: "codebase_investigator", role: "codebase_investigator", task: "Map authentication", status: "done", events: [{ id: "read", kind: "tool", title: "read_file", detail: "src/auth.ts", status: "completed" }] }];
+  });
+  const monitor = page.getByRole("dialog", { name: "Central de agentes" });
+  await monitor.getByRole("button", { name: "Atualizar atividades", exact: true }).click();
+  await expect(monitor.getByText("1 subagentes", { exact: true })).toBeVisible();
+  await monitor.getByRole("button", { name: "codebase_investigator · Concluído", exact: true }).click();
+  await expect(monitor.getByRole("heading", { name: "codebase_investigator", exact: true })).toBeVisible();
+  await expect(monitor.locator(".ad-monitor-task")).toContainText("Map authentication");
+  await expect(monitor.locator(".ad-monitor-timeline")).toContainText("read_file");
+  await expect(monitor.locator(".ad-monitor-parent")).toContainText("Workspace review");
+});
+
 test("many agents and malformed parent cycles stay searchable in a small light window", async ({ page }) => {
   await page.setViewportSize({ width: 980, height: 740 });
   await setupMonitor(page);

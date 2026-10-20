@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAttentionStore } from "./store/attentionStore";
 import { useNavigationStore } from "./store/navigationStore";
 import { forgetChatViewState } from "./services/chatViewState";
+import { startProjectCoordination } from "./services/projectCoordination";
 import { useSourceDeliveryStore } from "./store/sourceDeliveryStore";
 import { checkCliUpdatesOnStartup } from "./store/cliUpdateStore";
 import { checkAppUpdateOnStartup } from "./store/appUpdateStore";
@@ -82,6 +83,7 @@ export default function App() {
 
   const { settings, patchSettings } = useSettingsStore(useShallow(state => ({ settings: state.settings, patchSettings: state.patchSettings })));
   useEffect(() => { checkCliUpdatesOnStartup(); checkAppUpdateOnStartup(); }, []);
+  useEffect(startProjectCoordination, []);
   const effectiveLocale = resolveEffectiveLocale(settings.locale);
   const direction = getLocaleDirection(effectiveLocale);
   const settingsOpen = useSettingsStore((s) => s.settingsOpen);

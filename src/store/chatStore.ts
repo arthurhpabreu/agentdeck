@@ -13,6 +13,7 @@ import { useSourceDeliveryStore } from "./sourceDeliveryStore";
 import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, estimateChatInputTokens, getCompactionBudget, messageTextSize, residentMessages, shouldCompact } from "../services/chatCompaction";
 import { deleteChatHistory, readChatHistoryMessage, restoreChatHistory, saveChatHistory } from "../services/chatHistory";
 import { isPendingChatTool, isTerminalChatTool, mergeChatToolStatus } from "../services/chatToolState";
+import { chatInputError } from "../services/chatInput";
 
 export interface ChatAttachment { name: string; path: string; mimeType: string; size: number }
 export interface ChatUsage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
@@ -143,10 +144,15 @@ export const useChatStore = create<{
     if (e.kind === "error") { next.error = e.text ?? "Agent error"; if (e.status === "recovery-required") next.recoveryRequired = true; }
     if (e.kind === "input") {
       const accepted = old.messages.find(m => m.id === `${e.itemId}:user`);
+      if (e.status === "failed" && accepted) { next.inputError = e.text || "The provider did not confirm this additional input. Review the conversation before sending it again."; next.draft = old.draft || accepted.text; }
       if (e.status === "accepted" && accepted && accepted.status !== "accepted") { next.contextPrompts = (old.contextPrompts ?? 0) + 1; if (!measuredContext) { next.contextTokens = (old.contextTokens ?? 0) + estimateChatInputTokens(accepted.text, accepted.attachments); next.contextTokensEstimated = true; } }
       next.messages = old.messages.map(m => m.id === `${e.itemId}:user` ? { ...m, status: e.status, ...(e.text ? { title: e.text } : {}) } : m);
     }
-    if (e.kind === "done") next = { ...next, busy: false, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), draft: old.compacting && e.status !== "completed" ? old.draft || old.messages.find(m => m.id === `${e.turnId}:user`)?.text || "" : old.draft, messages: next.messages.map(m => m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && isPendingChatTool(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
+    if (e.kind === "done") {
+      const unconfirmed = [...next.messages].reverse().find(m => m.turnId === e.turnId && m.role === "user" && (m.status === "sending" || m.status === "queued"));
+      const compactDraft = old.compacting && e.status !== "completed" ? old.messages.find(m => m.id === `${e.turnId}:user`)?.text : undefined;
+      next = { ...next, busy: false, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), inputError: next.inputError || (unconfirmed ? "The provider did not confirm this additional input. Review the conversation before sending it again." : undefined), draft: old.draft || unconfirmed?.text || compactDraft || "", messages: next.messages.map(m => m.turnId === e.turnId && m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && isPendingChatTool(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
+    }
     if (e.kind === "text" || e.kind === "tool") {
       const id = chatMessageId(e);
       const index = old.messages.findIndex(m => m.id === id);
@@ -372,11 +378,7 @@ export function ensureChatEvents() {
   }).catch(error => { subscription = undefined; throw error; });
   return subscription;
 }
-function oversizedInputError(contextWindow?: number): string {
-  return `The estimated input size reaches the provider's ${contextWindow?.toLocaleString()} token context window. Your draft is preserved. Split the request or attach the text as a file to read in sections.`;
-}
-
-export async function sendChatTurn(sessionId: string, prompt: string, attachments: ChatAttachment[]): Promise<boolean> {
+export async function sendChatTurn(sessionId: string, prompt: string, attachments: ChatAttachment[], options?: { preserveDraft?: boolean }): Promise<boolean> {
   await chatHistoryReady;
   const session = useSessionStore.getState().sessions.find(s => s.id === sessionId);
   const old = useChatStore.getState().threads[sessionId] ?? emptyThread;
@@ -391,8 +393,9 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   const compactBeforeTurn = session.runner.type !== "gemini" && shouldCompact(old, transmittedPrompt, providerSessionId, attachments);
   if (compactBeforeTurn && goal && !nativeCommand) { goalChanged = true; transmittedPrompt = withGoal(); }
   const budget = getCompactionBudget(old, transmittedPrompt, attachments);
-  if (!nativeCommand && budget.promptTooLarge) {
-    useChatStore.getState().patch(sessionId, { inputError: oversizedInputError(budget.contextWindow), draft: prompt });
+  const inputError = chatInputError(transmittedPrompt);
+  if (inputError) {
+    useChatStore.getState().patch(sessionId, { inputError, draft: options?.preserveDraft && old.draft ? old.draft : prompt });
     return false;
   }
   let releaseLaunch!: () => void;
@@ -401,7 +404,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   const turnId = createUuid();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments };
   useSourceDeliveryStore.getState().start(sessionId, { hasHistory: !!(old.messages.length || old.archivedCount || old.continuation), providerSessionId });
-  useChatStore.getState().patch(sessionId, { busy: true, providerSessionId, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: "", messages: [...old.messages, message] });
+  useChatStore.getState().patch(sessionId, { busy: true, providerSessionId, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: options?.preserveDraft ? old.draft : "", messages: [...old.messages, message] });
   useSessionStore.getState().updateSession(sessionId, { status: "running", currentTask: prompt.trim() });
   if (!old.messages.length) useSessionStore.getState().setAutomaticSessionName(sessionId, prompt.trim().slice(0, 44) || attachments[0]?.name || "");
   useAgentActivityStore.getState().record(sessionId, { phase: "starting", startedAt: Date.now(), endedAt: undefined, error: undefined, command: session.runner.type === "codex" ? "codex app-server" : "claude --print", pid: undefined }, "activity.starting");
@@ -410,7 +413,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
     if (!useSessionStore.getState().sessions.some(session => session.id === sessionId)) { cancelledTurns.delete(turnId); return false; }
     if (useChatStore.getState().threads[sessionId]?.turnId !== turnId) { cancelledTurns.delete(turnId); return false; }
     if (cancelledTurns.delete(turnId)) {
-      useChatStore.getState().patch(sessionId, { busy: false, compacting: false, contextPrompts: old.contextPrompts, contextTokens: old.contextTokens, status: "stopped", draft: prompt });
+      useChatStore.getState().patch(sessionId, { busy: false, compacting: false, contextPrompts: old.contextPrompts, contextTokens: old.contextTokens, status: "stopped", draft: useChatStore.getState().threads[sessionId]?.draft || prompt });
       useSessionStore.getState().updateSession(sessionId, { status: "suspended" });
       useAgentActivityStore.getState().record(sessionId, { phase: "stopped", endedAt: Date.now() }, "activity.stopped");
       return false;
@@ -422,7 +425,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
     cancelledTurns.delete(turnId);
     if (useChatStore.getState().threads[sessionId]?.turnId !== turnId) return false;
     recordChatAttention({ sessionId, turnId, kind: "error", text: String(error) });
-    useChatStore.getState().patch(sessionId, { busy: false, compacting: false, contextPrompts: old.contextPrompts, contextTokens: old.contextTokens, contextTokensEstimated: old.contextTokensEstimated, error: String(error), draft: prompt });
+    useChatStore.getState().patch(sessionId, { busy: false, compacting: false, contextPrompts: old.contextPrompts, contextTokens: old.contextTokens, contextTokensEstimated: old.contextTokensEstimated, error: String(error), draft: useChatStore.getState().threads[sessionId]?.draft || prompt });
     useSessionStore.getState().updateSession(sessionId, { status: "error" });
     useAgentActivityStore.getState().record(sessionId, { phase: "error", endedAt: Date.now(), error: String(error) }, "activity.error", String(error));
     return false;
@@ -433,9 +436,9 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
   const old=useChatStore.getState().threads[sessionId];
   const session=useSessionStore.getState().sessions.find(s=>s.id===sessionId);
   if (!old?.busy || !old.turnId || !session) return false;
-  const budget = getCompactionBudget(old, prompt.trim(), attachments);
-  if (budget.promptTooLarge) {
-    useChatStore.getState().patch(sessionId, { inputError: oversizedInputError(budget.contextWindow), draft: prompt });
+  const inputError = chatInputError(prompt.trim());
+  if (inputError) {
+    useChatStore.getState().patch(sessionId, { inputError, draft: prompt });
     return false;
   }
   const messageId=createUuid();
@@ -450,7 +453,7 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
       const drops = discarded.get(sessionId) ?? new Set(); drops.add(message.id); discarded.set(sessionId, drops);
       dirty.get(sessionId)?.delete(message.id);
       useChatStore.getState().patch(sessionId,{messages:current.messages.filter(m=>m.id!==message.id)});
-      return sendChatTurn(sessionId,prompt,attachments);
+      return sendChatTurn(sessionId,prompt,attachments,{preserveDraft:true});
     }
     const status=await invoke<string>("steer_chat_turn",{messageId,request:{sessionId,turnId:current.turnId,runnerType:session.runner.type,cliPath:session.runner.cliPath||undefined,projectPath:useWorkspaceStore.getState().workspaces.find(workspace=>workspace.id===session.workspaceId)?.path||session.workdir,workdir:session.worktreePath||session.workdir,prompt:prompt.trim(),attachments,mode:session.runner.mode==="plan"?"plan":"code"}});
     const latest=useChatStore.getState().threads[sessionId];
@@ -458,7 +461,7 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
     return true;
   } catch(error) {
     const latest=useChatStore.getState().threads[sessionId];
-    if(latest)useChatStore.getState().patch(sessionId,{messages:latest.messages.map(m=>m.id===message.id?{...m,status:"failed",title:String(error)}:m),draft:latest.draft||prompt});
+    if(latest)useChatStore.getState().patch(sessionId,{messages:latest.messages.map(m=>m.id===message.id?{...m,status:"failed",title:String(error)}:m),inputError:String(error),draft:latest.draft||prompt});
     return false;
   }
 }

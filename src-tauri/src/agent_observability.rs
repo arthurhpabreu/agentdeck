@@ -13,6 +13,11 @@ const MAX_TRANSCRIPT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EVENTS: usize = 60;
 const MAX_AGENTS: usize = 64;
 
+#[path = "agent_observability_codex.rs"]
+mod codex;
+#[path = "agent_observability_gemini.rs"]
+mod gemini;
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObserveSession {
@@ -33,6 +38,8 @@ pub struct AgentEvent {
     timestamp: Option<String>,
     delegated_agent_id: Option<String>,
     delegated_role: Option<String>,
+    delegated_name: Option<String>,
+    delegated_status: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -141,6 +148,7 @@ fn display_input(value: &Value) -> String {
         "query",
         "pattern",
         "message",
+        "task",
     ] {
         if let Some(value) = value.get(key).and_then(Value::as_str) {
             return limited(value, 2000);
@@ -171,6 +179,12 @@ fn push_tool(
     at: Option<String>,
 ) {
     agent.status = "running".into();
+    if let Some(event) = agent.events.iter_mut().rev().find(|event| event.id == id) {
+        if event.detail.is_empty() {
+            event.detail = detail;
+        }
+        return;
+    }
     agent.events.push(AgentEvent {
         id,
         kind: "tool".into(),
@@ -180,6 +194,8 @@ fn push_tool(
         timestamp: at,
         delegated_agent_id: None,
         delegated_role: None,
+        delegated_name: None,
+        delegated_status: None,
     });
     if agent.events.len() > MAX_EVENTS {
         agent.events.remove(0);
@@ -197,6 +213,10 @@ fn finish_tool(agent: &mut ObservedAgent, id: &str, failed: bool) {
 }
 
 fn parse_record(agent: &mut ObservedAgent, record: &Value, provider: &str) {
+    if provider == "gemini" {
+        gemini::parse_record(agent, record);
+        return;
+    }
     let at = timestamp(record);
     if provider == "claude-code" {
         let message = &record["message"];
@@ -265,6 +285,7 @@ fn parse_record(agent: &mut ObservedAgent, record: &Value, provider: &str) {
         }
     }
     if record["type"] == "event_msg" {
+        codex::record_event(agent, payload, at.clone());
         match payload["type"].as_str().unwrap_or_default() {
             "user_message" => {
                 agent.task = limited(&text(payload, "message"), 3000);
@@ -308,6 +329,11 @@ fn parse_record(agent: &mut ObservedAgent, record: &Value, provider: &str) {
                 display_input(parsed.as_ref().unwrap_or(input)),
                 at,
             );
+            codex::record_invocation(
+                agent,
+                &text(payload, "call_id"),
+                parsed.as_ref().unwrap_or(input),
+            );
         }
         "function_call_output" | "custom_tool_call_output" => {
             let output = payload.get("output").unwrap_or(&Value::Null);
@@ -316,6 +342,7 @@ fn parse_record(agent: &mut ObservedAgent, record: &Value, provider: &str) {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             finish_tool(agent, &text(payload, "call_id"), failed);
+            codex::record_result(agent, &text(payload, "call_id"), output, at);
         }
         _ => {}
     }
@@ -363,6 +390,14 @@ fn read_agent(
         events: Vec::new(),
         truncated,
     };
+    if request.provider == "gemini" && entry.path.extension().is_some_and(|ext| ext == "json") {
+        if !truncated {
+            if let Ok(value) = serde_json::from_reader::<_, Value>(reader) {
+                gemini::parse_legacy(&mut agent, &value);
+            }
+        }
+        return Some(agent);
+    }
     for line in reader.lines().map_while(Result::ok) {
         if let Ok(value) = serde_json::from_str::<Value>(&line) {
             parse_record(&mut agent, &value, &request.provider);
@@ -406,6 +441,7 @@ fn transcript_files(
     depth: usize,
     remaining: &mut usize,
     files: &mut Vec<(SystemTime, PathBuf)>,
+    legacy_json: bool,
 ) {
     if depth == 0 || *remaining == 0 {
         return;
@@ -425,8 +461,13 @@ fn transcript_files(
             continue;
         };
         if kind.is_dir() {
-            transcript_files(&entry.path(), depth - 1, remaining, files);
-        } else if kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "jsonl") {
+            transcript_files(&entry.path(), depth - 1, remaining, files, legacy_json);
+        } else if kind.is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "jsonl" || (legacy_json && ext == "json"))
+        {
             files.push((
                 entry
                     .metadata()
@@ -452,12 +493,13 @@ fn codex_index(home: &Path) -> Vec<IndexedSession> {
     }
     let mut files = Vec::new();
     let mut remaining = 2000;
-    transcript_files(&home.join("sessions"), 5, &mut remaining, &mut files);
+    transcript_files(&home.join("sessions"), 5, &mut remaining, &mut files, false);
     transcript_files(
         &home.join("archived_sessions"),
         2,
         &mut remaining,
         &mut files,
+        false,
     );
     files.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
     let entries: Vec<_> = files
@@ -567,6 +609,11 @@ fn descendants(entries: &[IndexedSession], root_id: &str) -> Vec<IndexedSession>
 fn observe(requests: Vec<ObserveSession>) -> Vec<Observation> {
     let codex_home = provider_dir("CODEX_HOME", ".codex");
     let claude_home = provider_dir("CLAUDE_CONFIG_DIR", ".claude");
+    let gemini_home = provider_dir("GEMINI_CLI_HOME", ".gemini");
+    let gemini = gemini_home
+        .as_ref()
+        .map(|home| gemini::index(home, &requests))
+        .unwrap_or_default();
     let codex = if requests
         .iter()
         .any(|r| r.provider == "codex" && r.provider_session_id.is_some())
@@ -601,6 +648,7 @@ fn observe(requests: Vec<ObserveSession>) -> Vec<Observation> {
                     .as_ref()
                     .map(|home| claude_entries(home, &request, id))
                     .unwrap_or_default(),
+                "gemini" => descendants(&gemini, id),
                 _ => Vec::new(),
             };
             let mut agents = Vec::new();
@@ -615,35 +663,132 @@ fn observe(requests: Vec<ObserveSession>) -> Vec<Observation> {
                     agents.push(agent);
                 }
             }
-            // Claude links the invocation to the transcript agent ID in toolUseResult.
-            // This supplies real names/roles and nested relationships when recorded.
-            let delegated: HashMap<_, _> = agents
+            // Delegation IDs come from native tool results, never from matching cwd.
+            // A child may be visible before its own transcript is flushed.
+            let native_ids: HashSet<_> = agents.iter().map(|agent| agent.id.clone()).collect();
+            let missing: Vec<_> = agents
                 .iter()
-                .flat_map(|agent| {
-                    agent.events.iter().filter_map(|event| {
-                        event.delegated_agent_id.as_ref().map(|id| {
-                            (
-                                id.clone(),
-                                (
-                                    agent.id.clone(),
-                                    limited(&event.detail, 100),
-                                    event.delegated_role.clone(),
-                                ),
-                            )
+                .flat_map(|parent| {
+                    parent.events.iter().filter_map(|event| {
+                        let child = event.delegated_agent_id.as_ref()?;
+                        (event.kind == "delegation"
+                            && child != &parent.id
+                            && safe_id(child)
+                            && !agents.iter().any(|agent| &agent.id == child))
+                        .then(|| ObservedAgent {
+                            id: child.clone(),
+                            session_id: request.session_id.clone(),
+                            parent_id: Some(parent.id.clone()),
+                            name: event
+                                .delegated_name
+                                .clone()
+                                .unwrap_or_else(|| format!("Agent {}", limited(child, 12))),
+                            role: event.delegated_role.clone(),
+                            provider: request.provider.clone(),
+                            task: event.detail.clone(),
+                            last_message: String::new(),
+                            status: event
+                                .delegated_status
+                                .clone()
+                                .unwrap_or_else(|| "unknown".into()),
+                            updated_at: parent.updated_at,
+                            model: None,
+                            events: Vec::new(),
+                            truncated: false,
                         })
                     })
                 })
                 .collect();
+            for child in missing {
+                if agents.len() < MAX_AGENTS && !agents.iter().any(|agent| agent.id == child.id) {
+                    agents.push(child);
+                }
+            }
+            let delegated: HashMap<_, _> = agents
+                .iter()
+                .flat_map(|agent| {
+                    agent.events.iter().filter_map(|event| {
+                        event
+                            .delegated_agent_id
+                            .as_ref()
+                            .filter(|_| event.kind != "agent_status")
+                            .map(|id| {
+                                (
+                                    id.clone(),
+                                    (
+                                        agent.id.clone(),
+                                        limited(&event.detail, 100),
+                                        event.delegated_role.clone(),
+                                        event.delegated_name.clone(),
+                                        event.kind.clone(),
+                                        event.detail.clone(),
+                                    ),
+                                )
+                            })
+                    })
+                })
+                .collect();
             for agent in &mut agents {
-                if let Some((parent_id, name, role)) = delegated.get(&agent.id) {
+                if let Some((parent_id, name, role, native_name, kind, task)) =
+                    delegated.get(&agent.id)
+                {
                     if parent_id != &agent.id {
-                        agent.parent_id = Some(parent_id.clone());
-                        if !name.is_empty() {
+                        if request.provider != "codex" || agent.parent_id.is_none() {
+                            agent.parent_id = Some(parent_id.clone());
+                        }
+                        if let Some(native_name) = native_name {
+                            agent.name = native_name.clone();
+                        } else if kind != "agent_status"
+                            && !name.is_empty()
+                            && request.provider != "codex"
+                        {
                             agent.name = name.clone();
                         }
                         if role.is_some() {
                             agent.role = role.clone();
                         }
+                        if agent.task.is_empty() {
+                            agent.task = task.clone();
+                        }
+                    }
+                }
+            }
+            let statuses: HashMap<_, _> = agents
+                .iter()
+                .flat_map(|parent| {
+                    parent.events.iter().filter_map(|event| {
+                        Some((
+                            event.delegated_agent_id.clone()?,
+                            (
+                                event.delegated_status.clone()?,
+                                event
+                                    .timestamp
+                                    .as_deref()
+                                    .and_then(|at| {
+                                        time::OffsetDateTime::parse(
+                                            at,
+                                            &time::format_description::well_known::Rfc3339,
+                                        )
+                                        .ok()
+                                    })
+                                    .map(|at| (at.unix_timestamp_nanos() / 1_000_000) as u64),
+                            ),
+                        ))
+                    })
+                })
+                .collect();
+            for agent in &mut agents {
+                if let Some((status, recorded_at)) = statuses.get(&agent.id) {
+                    let newer = recorded_at
+                        .zip(agent.updated_at)
+                        .is_some_and(|(at, current)| at >= current);
+                    if !native_ids.contains(&agent.id)
+                        || agent.status == "unknown"
+                        || newer
+                        || (recorded_at.is_none()
+                            && !matches!(agent.status.as_str(), "done" | "error" | "stopped"))
+                    {
+                        agent.status = status.clone();
                     }
                 }
             }
@@ -676,7 +821,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn agent() -> ObservedAgent {
+    pub(super) fn agent() -> ObservedAgent {
         ObservedAgent {
             id: "root".into(),
             session_id: "ui".into(),

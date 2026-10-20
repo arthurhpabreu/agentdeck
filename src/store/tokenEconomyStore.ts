@@ -40,6 +40,7 @@ interface TokenEconomyState {
 const EMPTY: Snapshot = { status: null, refreshing: false, error: null, checkedAt: null };
 const keyFor = (workdir: string | undefined, scope: TokenEconomyScope) => scope === "project" ? `project:${workdir || ""}` : scope;
 const requests = new Map<string, number>();
+let settingRevision = 0;
 function validStatus(value: unknown): value is TokenEconomyStatus {
   return !!value && typeof value === "object" && typeof (value as TokenEconomyStatus).enabled === "boolean" && typeof (value as TokenEconomyStatus).available === "boolean";
 }
@@ -54,15 +55,15 @@ export const useTokenEconomyStore = create<TokenEconomyState>((set, get) => {
       const cached = get().entries[key] || EMPTY;
       if (!("__TAURI_INTERNALS__" in window) || cached.refreshing || get().changing) return;
       if (!force && cached.checkedAt && Date.now() - cached.checkedAt < 30_000) return;
-      const version = (requests.get(key) || 0) + 1;
+      const version = (requests.get(key) || 0) + 1, revision = settingRevision;
       requests.set(key, version);
       patch(key, { refreshing: true });
       try {
         const status = await invoke<TokenEconomyStatus>("get_token_economy_status", { workdir, scope, force });
         if (!validStatus(status)) throw new Error("Invalid token economy status");
-        if (version === requests.get(key)) patch(key, { status, error: null, checkedAt: Date.now() });
+        if (version === requests.get(key) && revision === settingRevision) patch(key, { status, error: null, checkedAt: Date.now() });
       } catch (error) {
-        if (version === requests.get(key)) patch(key, { error: String(error), checkedAt: Date.now() });
+        if (version === requests.get(key) && revision === settingRevision) patch(key, { error: String(error), checkedAt: Date.now() });
       } finally {
         if (version === requests.get(key)) patch(key, { refreshing: false });
       }
@@ -70,6 +71,7 @@ export const useTokenEconomyStore = create<TokenEconomyState>((set, get) => {
     setEnabled: async (enabled, workdir, scope = "agentdeck") => {
       if (!("__TAURI_INTERNALS__" in window) || get().changing) return;
       const key = keyFor(workdir, scope);
+      settingRevision++;
       // Retire in-flight reads so an old setting cannot overwrite a successful save.
       for (const [requestKey, version] of requests) requests.set(requestKey, version + 1);
       set(state => ({ changing: true, entries: Object.fromEntries(Object.entries(state.entries).map(([entryKey, entry]) => [entryKey, { ...entry, refreshing: false }])) }));
@@ -109,7 +111,10 @@ export function useTokenEconomy(visible = true, workdir?: string, scope: TokenEc
       let disposed = false;
       let unlisten: (() => void) | undefined;
       if ("__TAURI_INTERNALS__" in window) void listen<{ enabled: boolean }>("token-economy-changed", ({ payload }) => {
-        useTokenEconomyStore.setState(state => ({ entries: Object.fromEntries(Object.entries(state.entries).map(([entryKey, entry]) => [entryKey, { ...entry, status: entry.status ? { ...entry.status, enabled: payload.enabled } : null, checkedAt: null }])) }));
+        if (typeof payload?.enabled !== "boolean") return;
+        settingRevision++;
+        for (const [requestKey, version] of requests) requests.set(requestKey, version + 1);
+        useTokenEconomyStore.setState(state => ({ entries: Object.fromEntries(Object.entries(state.entries).map(([entryKey, entry]) => [entryKey, { ...entry, refreshing: false, status: entry.status ? { ...entry.status, enabled: payload.enabled } : null, checkedAt: null }])) }));
       }).then(stop => { if (disposed) stop(); else unlisten = stop; }).catch(() => {});
       stopPolling = () => { disposed = true; window.clearInterval(timer); document.removeEventListener("visibilitychange", refreshVisible); unlisten?.(); };
     }

@@ -8,6 +8,49 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
   }
+  test("chat reliability delivers large Unicode additional input intact and preserves a newer draft on asynchronous failure", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+        if (command === "steer_chat_turn") { w.__largeSupplement = args; return Promise.resolve("sending"); }
+        return original(command, args);
+      };
+    });
+    const prompt = "REVISÃO INTEGRAL\n" + "Ação e contexto — 漢字 🔍\n".repeat(12000) + "FIM DO CONTEXTO";
+    await page.locator(".ad-chat-composer textarea").evaluate((element, text) => {
+      const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", text);
+      element.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles:true, cancelable:true }));
+    }, prompt);
+    await expect(page.locator(".ad-chat-composer textarea")).toHaveValue(prompt);
+    await page.getByRole("button", { name:"Enviar complemento", exact:true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__largeSupplement?.request.prompt.length)).toBe(prompt.length);
+    expect(await page.evaluate(() => (window as any).__largeSupplement.request.prompt)).toBe(prompt);
+    await page.locator(".ad-chat-composer textarea").fill("Continue preservando meu novo rascunho");
+    await page.evaluate(() => {
+      const w = window as any; w.__emit("chat-event", { sessionId:"session", turnId:w.__chatTurns.session, kind:"input", itemId:w.__largeSupplement.messageId, status:"failed", text:"Provider did not confirm this input" });
+    });
+    await expect(page.locator(".ad-chat-composer textarea")).toHaveValue("Continue preservando meu novo rascunho");
+    await expect(page.locator(".ad-chat-error[role=alert]")).toContainText("Provider did not confirm this input");
+    const current = await state(page); expect(current.busy).toBe(true);
+    expect(current.messages.find((m: any) => m.text === prompt).status).toBe("failed");
+  });
+  test("chat reliability treats the conservative token estimate as advisory for additional input", async ({ page }) => {
+    await start(page);
+    const result = await page.evaluate(async () => {
+      const path = "/src/store/chatStore.ts"; const chat = await import(/* @vite-ignore */ path);
+      chat.useChatStore.getState().patch("session", { contextWindow:32000 });
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+        if (command === "steer_chat_turn") { w.__estimatedSupplement = args.request.prompt; return Promise.resolve("queued"); }
+        return original(command, args);
+      };
+      const prompt = "x".repeat(120000);
+      const ok = await chat.sendChatTurn("session", prompt, []);
+      return { ok, exact:w.__estimatedSupplement === prompt, busy:chat.useChatStore.getState().threads.session.busy };
+    });
+    expect(result).toEqual({ ok:true, exact:true, busy:true });
+  });
   test("chat lifecycle tool results survive progress replays within a frame and after the final response", async ({ page }) => {
     await start(page);
     await page.evaluate(() => {
@@ -216,5 +259,72 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
       w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "status", contextTokens: 1234 });
     });
     thread = await state(page); expect(thread.status).toBe("reasoning"); expect(thread.compacting).toBe(false); expect(thread.activity).toBe("Reviewing the project"); expect(thread.contextTokens).toBe(1234);
+  });
+  test("chat reliability restores unconfirmed additional input after a missed delivery event", async ({ page }) => {
+    await start(page);
+    const result = await page.evaluate(async () => {
+      const path = "/src/store/chatStore.ts", chat = await import(/* @vite-ignore */ path);
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => command === "steer_chat_turn" ? Promise.resolve("queued") : original(command, args);
+      await chat.sendChatTurn("session", "Additional context still awaiting confirmation", []);
+      const turnId = chat.useChatStore.getState().threads.session.turnId;
+      chat.useChatStore.getState().event({ sessionId:"session", turnId, kind:"done", status:"interrupted" });
+      const thread = chat.useChatStore.getState().threads.session;
+      return { busy:thread.busy, draft:thread.draft, inputError:thread.inputError, status:thread.messages.at(-1).status };
+    });
+    expect(result).toMatchObject({ busy:false, draft:"Additional context still awaiting confirmation", status:"failed" });
+    expect(result.inputError).toContain("did not confirm");
+  });
+
+  test("chat reliability preserves a newer draft when cancellation happens before launch", async ({ page }) => {
+    await start(page);
+    const result = await page.evaluate(async () => {
+      const path = "/src/store/chatStore.ts", chat = await import(/* @vite-ignore */ path);
+      const previous = chat.useChatStore.getState().threads.session;
+      chat.useChatStore.getState().event({ sessionId:"session", turnId:previous.turnId, kind:"done", status:"completed" });
+      const launch = chat.sendChatTurn("session", "Request canceled during initialization", []);
+      // sendChatTurn first yields to the restored-history barrier, then yields
+      // again before launch while listeners are checked.
+      await Promise.resolve();
+      chat.useChatStore.getState().patch("session", { draft:"Keep my newer notes" });
+      const stopped = chat.stopChatTurn("session");
+      const sent = await launch;
+      await stopped;
+      return { sent, draft:chat.useChatStore.getState().threads.session.draft, status:chat.useChatStore.getState().threads.session.status };
+    });
+    expect(result).toEqual({ sent:false, draft:"Keep my newer notes", status:"stopped" });
+  });
+
+  test("chat reliability preserves a newer draft when a queued addition continues after launch completes", async ({ page }) => {
+    await start(page);
+    const result = await page.evaluate(async () => {
+      const path = "/src/store/chatStore.ts", chat = await import(/* @vite-ignore */ path);
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      const previous = chat.useChatStore.getState().threads.session;
+      chat.useChatStore.getState().event({ sessionId:"session", turnId:previous.turnId, kind:"done", status:"completed" });
+      let release: (() => void) | undefined, starts = 0;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+        if (command === "start_chat_turn") {
+          starts++;
+          if (starts === 1) return new Promise<void>(resolve => { release = resolve; });
+          return Promise.resolve();
+        }
+        return original(command, args);
+      };
+      const launch = chat.sendChatTurn("session", "First request", []);
+      for (let i = 0; i < 20 && !release; i++) await new Promise(resolve => setTimeout(resolve, 0));
+      if (!release) throw new Error("The mocked launch did not start");
+      const addition = chat.sendChatTurn("session", "Follow-up queued during initialization", []);
+      await Promise.resolve();
+      const pending = chat.useChatStore.getState().threads.session;
+      chat.useChatStore.getState().patch("session", { draft:"Keep notes typed after the follow-up" });
+      chat.useChatStore.getState().event({ sessionId:"session", turnId:pending.turnId, kind:"done", status:"completed" });
+      release();
+      await launch;
+      const sent = await addition;
+      const thread = chat.useChatStore.getState().threads.session;
+      return { sent, starts, draft:thread.draft, lastMessage:thread.messages.at(-1).text };
+    });
+    expect(result).toEqual({ sent:true, starts:2, draft:"Keep notes typed after the follow-up", lastMessage:"Follow-up queued during initialization" });
   });
 }

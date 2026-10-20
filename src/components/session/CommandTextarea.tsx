@@ -15,7 +15,7 @@ interface Props extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value
   browse?: { revision: number; filter: Filter }; onCatalogue?: (value: AgentCatalogue) => void;
   shortcutsPlacement?: "above" | "below";
 }
-export function CommandTextarea({ value, onValueChange, runner, workdir, projectPath = workdir, inputRef, native = false, visible = true, browse, onCatalogue, shortcutsPlacement = "below", onKeyDown, onSelect, onFocus, onBlur, ...props }: Props) {
+export function CommandTextarea({ value, onValueChange, runner, workdir, projectPath = workdir, inputRef, native = false, visible = true, browse, onCatalogue, shortcutsPlacement = "below", onKeyDown, onSelect, onFocus, onBlur, onPaste, ...props }: Props) {
   const { locale } = useAppI18n(); const c = commandCopy(locale);
   const internal = useRef<HTMLTextAreaElement>(null); const ref = inputRef ?? internal;
   const id = useId(); const popup = useRef<HTMLDivElement>(null); const generation = useRef(0);
@@ -85,9 +85,22 @@ export function CommandTextarea({ value, onValueChange, runner, workdir, project
     return false;
   };
   const shortcuts = <div className="ad-command-shortcuts"><button type="button" disabled={props.disabled} title={c.helpHint} onClick={() => { setFilter("all"); setSearch(""); setBrowsing(true); }}><Slash size={12} />{c.commands}</button><button type="button" disabled={props.disabled} onClick={() => { setFilter("skill"); setSearch(""); setBrowsing(true); }}><Sparkles size={12} />{c.skills}</button></div>;
-  return <div className={`ad-command-input${shortcutsPlacement === "above" ? " has-shortcuts-above" : ""}`}>
+  return <div className={`ad-command-input${shortcutsPlacement === "above" ? " has-shortcuts-above" : ""}${value.length > 16000 ? " has-large-draft" : ""}`}>
     {shortcutsPlacement === "above" && shortcuts}
-    <textarea {...props} ref={ref} value={value} role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls={open ? `${id}-list` : undefined} aria-activedescendant={open && entries[active] ? `${id}-${active}` : undefined} onChange={event => { setCaret(event.target.selectionStart); setDismissed(undefined); onValueChange(event.target.value); }} onSelect={event => { setCaret(event.currentTarget.selectionStart); onSelect?.(event); }} onFocus={event => { setFocused(true); setCaret(event.currentTarget.selectionStart); onFocus?.(event); }} onBlur={event => { setFocused(false); onBlur?.(event); }} onKeyDown={event => { if (!keyboard(event)) onKeyDown?.(event); }} />
+    <textarea spellCheck={false} {...props} ref={ref} value={value} role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls={open ? `${id}-list` : undefined} aria-activedescendant={open && entries[active] ? `${id}-${active}` : undefined} onChange={event => { setCaret(event.target.selectionStart); setDismissed(undefined); onValueChange(event.target.value); }} onSelect={event => { setCaret(event.currentTarget.selectionStart); onSelect?.(event); }} onFocus={event => { setFocused(true); setCaret(event.currentTarget.selectionStart); onFocus?.(event); }} onBlur={event => { setFocused(false); onBlur?.(event); }} onPaste={event => {
+      onPaste?.(event);
+      if (event.defaultPrevented || event.clipboardData.files.length) return;
+      const pasted = event.clipboardData.getData("text/plain");
+      if (pasted.length <= 16000) return;
+      // Native insertText can spend seconds rebuilding thousands of Unicode lines.
+      // Controlled replacement preserves the full text and yields directly to React.
+      event.preventDefault();
+      const start = event.currentTarget.selectionStart, end = event.currentTarget.selectionEnd;
+      const next = value.slice(0, start) + pasted + value.slice(end);
+      const position = start + pasted.length;
+      setCaret(position); setDismissed(undefined); onValueChange(next);
+      requestAnimationFrame(() => ref.current?.setSelectionRange(position, position));
+    }} onKeyDown={event => { if (!keyboard(event)) onKeyDown?.(event); }} />
     {shortcutsPlacement === "below" && shortcuts}
     {open && createPortal(<div className="ad-command-picker" ref={popup} style={position} role="region" aria-label={c.title}>
       <header><strong><Slash size={14} />{c.title}</strong><button type="button" className="ad-icon-button" aria-label={c.refresh} disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={14} className={loading ? "ad-spin" : ""} /></button><button type="button" className="ad-icon-button" aria-label={c.close} onClick={() => { close(); ref.current?.focus(); }}><X size={14} /></button></header>
