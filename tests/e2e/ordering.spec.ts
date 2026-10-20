@@ -357,15 +357,29 @@ test("manual sessions move across statuses and stay fixed during streaming; canc
   const surface = page.locator('[data-surface="sessions"]');
   const before = await rowIds(page, "sessions");
   const last = surface.getByRole("group", { name: "Reorder: Session 3", exact: true });
-  await last.focus(); await page.keyboard.press("Alt+ArrowUp"); await page.keyboard.press("Alt+ArrowUp");
+  await last.focus(); await page.keyboard.press("Alt+ArrowUp");
+  await expect.poll(() => rowIds(page, "sessions")).toEqual(["s2", "s3", "s1"]);
+  const preceding = await rowIds(page, "sessions");
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect.poll(() => rowIds(page, "sessions")).toEqual(["s3", "s2", "s1"]);
   const arranged = await rowIds(page, "sessions");
   expect(arranged[0]).toBe("s3");
   await page.evaluate(async () => { const p = "/src/store/sessionStore.ts"; const { useSessionStore } = await import(/* @vite-ignore */ p); useSessionStore.getState().updateSession("s3", { status: "running", currentTask: "Streaming now" }); useSessionStore.getState().appendOutput("s1", "streaming fixture"); });
   expect(await rowIds(page, "sessions")).toEqual(arranged);
-  await last.focus(); await page.keyboard.press("Space"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Escape");
+  await last.focus(); await page.keyboard.press("Space");
+  await expect(last).toHaveAttribute("data-dragging", "true");
+  await expect(surface).toHaveAttribute("data-arranging", "true");
+  // KeyboardSensor publishes drag start before installing its key listener in
+  // the next task. Complete that task before sending the movement/cancel keys.
+  await page.evaluate(() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+  await page.keyboard.press("ArrowDown");
+  await expect(surface.locator('[data-sortable-id="s2"]')).toHaveAttribute("data-drop-target", "true");
+  await page.keyboard.press("Escape");
+  await expect(last).toHaveAttribute("data-dragging", "false");
+  await expect(surface).toHaveAttribute("data-arranging", "false");
   expect(await rowIds(page, "sessions")).toEqual(arranged);
   await surface.getByRole("button", { name: "Undo arrangement", exact: true }).click();
-  await expect.poll(() => rowIds(page, "sessions")).not.toEqual(arranged);
+  await expect.poll(() => rowIds(page, "sessions")).toEqual(preceding);
   await surface.getByRole("button", { name: "Automatic order", exact: true }).click();
   const identities = await page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.sessions.map((s: any) => [s.id, s.workspaceId, s.workdir, s.providerSessionId ?? null]));
   expect(identities).toEqual([["s1", "p1", "C:\\ProjectOne", "provider-main"], ["s2", "p1", "C:\\ProjectOne", null], ["s3", "p1", "C:\\ProjectOne", null]]);
