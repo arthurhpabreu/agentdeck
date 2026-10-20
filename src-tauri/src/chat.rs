@@ -1554,6 +1554,71 @@ pub fn uses_workdir(app: &tauri::AppHandle, path: &Path) -> bool {
 mod tests {
     use super::*;
     #[cfg(windows)]
+    fn completion_fixture_command(role: &str, prefix: &Path) -> std::process::Command {
+        let mut command = background_command(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "chat::tests::completion_transport_fixture",
+                "--nocapture",
+            ])
+            .env("AGENTDECK_TEST_COMPLETION_ROLE", role)
+            .env("AGENTDECK_TEST_COMPLETION_PREFIX", prefix);
+        command
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Child helper invoked only by the mandatory background-preservation regression"]
+    fn completion_transport_fixture() {
+        let args: Vec<_> = std::env::args().collect();
+        if !args.iter().any(|arg| arg == "--exact")
+            || !args
+                .iter()
+                .any(|arg| arg == "chat::tests::completion_transport_fixture")
+        {
+            return;
+        }
+        let prefix = PathBuf::from(
+            std::env::var_os("AGENTDECK_TEST_COMPLETION_PREFIX").expect("fixture prefix"),
+        );
+        match std::env::var("AGENTDECK_TEST_COMPLETION_ROLE").as_deref() {
+            Ok("background") => {
+                fs::write(prefix.with_extension("ready"), "ready").unwrap();
+                let release = prefix.with_extension("release");
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while !release.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(release.exists(), "The fixture was never released");
+                fs::write(prefix.with_extension("done"), "completed").unwrap();
+            }
+            Ok("transport") => {
+                let log = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(prefix.with_extension("log"))
+                    .unwrap();
+                let mut child = completion_fixture_command("background", &prefix)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::from(log))
+                    .spawn()
+                    .expect("spawn native background fixture");
+                fs::write(prefix.with_extension("pid"), child.id().to_string()).unwrap();
+                // The real test must terminate this transport. A bounded
+                // fallback avoids leaving a descendant if its test process dies.
+                std::thread::sleep(Duration::from_secs(60));
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("The native transport fixture was never terminated");
+            }
+            role => panic!("Unexpected completion fixture role: {role:?}"),
+        }
+    }
+
+    #[cfg(windows)]
     #[test]
     fn codex_successful_transport_cleanup_preserves_intentional_background_work() {
         let prefix =
@@ -1561,33 +1626,16 @@ mod tests {
         let ready = prefix.with_extension("ready");
         let release = prefix.with_extension("release");
         let done = prefix.with_extension("done");
-        let quoted = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "''"));
-        let encode = |script: &str| {
-            STANDARD.encode(
-                script
-                    .encode_utf16()
-                    .flat_map(u16::to_le_bytes)
-                    .collect::<Vec<_>>(),
-            )
-        };
-        let child_script = format!(
-            "[IO.File]::WriteAllText({},'ready'); $until = [DateTime]::UtcNow.AddSeconds(10); while (!(Test-Path -LiteralPath {}) -and [DateTime]::UtcNow -lt $until) {{ Start-Sleep -Milliseconds 20 }}; if (Test-Path -LiteralPath {}) {{ [IO.File]::WriteAllText({},'completed') }}",
-            quoted(&ready), quoted(&release), quoted(&release), quoted(&done),
-        );
-        let parent_script = format!(
-            "Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','{}') | Out-Null; Start-Sleep -Seconds 15",
-            encode(&child_script),
-        );
-        let mut child = background_command("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                &encode(&parent_script),
-            ])
+        let log_path = prefix.with_extension("log");
+        let log = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&log_path)
+            .unwrap();
+        let mut child = completion_fixture_command("transport", &prefix)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(log))
             .spawn()
             .unwrap();
         let process = ChatProcess {
@@ -1604,27 +1652,36 @@ mod tests {
             cancelled: AtomicBool::new(false),
             last_output_at: AtomicU64::new(0),
         };
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut early_exit = None;
         while !ready.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
+            early_exit = process.child.lock().unwrap().try_wait().unwrap();
+            if early_exit.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
         let started = ready.exists();
         kill_transport(&process);
         let _ = process.child.lock().unwrap().wait();
         fs::write(&release, "continue").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !done.exists() && Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while fs::read_to_string(&done).ok().as_deref() != Some("completed")
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(20));
         }
         let completed = fs::read_to_string(&done).ok();
-        for path in [&ready, &release, &done] {
+        let diagnostics = fs::read_to_string(&log_path).unwrap_or_default();
+        let pid = prefix.with_extension("pid");
+        for path in [&ready, &release, &done, &log_path, &pid] {
             let _ = fs::remove_file(path);
         }
-        assert!(started, "The background fixture never started");
+        assert!(started, "The native background fixture did not become ready; transport exit={early_exit:?}; diagnostics={diagnostics}");
         assert_eq!(
             completed.as_deref(),
             Some("completed"),
-            "Successful Codex cleanup terminated intentional background work"
+            "Successful Codex cleanup terminated intentional background work; diagnostics={diagnostics}"
         );
         assert!(!process.cancelled.load(Ordering::SeqCst));
     }

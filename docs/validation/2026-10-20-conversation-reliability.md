@@ -63,11 +63,13 @@ As notas são dados de coordenação não confiáveis e não transferem autoriza
 | Rust `cargo test multi_agent -- --test-threads=1` | **17 passaram**; inclui composição modelo + RTK + memória e deduplicação de sufixos compostos. |
 | `check:i18n` | **486 chaves EN/PT/ES verificadas**, incluindo placeholders e referências estáticas. |
 | Inspeção visual do painel de economia | Estado separado e explicação legíveis, sem sobreposição no viewport verificado. |
-| Rust completo `cargo test --lib -- --test-threads=1` | **302 passaram, 0 falhas e 7 ignorados previstos pela suíte**, incluindo pipes, confirmações tardias, descendente Windows, observabilidade e caixas de entrada. |
+| Rust completo `cargo test --locked --lib`, com paralelismo padrão | **302 passaram, 0 falhas e 8 ignorados previstos pela suíte**, incluindo pipes, confirmações tardias, descendente Windows, observabilidade e caixas de entrada. O auxiliar nativo de processo é um dos ignorados e é executado pelo teste obrigatório correspondente. |
 | Chromium/Edge: continuidade, compactação, entrada adicional, observabilidade, arquivo, anexos e sessões simultâneas | **55 passaram** em execução conjunta. |
 | Painel de coordenação com paginação, envio e desativação | **Passou novamente após a integração da paginação**; inspeção visual da apresentação ativada e desativada. |
 | Build de produção, tradução, formatação Rust e higiene do repositório | Verificados na consolidação local. O build mantém avisos de tamanho de bundles e de imports mistos já existentes. |
 
 As verificações não executaram turnos pagos nem conversas com provedores autenticados. Não alteraram autenticação global, publicaram o aplicativo ou comprovaram redução do consumo total de tokens em tarefas reais. Os testes determinísticos validam os caminhos de transporte, estado e composição; a validação final com os CLIs autenticados continua distinta desses resultados.
+
+Na preparação da release, a CI encontrou dependência de inicialização de dois PowerShell em cinco segundos no teste de descendentes Windows. Essa preparação foi substituída por processos Rust nativos com handshakes e diagnóstico de saída. O teste obrigatório passou dez vezes em lotes de cinco simultâneos, além da suíte com paralelismo padrão. Essa correção não altera o código de produção.
 
 As semânticas de steering e conclusão do Codex foram conferidas na [documentação oficial do App Server](https://learn.chatgpt.com/docs/app-server). Os formatos de telemetria foram conferidos nas fontes oficiais do [protocolo Codex](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs), do [gravador Gemini](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/chatRecordingService.ts) e na [documentação de subagentes Gemini](https://geminicli.com/docs/core/subagents/).
