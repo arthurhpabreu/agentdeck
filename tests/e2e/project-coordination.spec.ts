@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { setupImprovements } from "./improvements-fixtures";
 
-test("project chats show peer activity, exchange notes without starting turns, and support opting out", async ({ page }) => {
+test("project chats show peer activity, exchange notes without starting turns, and support opting out @macos", async ({ page }) => {
   await setupImprovements(page);
   await page.evaluate(() => {
     const w = window as any, original = w.__TAURI_INTERNALS__.invoke;

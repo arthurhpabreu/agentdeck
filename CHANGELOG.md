@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.13.0 — 2026-10-20
+
+### Added
+
+- Project chats share concise activity, worktree locations and handoffs through
+  a scoped board and inbox, with per-chat opt-out and bounded MCP pagination.
+- Native Codex collaboration events and Gemini session records provide subagent
+  hierarchy, tools and status in the agent monitor.
+
+### Fixed
+
+- Large additional input no longer holds the mutex needed to read provider
+  output. Initial and additional text accept up to 2 MiB UTF-8, with token
+  estimates advisory and explicit transport errors.
+- Large Unicode pastes avoid slow native line-by-line insertion; lengthy user
+  messages expand on demand without changing their saved or transmitted text.
+- Silent process exits, missing delivery confirmations and late acknowledgments
+  no longer imply success or revive completed turns. New drafts survive
+  cancellation, startup and follow-up handoff, and normal completion preserves
+  intentional background processes.
+- RTK and model distribution show independent status and compose Claude settings,
+  hooks and instruction files without replacing permissions or duplicating
+  guidance. Relative settings resolve in the session's actual worktree.
+
 ## 0.12.0 — 2026-10-16
 
 ### Changed

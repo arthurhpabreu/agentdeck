@@ -8,7 +8,7 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
   }
-  test("chat reliability delivers large Unicode additional input intact and preserves a newer draft on asynchronous failure", async ({ page }) => {
+  test("chat reliability delivers large Unicode additional input intact and preserves a newer draft on asynchronous failure @macos", async ({ page }) => {
     await start(page);
     await page.evaluate(() => {
       const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
@@ -35,7 +35,7 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
     const current = await state(page); expect(current.busy).toBe(true);
     expect(current.messages.find((m: any) => m.text === prompt).status).toBe("failed");
   });
-  test("chat reliability treats the conservative token estimate as advisory for additional input", async ({ page }) => {
+  test("chat reliability treats the conservative token estimate as advisory for additional input @macos", async ({ page }) => {
     await start(page);
     const result = await page.evaluate(async () => {
       const path = "/src/store/chatStore.ts"; const chat = await import(/* @vite-ignore */ path);
