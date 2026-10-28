@@ -31,7 +31,7 @@ export async function saveChatHistory(id: string, thread: ChatThread, changed: C
   let total = 0;
   count.onsuccess = () => {
     total = count.result;
-    const { messages: _, mcpAuthWarning: _warning, mcpAuthWarningUntil: _deadline, ...metadata } = thread;
+    const { messages: _, interactions: _interactions, mcpAuthWarning: _warning, mcpAuthWarningUntil: _deadline, ...metadata } = thread;
     transaction.objectStore("threads").put({ id, thread: { ...metadata, busy: false, status: undefined }, total });
   };
   await done; return total;

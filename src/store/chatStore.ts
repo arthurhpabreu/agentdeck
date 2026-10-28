@@ -14,14 +14,15 @@ import { type CompactionPolicy, restoreCompactionPolicy, estimateTokens, estimat
 import { deleteChatHistory, readChatHistoryMessage, restoreChatHistory, saveChatHistory } from "../services/chatHistory";
 import { isPendingChatTool, isTerminalChatTool, mergeChatToolStatus } from "../services/chatToolState";
 import { chatInputError } from "../services/chatInput";
+import type { ChatInteraction } from "../services/chatInteraction";
 
 export interface ChatAttachment { name: string; path: string; mimeType: string; size: number }
 export interface ChatUsage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export interface ChatContinuation { sourceSessionId: string; sourceSessionName: string; archivePath: string; messageCount: number; createdAt: number; reviewedContext?: boolean }
 export interface ChatMessage { id: string; turnId: string; role: "user" | "assistant" | "tool"; text: string; at: number; order?: number; title?: string; status?: string; attachments?: ChatAttachment[]; parentId?: string; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number; origin?: "team" }
-export interface ChatThread { messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; mcpAuthWarningUntil?: number; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation; historyRestored?: boolean; recoveryKind?: "provider-resumed" }
-export interface ChatEvent { sessionId: string; turnId: string; kind: "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; contextWindow?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
-export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number }
+export interface ChatThread { interactions?: ChatInteraction[]; messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; mcpAuthWarningUntil?: number; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation; historyRestored?: boolean; recoveryKind?: "provider-resumed" }
+export interface ChatEvent { interaction?: ChatInteraction; sessionId: string; turnId: string; kind: "interaction" | "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; contextWindow?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
+export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number; interactions?: ChatInteraction[] }
 interface BufferedChatEvent extends ChatEvent { textDelta?: boolean; outputDelta?: boolean; receivedAt?: number }
 const MESSAGE_TEXT_LIMIT = 524_288;
 const MCP_AUTH_WARNING_TTL = 8_000;
@@ -53,7 +54,7 @@ function restore(): Record<string, ChatThread> {
     return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value && Array.isArray((value as ChatThread).messages)).map(([id, value]) => {
       const thread = value as ChatThread;
       const messages = thread.messages.map((m, i) => restoreMessage({ ...m, order: m.order ?? i }));
-      return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + (m.parentId ? 0 : estimateTokens(m.text + (m.output ?? "") + (m.command ?? ""))), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, compacting: false, turnId: undefined, status: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined }];
+      return [id, { ...thread, messages, compactionPolicy: restoreCompactionPolicy(thread.compactionPolicy), nextMessageOrder: thread.nextMessageOrder ?? messages.length, contextPrompts: thread.contextPrompts ?? messages.filter(m => m.role === "user" && m.status !== "failed").length, contextTokens: thread.contextTokens ?? messages.reduce((n, m) => n + (m.parentId ? 0 : estimateTokens(m.text + (m.output ?? "") + (m.command ?? ""))), 0), contextTokensEstimated: thread.contextTokensEstimated ?? true, busy: false, interactions: undefined, compacting: false, turnId: undefined, status: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined }];
     }));
   } catch { return {}; }
 }
@@ -82,6 +83,10 @@ export const useChatStore = create<{
     const connectionNotice = e.kind === "status" && !e.parentId && (e.status === "mcp-auth-warning" || e.status === "reconnecting");
     const passiveDiagnostic = e.kind === "status" && !e.parentId && e.status === "diagnostic";
     let next = e.kind === "heartbeat" ? { ...old, lastHeartbeatAt: at, ...(e.pid ? { pid: e.pid } : {}) } : { ...old, updatedAt: at, ...(connectionNotice || passiveDiagnostic ? {} : { lastEventAt: at }), ...(e.pid ? { pid: e.pid } : {}) };
+    if (e.kind === "interaction") {
+      next.interactions = e.status === "resolved" ? old.interactions?.filter(request => request.id !== e.itemId)
+        : e.interaction && !old.interactions?.some(request => request.id === e.interaction!.id) ? [...old.interactions ?? [], e.interaction] : old.interactions;
+    }
     if (e.kind === "heartbeat") {
       if (threads === s.threads) threads = { ...threads };
       threads[e.sessionId] = next;
@@ -151,7 +156,7 @@ export const useChatStore = create<{
     if (e.kind === "done") {
       const unconfirmed = [...next.messages].reverse().find(m => m.turnId === e.turnId && m.role === "user" && m.origin !== "team" && (m.status === "sending" || m.status === "queued"));
       const compactDraft = old.compacting && e.status !== "completed" ? old.messages.find(m => m.id === `${e.turnId}:user` && m.origin !== "team")?.text : undefined;
-      next = { ...next, busy: false, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), inputError: next.inputError || (unconfirmed ? "The provider did not confirm this additional input. Review the conversation before sending it again." : undefined), draft: old.draft || unconfirmed?.text || compactDraft || "", messages: next.messages.map(m => m.turnId === e.turnId && m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && isPendingChatTool(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
+      next = { ...next, busy: false, interactions: undefined, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), inputError: next.inputError || (unconfirmed ? "The provider did not confirm this additional input. Review the conversation before sending it again." : undefined), draft: old.draft || unconfirmed?.text || compactDraft || "", messages: next.messages.map(m => m.turnId === e.turnId && m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && isPendingChatTool(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
     }
     if (e.kind === "text" || e.kind === "tool") {
       const id = chatMessageId(e);
@@ -197,7 +202,7 @@ function cacheRecentThreads() {
     let bytes = 0;
     const messages = thread.messages.slice(-20).filter(m => { bytes += messageTextSize(m); return bytes <= Math.min(40_000, budget); });
     budget -= messages.reduce((n, m) => n + messageTextSize(m), 0);
-    threads[id] = { ...thread, messages, archivedCount: (thread.archivedCount ?? 0) + thread.messages.length - messages.length, diagnostic: undefined, compacting: false, busy: false, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined };
+    threads[id] = { ...thread, messages, archivedCount: (thread.archivedCount ?? 0) + thread.messages.length - messages.length, diagnostic: undefined, interactions: undefined, compacting: false, busy: false, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined };
   }
   localStorage.setItem(KEY, JSON.stringify(threads));
 }
@@ -238,12 +243,23 @@ export async function persistChatHistory(): Promise<void> {
 useChatStore.subscribe((state, old) => {
   if (state.threads === old.threads) return;
   for (const [id, thread] of Object.entries(state.threads)) if (thread !== old.threads[id]) {
-    const pending = dirty.get(id) ?? new Map(); const previous = new Map(old.threads[id]?.messages.map(m => [m.id, m]));
-    for (const message of thread.messages) if (previous.get(message.id) !== message) pending.set(message.id, message);
+    const before = old.threads[id];
+    const waiting = !!thread.interactions?.some(request => request.blocking);
+    if (thread.busy && waiting !== !!before?.interactions?.some(request => request.blocking)) {
+      const phase = waiting ? "waiting" : "running";
+      useSessionStore.getState().updateSession(id, { status: phase });
+      useAgentActivityStore.getState().record(id, { phase });
+    }
+    if (before && !Object.keys(thread).some(key => !["updatedAt", "lastEventAt", "lastHeartbeatAt", "pid", "status", "activity", "diagnostic", "recoveryNotice", "interactions"].includes(key) && thread[key as keyof ChatThread] !== before[key as keyof ChatThread])) continue;
+    const pending = dirty.get(id) ?? new Map();
+    if (thread.messages !== before?.messages) {
+      const previous = new Map(before?.messages.map(m => [m.id, m]));
+      for (const message of thread.messages) if (previous.get(message.id) !== message) pending.set(message.id, message);
+    }
     dirty.set(id, pending);
   }
   for (const id of Object.keys(old.threads)) if (!state.threads[id]) { dirty.delete(id); removed.add(id); }
-  scheduleSave(Object.values(state.threads).some(thread => thread.busy) ? 3000 : 800);
+  if (dirty.size || removed.size) scheduleSave(Object.values(state.threads).some(thread => thread.busy) ? 3000 : 800);
 });
 const initialThreads = useChatStore.getState().threads;
 // Retain the entire migration batch even when IndexedDB cannot open at startup.
@@ -255,7 +271,7 @@ export const chatHistoryReady = restoreChatHistory().then(archived => {
     const merged = cached ? [...new Map([...thread.messages, ...cached.messages].map(m => [m.id, m])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)) : thread.messages;
     const lastArchivedOrder = thread.messages[thread.messages.length - 1]?.order ?? -1;
     const newlyRecovered = cached?.messages.filter(m => (m.order ?? 0) > lastArchivedOrder).length ?? 0;
-    const recovered = cached && (cached.updatedAt ?? 0) > (thread.updatedAt ?? 0) ? { ...thread, ...cached, messages: merged, archivedCount: Math.max(0, (thread.archivedCount ?? 0) + thread.messages.length + newlyRecovered - merged.length), busy: false, compacting: false, turnId: undefined, status: undefined } : thread;
+    const recovered = cached && (cached.updatedAt ?? 0) > (thread.updatedAt ?? 0) ? { ...thread, ...cached, messages: merged, archivedCount: Math.max(0, (thread.archivedCount ?? 0) + thread.messages.length + newlyRecovered - merged.length), busy: false, interactions: undefined, compacting: false, turnId: undefined, status: undefined } : thread;
     threads[id] = cached && cached !== initialThreads[id] ? { ...recovered, draft: cached.draft, goal: cached.goal, compactionPolicy: cached.compactionPolicy ?? recovered.compactionPolicy } : recovered;
   }
   for (const id of removed) delete threads[id];
@@ -296,6 +312,8 @@ function acceptChatEvent(e: ChatEvent) {
     merged.output = boundedOutput(e.delta ? (previous?.output ?? "") + e.output : e.output);
     merged.outputDelta = previous?.output !== undefined && e.delta ? previous.outputDelta : !!e.delta;
   } else { merged.output = previous?.output; merged.outputDelta = previous?.outputDelta; }
+  // Preserve the order of the latest activity when interleaved items are coalesced.
+  pendingEvents.delete(key);
   pendingEvents.set(key, merged);
   if (!eventTimer) eventTimer = setTimeout(flushChatEvents, 40);
 }
@@ -350,7 +368,7 @@ function processChatEvents(events: BufferedChatEvent[]) {
       const pending = outputActivity.get(e.sessionId);
       outputActivity.set(e.sessionId, { bytes: (pending?.bytes ?? 0) + new TextEncoder().encode(added).length, at: e.receivedAt ?? Date.now(), title: e.kind === "tool" ? e.command || e.title : pending?.title });
     }
-    if (e.kind === "status") record(e.sessionId, { phase: "running", ...(e.pid ? { pid: e.pid } : {}) });
+    if (e.kind === "status") record(e.sessionId, { phase: useChatStore.getState().threads[e.sessionId]?.interactions?.some(request => request.blocking) ? "waiting" : "running", ...(e.pid ? { pid: e.pid } : {}) });
     if (e.kind === "error") record(e.sessionId, { error: e.text }, "activity.error", e.text);
     if (e.kind === "done") {
       for (const key of outputLengths.keys()) if (key.startsWith(`${e.sessionId}:${e.turnId}:`)) outputLengths.delete(key);
@@ -365,7 +383,9 @@ function processChatEvents(events: BufferedChatEvent[]) {
   }
   for (const [id, pending] of outputActivity) {
     const bytes = useAgentActivityStore.getState().sessions[id]?.bytes ?? 0;
-    record(id, { phase: "running", bytes: bytes + pending.bytes, lastOutputAt: pending.at }, pending.title ? "activity.running" : undefined, pending.title);
+    const busy = useChatStore.getState().threads[id]?.busy;
+    const phase = useChatStore.getState().threads[id]?.interactions?.some(request => request.blocking) ? "waiting" as const : "running" as const;
+    record(id, { ...(busy ? { phase } : {}), bytes: bytes + pending.bytes, lastOutputAt: pending.at }, busy && pending.title ? "activity.running" : undefined, pending.title);
   }
 }
 export function ensureChatEvents() {
@@ -397,12 +417,13 @@ function waitCoordinationReceipt(sessionId: string, messageId: string): Promise<
     check();
   });
 }
-export async function sendChatTurn(sessionId: string, prompt: string, attachments: ChatAttachment[], options?: { preserveDraft?: boolean; coordination?: boolean; expectedIdentity?: string }): Promise<boolean> {
+export async function sendChatTurn(sessionId: string, prompt: string, attachments: ChatAttachment[], options?: { preserveDraft?: boolean; coordination?: boolean; expectedIdentity?: string; requireIdle?: boolean }): Promise<boolean> {
   await chatHistoryReady;
   const session = useSessionStore.getState().sessions.find(s => s.id === sessionId);
   const old = useChatStore.getState().threads[sessionId] ?? emptyThread;
   if (!session || usePtyRuntimeStore.getState().sessions[sessionId] || (!prompt.trim() && !attachments.length)) return false;
   if (options?.expectedIdentity && chatSessionIdentity(session) !== options.expectedIdentity) return false;
+  if (old.busy && options?.requireIdle) return false;
   if (old.busy) return sendChatSupplement(sessionId, prompt, attachments, options);
   const providerSessionId = session.providerSessionId || old.providerSessionId || undefined;
   const goal = old.goal?.trim() ?? "";
@@ -424,7 +445,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   const turnId = createUuid();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments, ...(options?.coordination ? { origin: "team" as const, status: "sending" } : {}) };
   useSourceDeliveryStore.getState().start(sessionId, { hasHistory: !!(old.messages.length || old.archivedCount || old.continuation), providerSessionId });
-  useChatStore.getState().patch(sessionId, { busy: true, providerSessionId, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: options?.preserveDraft ? old.draft : "", messages: [...old.messages, message] });
+  useChatStore.getState().patch(sessionId, { busy: true, interactions: undefined, providerSessionId, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: options?.preserveDraft ? old.draft : "", messages: [...old.messages, message] });
   useSessionStore.getState().updateSession(sessionId, { status: "running", ...(!options?.coordination ? { currentTask: prompt.trim() } : {}) });
   if (!old.messages.length && !options?.coordination) useSessionStore.getState().setAutomaticSessionName(sessionId, prompt.trim().slice(0, 44) || attachments[0]?.name || "");
   useAgentActivityStore.getState().record(sessionId, { phase: "starting", startedAt: Date.now(), endedAt: undefined, error: undefined, command: session.runner.type === "codex" ? "codex app-server" : "claude --print", pid: undefined }, "activity.starting");
@@ -508,6 +529,11 @@ export async function refreshChatTurnStatus(sessionId: string): Promise<ChatTurn
   if (status.turnId && status.turnId !== current.turnId) return status;
   if (status.running) {
     useChatStore.getState().patch(sessionId, { lastHeartbeatAt: Date.now(), ...(status.pid ? { pid: status.pid } : {}), ...(status.status && status.status !== "running" ? { status: status.status } : {}) });
+    if (status.interactions && current.interactions === before.interactions) {
+      useChatStore.getState().patch(sessionId, { interactions: status.interactions });
+      for (const previous of current.interactions ?? []) if (!status.interactions.some(request => request.id === previous.id)) recordChatAttention({ sessionId, turnId: current.turnId!, kind: "interaction", status: "resolved", itemId: previous.id });
+      for (const interaction of status.interactions) recordChatAttention({ sessionId, turnId: current.turnId!, kind: "interaction", interaction });
+    }
   } else {
     flushChatEvents();
     const latest = useChatStore.getState().threads[sessionId];

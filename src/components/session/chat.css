@@ -153,3 +153,11 @@
   .ad-composer-compact .ad-agent-controls .ad-mode-field select { width: 74px; }
 }
 .ad-chat-recovery{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:4px 0}.ad-chat-recovery>div{width:100%;font-size:11px}.ad-context-review{width:min(780px,90vw);max-height:85vh;overflow:auto;border:1px solid var(--ci-toolbar-border);border-radius:16px;background:var(--ci-surface);color:var(--ci-text);padding:24px}.ad-context-review::backdrop{background:#0009}.ad-context-review textarea{display:block;resize:vertical;min-height:240px;width:100%;box-sizing:border-box;background:var(--ci-code-bg);color:var(--ci-text);padding:12px;border:1px solid var(--ci-toolbar-border);border-radius:8px;margin:12px 0}.ad-context-review p{line-height:1.6}.ad-diff-comment,.ad-diff-review{padding:12px;color:var(--ci-text);font-size:12px}.ad-diff-comment textarea{display:block;width:100%;min-height:70px;margin:8px 0;background:var(--ci-code-bg);color:var(--ci-text);border:1px solid var(--ci-toolbar-border)}.ad-diff-review article{border-top:1px solid var(--ci-toolbar-border);padding:8px 0;overflow-wrap:anywhere}.ad-diff-review label{display:block;margin:8px 0}
+.ad-chat-interactions { display: grid; gap: 10px; max-height: 42vh; overflow: auto; }
+.ad-chat-interaction { padding: 14px; border: 1px solid var(--ci-yellow); border-radius: 9px; background: var(--ci-surface); color: var(--ci-text); font-size: 12px; }
+.ad-chat-interaction > strong { display: flex; gap: 8px; align-items: center; }
+.ad-chat-interaction p { margin: 8px 0; color: var(--ci-text-muted); line-height: 1.5; }
+.ad-chat-interaction pre { overflow: auto; max-height: 140px; padding: 10px; background: var(--ci-bg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ad-chat-interaction-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.ad-chat-interaction form, .ad-chat-interaction label { display: grid; gap: 8px; margin-top: 10px; }
+.ad-chat-interaction :is(select,input) { width: 100%; padding: 8px; color: var(--ci-text); background: var(--ci-bg); border: 1px solid var(--ci-border); border-radius: 5px; }

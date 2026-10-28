@@ -1,0 +1,26 @@
+.ad-schedule-trigger { position: relative; }
+.ad-schedule-trigger small { position: absolute; right: -3px; top: -3px; min-width: 13px; border-radius: 6px; padding: 1px 3px; background: var(--ci-accent); color: var(--ci-bg); font-size: 9px; }
+.ad-schedule-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 60px); padding: 22px; border: 1px solid var(--ci-border-med); border-radius: 12px; background: var(--ci-bg); color: var(--ci-text); overflow: auto; box-shadow: 0 20px 100px #0008; }
+.ad-schedule-dialog::backdrop { background: #0009; }
+.ad-schedule-dialog header, .ad-schedule-dialog header > div { display: flex; align-items: center; gap: 10px; }
+.ad-schedule-dialog header { justify-content: space-between; }
+.ad-schedule-dialog h2 { margin: 0; font-size: 18px; }
+.ad-schedule-dialog p { line-height: 1.6; }
+.ad-schedule-destination { color: var(--ci-accent); margin: 8px 0; font-size: 12px; }
+.ad-schedule-hint, .ad-schedule-dialog form > small { font-size: 12px; color: var(--ci-text-muted); }
+.ad-schedule-dialog form, .ad-schedule-dialog form > label, .ad-schedule-fields > label { display: grid; gap: 7px; }
+.ad-schedule-dialog form { gap: 14px; margin: 18px 0; font-size: 12px; }
+.ad-schedule-dialog :is(textarea, input:not([type=checkbox])) { min-width: 0; width: 100%; padding: 9px; background: var(--ci-surface); color: var(--ci-text); border: 1px solid var(--ci-border-med); border-radius: 6px; font: inherit; }
+.ad-schedule-dialog textarea { resize: vertical; line-height: 1.5; }
+.ad-schedule-fields { display: grid; grid-template-columns: .8fr 1fr 1fr; gap: 12px; }
+.ad-schedule-dialog fieldset { border: 1px solid var(--ci-border); border-radius: 6px; padding: 12px; }
+.ad-schedule-days { display: flex; flex-wrap: wrap; gap: 12px; }
+.ad-schedule-days label { display: flex; align-items: center; gap: 5px; }
+.ad-schedule-next { font-size: 12px; margin: 0; }
+.ad-schedule-error { color: var(--ci-red); }
+.ad-schedule-list { display: grid; gap: 12px; font-size: 12px; }
+.ad-schedule-list article { display: grid; gap: 8px; padding: 14px; background: var(--ci-surface); border: 1px solid var(--ci-border); border-radius: 8px; }
+.ad-schedule-list article > strong { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 110px; overflow: auto; font-weight: 500; line-height: 1.6; }
+.ad-schedule-list :is(span, small) { color: var(--ci-text-muted); line-height: 1.5; }
+.ad-schedule-list article > div { display: flex; gap: 8px; }
+@media (max-width: 550px) { .ad-schedule-fields { grid-template-columns: 1fr; } .ad-schedule-dialog { padding: 16px; } }

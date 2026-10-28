@@ -208,6 +208,7 @@
   "workspace.summaryWaiting": "aguardando",
   "workspace.summaryRunning": "executando",
   "workspace.summarySessions": "sessões",
+  "workspace.openChats": "{{count}} chats abertos",
   "workspace.removeWorkspace": "Remover projeto",
   "workspace.groupAttention": "Aguardando você",
   "workspace.groupRunning": "Em execução",

@@ -126,8 +126,12 @@ pub(super) struct LiveInput {
     started: bool,
     compacting: bool,
     transport_failure: Arc<Mutex<Option<String>>>,
+    interactions: HashMap<String, Value>,
 }
 impl LiveInput {
+    pub fn interaction_snapshot(&self) -> Vec<Value> {
+        self.interactions.values().map(interaction_value).collect()
+    }
     pub fn completion_drained(&self) -> bool {
         self.writer.is_none()
             && self.queued.is_empty()
@@ -137,6 +141,7 @@ impl LiveInput {
     }
     pub fn abort(&mut self) -> Vec<(String, &'static str)> {
         self.writer.take();
+        self.interactions.clear();
         let mut unconfirmed = Vec::new();
         for message in self.queued.drain(..) {
             unconfirmed.push((
@@ -189,6 +194,7 @@ impl LiveInput {
             started: false,
             compacting: false,
             transport_failure: Arc::new(Mutex::new(None)),
+            interactions: HashMap::new(),
         }
     }
     pub fn write_text(&mut self, text: &str) -> Result<(), String> {
@@ -206,6 +212,28 @@ impl LiveInput {
     }
     pub fn initialize(&mut self) -> Result<(), String> {
         self.write(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"agentdeck","version":env!("CARGO_PKG_VERSION")}}}))
+    }
+    pub fn respond(&mut self, id: &str, response: &Value) -> Result<(), String> {
+        let request = self.interactions.get(id).ok_or("This request is no longer pending.")?;
+        let method = request["method"].as_str().unwrap_or_default();
+        if method.ends_with("/requestApproval") {
+            if !matches!(response["decision"].as_str(), Some("accept" | "decline" | "cancel")) {
+                return Err("Invalid approval decision.".into());
+            }
+        } else {
+            let answers = response["answers"].as_object().ok_or("Answers are required.")?;
+            for question in request["params"]["questions"].as_array().ok_or("Invalid questions.")? {
+                let answer = answers.get(question["id"].as_str().unwrap_or_default())
+                    .and_then(|value| value["answers"].as_array()).ok_or("Answer each question.")?;
+                if answer.is_empty() || answer.iter().any(|value| value.as_str().is_none_or(|text| text.trim().is_empty() || text.len() > 32_768)) {
+                    return Err("Invalid answer.".into());
+                }
+            }
+        }
+        if response.to_string().len() > 128 * 1024 { return Err("Response is too large.".into()); }
+        self.write(json!({"id":request["id"],"result":response}))?;
+        self.interactions.remove(id);
+        Ok(())
     }
     pub fn submit(&mut self, request: &ChatTurnRequest, id: &str) -> Result<&'static str, String> {
         if self.writer.is_none() {
@@ -910,6 +938,23 @@ impl LiveProtocol {
         }
         if record.get("id").is_some() && record.get("method").is_some() {
             let method = record["method"].as_str().unwrap_or("");
+            if matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" | "item/tool/requestUserInput" | "tool/requestUserInput") {
+                let params = &record["params"];
+                if params["threadId"].as_str().is_some_and(|id| input.thread.as_deref() != Some(id))
+                    || params["turnId"].as_str().is_some_and(|id| input.turn.as_deref() != Some(id)) {
+                    input.write(json!({"id":record["id"],"error":{"code":-32600,"message":"Stale interaction"}}))?;
+                    return Ok(());
+                }
+                let id = record["id"].to_string();
+                if !input.interactions.contains_key(&id) {
+                    if input.interactions.len() >= 32 || record.to_string().len() > 128 * 1024 {
+                        return Err("Too many or oversized pending interactions.".into());
+                    }
+                    input.interactions.insert(id.clone(), record.clone());
+                    out.push(json!({"type":"agentdeck.interaction","interaction":interaction_value(record)}));
+                }
+                return Ok(());
+            }
             let result = match method {
                 "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                     json!({"decision":"cancel"})
@@ -1004,6 +1049,10 @@ impl LiveProtocol {
             return Ok(());
         }
         match record["method"].as_str().unwrap_or("") {
+            "serverRequest/resolved"=>{
+                let id = params["requestId"].to_string();
+                if input.interactions.remove(&id).is_some() { out.push(json!({"type":"agentdeck.interaction","resolved":id})); }
+            }
             "turn/started"=>{input.turn=params["turn"]["id"].as_str().map(str::to_owned);input.started=true;self.phase=ProtocolPhase::Running;out.push(json!({"type":"turn.started"}));}
             "item/agentMessage/delta"=>{
                 let id=params["itemId"].as_str().unwrap_or("message");
@@ -1032,6 +1081,7 @@ impl LiveProtocol {
                 out.push(json!({"type":"usage.updated","usage":sum_usage(&self.totals,&self.usage),"context_tokens":usage["inputTokens"].as_u64().unwrap_or(0)+usage["outputTokens"].as_u64().unwrap_or(0),"context_window":params["tokenUsage"]["modelContextWindow"]}));
             }
             "turn/completed"=>{
+                input.interactions.clear();
                 if params["turn"]["status"]=="failed" {out.push(json!({"type":"error","message":params["turn"]["error"]["message"].as_str().unwrap_or("Codex turn failed")}));}
                 self.totals=sum_usage(&self.totals,&self.usage);self.usage=json!({});
                 out.push(json!({"type":"turn.completed","status":params["turn"]["status"],"usage":self.totals}));
@@ -1064,6 +1114,11 @@ impl LiveProtocol {
         }
         Ok(())
     }
+}
+fn interaction_value(record: &Value) -> Value {
+    let method = record["method"].as_str().unwrap_or_default();
+    let params = &record["params"];
+    json!({"id":record["id"].to_string(),"kind":if method.ends_with("/requestApproval") {"approval"} else {"question"},"action":if method.contains("fileChange") {"fileChange"} else {"command"},"blocking":method.ends_with("/requestApproval") || params["isBlocking"] != false,"command":params["command"],"cwd":params["cwd"],"reason":params["reason"],"grantRoot":params["grantRoot"],"itemId":params["itemId"],"questions":params["questions"]})
 }
 fn retry_warning(params: &Value) -> Value {
     json!({"type":"agentdeck.warning", "status":"reconnecting", "message":params["error"]["message"].as_str().unwrap_or("Codex is retrying the connection. The conversation is preserved.")})
@@ -1113,6 +1168,44 @@ pub(super) fn normalize_item(item: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn approvals_remain_pending_until_the_user_decides_and_cannot_be_replayed() {
+        for (method, decision) in [("item/commandExecution/requestApproval", "accept"), ("item/fileChange/requestApproval", "cancel")] {
+            let bytes = Arc::new(Mutex::new(Vec::new()));
+            let req = super::super::tests::request("codex");
+            let mut protocol = LiveProtocol::new(&req);
+            let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+            input.thread = Some("thread".into()); input.turn = Some("turn".into()); input.started = true;
+            let request = json!({"id":77,"method":method,"params":{"threadId":"thread","turnId":"turn","command":"cargo test"}});
+            let records = protocol.ingest(&request.to_string(), &mut input);
+            assert!(records.iter().any(|record| record.contains("agentdeck.interaction")));
+            assert!(written(&bytes).is_empty(), "Never answer an approval automatically");
+            assert!(protocol.ingest(&request.to_string(), &mut input).is_empty());
+            assert!(input.respond("77", &json!({"decision":"acceptForSession"})).is_err());
+            input.respond("77", &json!({"decision":decision})).unwrap();
+            let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
+            assert_eq!(sent, json!({"id":77,"result":{"decision":decision}}));
+            assert!(input.respond("77", &json!({"decision":"accept"})).is_err());
+        }
+    }
+    #[test]
+    fn questions_preserve_blocking_intent_require_answers_and_expire_on_provider_resolution() {
+        let req = super::super::tests::request("codex");
+        let mut protocol = LiveProtocol::new(&req);
+        let mut input = LiveInput::with_writer(Box::new(Vec::new()), true);
+        input.thread = Some("thread".into()); input.turn = Some("turn".into()); input.started = true;
+        let request = json!({"id":"q","method":"item/tool/requestUserInput","params":{"threadId":"thread","turnId":"turn","isBlocking":false,"questions":[{"id":"color","header":"Color","question":"Which color?"}]}});
+        let records = protocol.ingest(&request.to_string(), &mut input);
+        let event: Value = serde_json::from_str(&records[0]).unwrap();
+        assert_eq!(event["interaction"]["blocking"], false);
+        assert!(input.respond("\"q\"", &json!({"answers":{}})).is_err());
+        let resolved = protocol.ingest(&json!({"method":"serverRequest/resolved","params":{"threadId":"thread","requestId":"q"}}).to_string(), &mut input);
+        assert!(resolved.iter().any(|record| record.contains("resolved")));
+        assert!(input.respond("\"q\"", &json!({"answers":{"color":{"answers":["Blue"]}}})).is_err());
+        let stale = protocol.ingest(&json!({"id":3,"method":"item/fileChange/requestApproval","params":{"threadId":"other","turnId":"turn"}}).to_string(), &mut input);
+        assert!(stale.is_empty());
+        assert!(input.interactions.is_empty());
+    }
     #[test]
     fn claude_coordination_receipt_requires_its_native_input_uuid_and_is_idempotent() {
         let mut req = super::super::tests::request("claude-code");

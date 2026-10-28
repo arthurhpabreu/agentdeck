@@ -3,6 +3,9 @@ import { useShallow } from "zustand/react/shallow";
 import { useAttentionStore } from "./store/attentionStore";
 import { useNavigationStore } from "./store/navigationStore";
 import { forgetChatViewState } from "./services/chatViewState";
+import { startChatRuntime } from "./services/chatRuntime";
+import { startPromptScheduler } from "./services/promptScheduler";
+import { useChatStore } from "./store/chatStore";
 import { startProjectCoordination } from "./services/projectCoordination";
 import { useSourceDeliveryStore } from "./store/sourceDeliveryStore";
 import { checkCliUpdatesOnStartup } from "./store/cliUpdateStore";
@@ -84,6 +87,8 @@ export default function App() {
   const { settings, patchSettings } = useSettingsStore(useShallow(state => ({ settings: state.settings, patchSettings: state.patchSettings })));
   useEffect(() => { checkCliUpdatesOnStartup(); checkAppUpdateOnStartup(); }, []);
   useEffect(startProjectCoordination, []);
+  useEffect(startChatRuntime, []);
+  useEffect(startPromptScheduler, []);
   const effectiveLocale = resolveEffectiveLocale(settings.locale);
   const direction = getLocaleDirection(effectiveLocale);
   const settingsOpen = useSettingsStore((s) => s.settingsOpen);
@@ -552,6 +557,7 @@ export default function App() {
     const u4 = listen<{ session_id: string; status: string; task: string }>(
       "claude-status",
       ({ payload }) => {
+        if (useChatStore.getState().threads[payload.session_id]?.busy) return;
         updateSession(payload.session_id, {
           status: payload.status as Parameters<typeof updateSession>[1]["status"],
           currentTask: payload.task,
@@ -613,7 +619,7 @@ export default function App() {
     // SessionPanel unmounts when closed, so keep this global fallback listener.
     const u6 = listen<{ session_id: string; exit_code?: number }>("pty-exit", ({ payload }) => {
       const session = useSessionStore.getState().sessions.find(s => s.id === payload.session_id);
-      if (session) updateSession(session.id, { status: payload.exit_code ? "error" : "done" });
+      if (session && !useChatStore.getState().threads[session.id]?.busy) updateSession(session.id, { status: payload.exit_code ? "error" : "done" });
     });
 
     // Bind the native provider session for resume on the next visit.
@@ -648,7 +654,7 @@ export default function App() {
     const u8 = listen<{ session_id: string; turn_id?: string; source?: string }>("pty-waiting", ({ payload }) => {
       if (payload.source !== "codex" && payload.source !== "claude-code") return;
       const activity = useSessionStore.getState().sessions.find(s => s.id === payload.session_id);
-      if (!activity) return;
+      if (!activity || useChatStore.getState().threads[payload.session_id]?.busy) return;
       useAttentionStore.getState().record({ id: `terminal:${payload.session_id}:${payload.turn_id ?? activity.currentTask}`, sessionId: payload.session_id, kind: "completed", text: "", source: payload.source, at: Date.now() });
     });
     const u9 = listen<{ session_id: string; error: string }>("pty-error", ({ payload }) => {

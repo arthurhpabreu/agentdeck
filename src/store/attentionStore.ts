@@ -26,10 +26,13 @@ export const useAttentionStore = create<{
 /** Only accepted provider events: passive OAuth/heartbeat/silence never enter the inbox. */
 export function recordChatAttention(event: ChatEvent, failed = false) {
   if (event.parentId) return;
+  if (event.kind === "interaction" && event.status === "resolved") useAttentionStore.getState().read(`chat:${event.sessionId}:${event.turnId}:interaction:${event.itemId}`);
+  if (event.kind === "done") useAttentionStore.setState(state => ({ items: state.items.map(item => item.sessionId === event.sessionId && item.source === "provider" && ["approval", "question"].includes(item.kind) && !item.read ? { ...item, read: true } : item) }));
   if (event.kind === "status" && event.status === "started") useAttentionStore.getState().resolveActions(event.sessionId);
   const kind: AttentionKind | undefined = event.kind === "error" ? "error"
-    : event.kind === "tool" && event.status === "blocked" ? "approval"
+    : event.kind === "interaction" && event.interaction?.blocking ? event.interaction.kind
+    : event.kind === "tool" && event.status === "blocked" ? "error"
     : event.kind === "status" && ["needs-input", "question", "approval-required"].includes(event.status ?? "") ? event.status === "approval-required" ? "approval" : "question"
     : event.kind === "done" && !failed && event.status !== "error" && !["stopped", "interrupted"].includes(event.status ?? "") ? "completed" : undefined;
-  if (kind) useAttentionStore.getState().record({ id: `chat:${event.sessionId}:${event.turnId}:${kind}:${event.itemId ?? "turn"}`, sessionId: event.sessionId, kind, text: (event.text || event.title || "").slice(0, 1200), source: "provider", at: Date.now() });
+  if (kind) useAttentionStore.getState().record({ id: event.interaction ? `chat:${event.sessionId}:${event.turnId}:interaction:${event.interaction.id}` : `chat:${event.sessionId}:${event.turnId}:${kind}:${event.itemId ?? "turn"}`, sessionId: event.sessionId, kind, text: (event.interaction?.command || event.interaction?.questions?.[0]?.question || event.text || event.title || "").slice(0, 1200), source: "provider", at: Date.now() });
 }

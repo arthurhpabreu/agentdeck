@@ -1,5 +1,6 @@
 import { useAppI18n } from "../i18n";
 import { ClaudeSession, SessionStatus } from "../store/sessionStore";
+import { useChatStore } from "../store/chatStore";
 import { useSettingsStore, isGlassTheme } from "../store/settingsStore";
 
 const STATUS_LABEL_KEY: Record<SessionStatus, string> = {
@@ -22,6 +23,12 @@ const STATUS_COLOR: Record<SessionStatus, string> = {
 
 export function StatusBar({ session }: { session?: ClaudeSession }) {
   const { t } = useAppI18n();
+  const runtimeStatus = useChatStore(state => {
+    const thread = session ? state.threads[session.id] : undefined;
+    return thread?.busy ? thread.interactions?.find(request => request.blocking)?.kind ?? "running" : session?.status ?? "idle";
+  });
+  const status: SessionStatus = runtimeStatus === "approval" || runtimeStatus === "question" ? "waiting" : runtimeStatus;
+  const labelKey = runtimeStatus === "approval" ? "workspace.attentionApproval" : runtimeStatus === "question" ? "workspace.attentionQuestion" : STATUS_LABEL_KEY[status];
   const isGlass = useSettingsStore((s) => isGlassTheme(s.settings.theme));
   const textShadow = isGlass ? "var(--ci-glass-text-shadow)" : "none";
 
@@ -47,11 +54,11 @@ export function StatusBar({ session }: { session?: ClaudeSession }) {
                 height: 6,
                 borderRadius: "50%",
                 flexShrink: 0,
-                background: STATUS_COLOR[session.status],
+                background: STATUS_COLOR[status],
               }}
             />
-            <span style={{ fontSize: 10, color: STATUS_COLOR[session.status], flexShrink: 0, fontWeight: 600 }}>
-              {t(STATUS_LABEL_KEY[session.status])}
+            <span style={{ fontSize: 10, color: STATUS_COLOR[status], flexShrink: 0, fontWeight: 600 }}>
+              {t(labelKey)}
             </span>
             <span style={{ fontSize: 10, color: "var(--ci-text-dim)", flexShrink: 0, opacity: 0.45 }}>·</span>
             <span

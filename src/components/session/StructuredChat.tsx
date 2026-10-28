@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowDown, ArrowRight, ArrowUp, Download, FileText, FolderOpen, ImagePlus, LoaderCircle, Paperclip, Pencil, Plus, Search, ShieldCheck, Square, Target, TerminalSquare, X } from "lucide-react";
 import { useAppI18n } from "../../i18n";
@@ -7,12 +7,11 @@ import { RUNNER_LABELS, useSettingsStore, type RunnerType } from "../../store/se
 import { emptyThread, persistChatHistory, sendChatTurn, stopChatTurn, useChatStore, type ChatAttachment, type ChatMessage } from "../../store/chatStore";
 import { ProviderIcon } from "../ProviderIcon";
 import { AgentModelPicker } from "./AgentModelPicker";
-import { ChatMarkdown, CopyButton } from "./ChatMarkdown";
+import { ChatMessageRow } from "./ChatMessageRow";
 import { SketchDialog } from "./SketchDialog";
 import { modelDisplayName } from "../../services/agentExecution";
 import { modelCopy } from "./modelCopy";
 import { chatCopy } from "./chatCopy";
-import { SaveResponseToMemory } from "../memory/SaveResponseToMemory";
 import "./chat.css";
 import { workflowCopy } from "./workflowCopy";
 import { CommandTextarea } from "./CommandTextarea";
@@ -23,12 +22,12 @@ import { ChatContextControl } from "./ChatContextControl";
 import { contextCopy } from "./contextCopy";
 import { boundedChatMessages } from "../../services/chatCompaction";
 import { matchesChatMessage, readChatHistory, searchChatHistory } from "../../services/chatHistory";
-import { ChatToolCard } from "./ChatToolCard";
+import { ChatInteractions } from "./ChatInteractions";
+import { PromptSchedules } from "./PromptSchedules";
 import { ChatTurnActivity } from "./ChatTurnActivity";
 import { ChatExecutionDetails } from "./ChatExecutionDetails";
 import { showSessionSurface } from "../../services/workbenchCommands";
 import { McpAuthNotice } from "./McpAuthNotice";
-import { ChatUserText } from "./ChatUserText";
 import { ChatRecoveryControl } from "./ChatRecoveryControl";
 import { getChatViewState, type PendingChatAttachment } from "../../services/chatViewState";
 
@@ -137,7 +136,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
     finally { continuingRef.current = false; setContinuing(false); }
   };
   const switchProvider = (type: RunnerType) => { if (type === session.runner.type || nativeLive || thread.busy) return; useSessionStore.getState().updateSession(session.id, { runner: useSettingsStore.getState().getRunnerConfigForType(type), providerSessionId: undefined }); patch({ providerSessionId: undefined, lastSentGoal: undefined, lastUsage: undefined, resolvedModel: undefined, contextPrompts: 0, contextTokens: 0, contextTokensEstimated: true, contextWindow: undefined, turnInputTokens: undefined, compactionCount: 0, lastCompactedAt: undefined, lastCompactionId: undefined, compacting: false, mcpAuthWarning: undefined, recoveryNotice: undefined, recoveryRequired: false }); if (type === "gemini") onNative(); };
-  const filtered = boundedChatMessages(search ? [...new Map([...searchResults.filter(m => matchesChatMessage(m, search)), ...thread.messages.filter(m => matchesChatMessage(m, search))].map(m => [m.id, m])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)) : historyPage ?? thread.messages);
+  const filtered = useMemo(() => boundedChatMessages(search ? [...new Map([...searchResults.filter(m => matchesChatMessage(m, search)), ...thread.messages.filter(m => matchesChatMessage(m, search))].map(m => [m.id, m])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)) : historyPage ?? thread.messages), [search, searchResults, thread.messages, historyPage]);
   const earlier = !search && (filtered[0]?.order ?? 0) > 0;
   const loadEarlier = async () => {
     if (loadingHistory) return; setLoadingHistory(true);
@@ -154,10 +153,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
         {session.providerSessionId && <p className="ad-hint">{c.restore}</p>}
       </div> : <div className="ad-chat-messages" role="log" aria-label={c.chat}>
         {(earlier || historyPage || search) && <div className="ad-chat-history"><small>{search ? context.searchLimit : context.page}</small>{earlier && <button className="ad-button ad-button-ghost" disabled={loadingHistory} onClick={() => void loadEarlier()}>{context.older}</button>}{historyPage && <button className="ad-button ad-button-ghost" onClick={() => { setHistoryPage(undefined); setFollow(true); }}>{context.latest}</button>}</div>}
-        {filtered.map(message => message.role === "tool" ? <ChatToolCard key={message.id} message={message} active={thread.busy && message.turnId === thread.turnId} /> : <article key={message.id} className={`ad-message ad-message-${message.role}`}>
-          <div className="ad-message-meta">{message.role === "assistant" ? <ProviderIcon provider={session.runner.type} size={19} /> : <span className="ad-user-avatar">{message.origin === "team" ? "↔" : c.you.slice(0, 1)}</span>}<strong>{message.origin === "team" ? (locale.startsWith("pt") ? "Equipe de agentes" : locale.startsWith("es") ? "Equipo de agentes" : "Agent team") : message.role === "user" ? c.you : RUNNER_LABELS[session.runner.type]}</strong>{message.parentId && <small className="ad-subagent-label" title={message.parentId}>{locale.startsWith("en") ? "Subagent" : "Subagente"} · {message.parentId.slice(-6)}</small>}<time>{new Date(message.at).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}</time><CopyButton text={message.text} />{message.role === "assistant" && <SaveResponseToMemory session={session} text={message.text} disabled={thread.busy} onError={setError} />}</div>
-          <div className="ad-message-body">{message.role === "assistant" ? <ChatMarkdown text={message.text} sessionId={session.id} /> : <ChatUserText text={message.text} />}{message.role === "user" && message.status && <small className="ad-supplement-status" role="status" title={message.title}>{message.status === "accepted" ? w.accepted : message.status === "failed" ? w.failed : message.status === "queued" ? w.queued : w.sending}</small>}{!!message.attachments?.length && <div className="ad-message-files">{message.attachments.map((file, index) => <span key={index}><Paperclip size={13} />{file.name}</span>)}</div>}</div>
-        </article>)}
+        {filtered.map(message => <ChatMessageRow key={message.id} message={message} session={session} busy={thread.busy} turnId={thread.turnId} onError={setError} />)}
         {search && !filtered.length && <p className="ad-hint">{c.noMatch}</p>}
       </div>}
       {thread.busy && <ChatTurnActivity thread={thread} sessionId={session.id} visible={visible} />}
@@ -166,6 +162,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
     </div>
     {!follow && thread.messages.length > 0 && <button className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => { setFollow(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><ArrowDown size={16} /></button>}
     <div className="ad-chat-bottom">
+      {thread.busy && thread.turnId && !!thread.interactions?.length && <ChatInteractions sessionId={session.id} turnId={thread.turnId} requests={thread.interactions} />}
       <ChatRecoveryControl session={session} visible={visible} disabled={nativeLive || uploading || !!attachments.length} />
       {thread.continuation && <p className="ad-chat-continuation" role="status"><span>{context.continuation} <button type="button" disabled={!useSessionStore.getState().sessions.some(s => s.id === thread.continuation!.sourceSessionId)} onClick={() => showSessionSurface(thread.continuation!.sourceSessionId)}>{thread.continuation.sourceSessionName}</button></span><small title={thread.continuation.archivePath}>{context.transcript}: {thread.continuation.messageCount.toLocaleString(locale)}</small></p>}
       <McpAuthNotice sessionId={session.id} warning={thread.mcpAuthWarning} deadline={thread.mcpAuthWarningUntil} busy={thread.busy || nativeLive} onNative={() => onNative()} />
@@ -182,6 +179,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
           <input hidden ref={filesRef} type="file" multiple onChange={e => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} aria-label={c.attach} />
           <AgentModelPicker compact runner={session.runner} workdir={session.worktreePath || session.workdir} disabled={thread.busy || nativeLive} onChange={value => useSessionStore.getState().updateSession(session.id, { runner: { ...session.runner, ...value } })} />
           <div className="ad-chat-actions">
+          <PromptSchedules session={session} />
           <ChatContextControl sessionId={session.id} disabled={nativeLive || session.runner.type === "gemini"} continuationDisabled={uploading || !!attachments.length} continuing={continuing} onContinue={() => void continueChat()} />
           <span className="ad-chat-stop-slot">{thread.busy && <button className="ad-button ad-chat-send ad-chat-stop" aria-label={c.stop} title={c.stop} onClick={() => void stopChatTurn(session.id)}><Square size={14} fill="currentColor" /></button>}</span>
           <button className="ad-button ad-button-primary ad-chat-send" aria-label={thread.busy ? w.supplement : t("chat.send")} title={thread.busy ? w.supplement : t("chat.send")} disabled={!historyReady || nativeLive || uploading || !worktreeReady || (!thread.draft.trim() && !attachments.length)} onClick={() => void submit()}>{uploading ? <LoaderCircle size={18} className="ad-spin" /> : <ArrowUp size={19} />}</button>

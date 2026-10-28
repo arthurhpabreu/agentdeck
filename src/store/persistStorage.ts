@@ -10,6 +10,7 @@ const PERSIST_KEYS = [
   "agentdeck-navigation-v1",
   "agentdeck-diff-review-v1",
   "agentdeck-source-delivery-v1",
+  "agentdeck-prompt-schedules-v1",
 ] as const;
 
 type PersistKey = typeof PERSIST_KEYS[number];

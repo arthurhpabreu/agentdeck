@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { usePtyRuntimeStore } from "../store/ptyRuntimeStore";
 import { useSessionStore } from "../store/sessionStore";
+import { useChatStore } from "../store/chatStore";
 
 export interface OutputEvent { session_id: string; data: string; run_id?: number; offset?: number; end_offset?: number }
 interface OutputPage { runId: number; data: string; nextOffset: number; endOffset: number; closed: boolean }
@@ -75,7 +76,7 @@ export function ensurePtyRouter(): Promise<void> {
     }),
     listen<{ session_id: string; exit_code?: number }>("pty-exit", ({ payload }) => {
       if (usePtyRuntimeStore.getState().sessions[payload.session_id] !== "stopping") usePtyRuntimeStore.getState().set(payload.session_id);
-      useSessionStore.getState().updateSession(payload.session_id, { status: payload.exit_code ? "error" : "done" });
+      if (!useChatStore.getState().threads[payload.session_id]?.busy) useSessionStore.getState().updateSession(payload.session_id, { status: payload.exit_code ? "error" : "done" });
       for (const entry of entries(payload.session_id)) entry.tail = entry.tail.then(async () => { if (!entry.disposed) { await replay(payload.session_id, entry); entry.sink.exit?.(); } }).catch(error => entry.sink.error?.(String(error)));
     }),
     listen<{ session_id: string }>("pty-waiting", ({ payload }) => entries(payload.session_id).forEach(entry => entry.sink.waiting?.())),

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useChatStore } from "../store/chatStore";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { selectSessionMetadata, useSessionStore } from "../store/sessionStore";
@@ -140,7 +141,7 @@ export function useSessionRunnerController({
     const sid = sessionIdRef.current;
     const s = useSessionStore.getState().sessions.find((x) => x.id === sid);
     flushPendingQuery(isWindows ? 120 : 0);
-    if (s?.status === "waiting") return;
+    if (s?.status === "waiting" || useChatStore.getState().threads[sid]?.busy) return;
     updateSession(sid, { status: "waiting" });
     // PTY screen heuristics also fire at startup and between tools. Only native
     // provider completion events can trigger an operating-system notification.
@@ -278,7 +279,7 @@ export function useSessionRunnerController({
 
   useEffect(() => {
     const u = listen<{ session_id: string; exit_code?: number; stopped?: boolean }>("pty-exit", ({ payload }) => {
-      if (payload.session_id !== sessionIdRef.current) return;
+      if (payload.session_id !== sessionIdRef.current || useChatStore.getState().threads[payload.session_id]?.busy) return;
       ptyReadyRef.current = false;
       clearPendingQueryTimer();
       pendingQueryRef.current = null;

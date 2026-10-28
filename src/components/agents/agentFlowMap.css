@@ -63,3 +63,9 @@
 .ad-flow-focus { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 .ad-flow-node:focus-visible { outline: 2px solid var(--ci-accent); outline-offset: 3px; }
+.ad-flow-navigate { flex: 1; min-width: 0; max-width: 340px; padding: 7px 10px; color: var(--ci-text); background: var(--ci-surface); border: 1px solid var(--ci-border); border-radius: 6px; font-size: 12px; }
+.ad-flow-controls { flex-wrap: wrap; }
+.ad-flow-agent-name strong { font-size: 14px; }
+.ad-flow-status { font-size: 10px; }
+.ad-flow-task-card > span, .ad-flow-task-card > small { font-size: 11px; }
+@media (max-width: 700px) { .ad-flow-panel { height: max(460px, 65vh); } .ad-flow-focus { flex-wrap: wrap; } .ad-flow-focus .ad-arrangement-controls { margin-left: auto; } }

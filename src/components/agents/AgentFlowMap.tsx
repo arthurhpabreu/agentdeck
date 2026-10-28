@@ -64,11 +64,11 @@ function PositionedAgent({ node, position, selected, active, locale, onCommit, c
   </div>;
 }
 
-export function AgentFlowMap({ nodes, allNodes = nodes, selectedKey, onSelect, locale, board = false }: {
-  nodes: AgentNode[]; allNodes?: AgentNode[]; selectedKey?: string; onSelect: (key: string) => void; locale: string; board?: boolean;
+export function AgentFlowMap({ nodes, allNodes = nodes, selectedKey, onSelect, locale, board = false, filterKey = "" }: {
+  nodes: AgentNode[]; allNodes?: AgentNode[]; selectedKey?: string; onSelect: (key: string) => void; locale: string; board?: boolean; filterKey?: string;
 }) {
   const g = graphCopy(locale), m = agentMonitorMessages(locale), c = orderingCopy(locale);
-  const [sessionId, setSessionId] = useState("all"); const [paused, setPaused] = useState(false);
+  const [sessionId, setSessionId] = useState(() => nodes.find(node => node.key === selectedKey)?.session.id ?? nodes.find(node => node.isRoot)?.session.id ?? "all"); const [paused, setPaused] = useState(false);
   const [focusCount, setFocusCount] = useState(0);
   const manualBoard = usePresentationStore(state => state.views["agent-board"] === "manual");
   const setManualBoard = (manual: boolean) => usePresentationStore.getState().setView("agent-board", manual ? "manual" : "status");
@@ -77,14 +77,15 @@ export function AgentFlowMap({ nodes, allNodes = nodes, selectedKey, onSelect, l
   const roots = nodes.filter(node => node.isRoot);
   const effectiveSession = roots.some(node => node.session.id === sessionId) ? sessionId : "all";
   const visible = useMemo(() => nodes.filter(node => effectiveSession === "all" || node.session.id === effectiveSession), [nodes, effectiveSession]);
-  const automaticLayout = useMemo(() => layoutAgents(allNodes), [allNodes]);
+  const automaticLayout = useMemo(() => layoutAgents(visible), [visible]);
   const layout = useMemo(() => {
     const positions = new Map(automaticLayout.positions);
     for (const [id, point] of Object.entries(savedPositions ?? {})) if (positions.has(id)) positions.set(id, point);
     return { ...automaticLayout, positions, width: Math.max(automaticLayout.width, ...[...positions.values()].map(point => point.x + 300)), height: Math.max(automaticLayout.height, ...[...positions.values()].map(point => point.y + 230)) };
   }, [automaticLayout, savedPositions]);
-  const commitPosition = (id: string, point: VisualPoint) => usePresentationStore.getState().setPositions("agent-map", "all", { ...Object.fromEntries(layout.positions), ...savedPositions, [id]: point });
+  const commitPosition = (id: string, point: VisualPoint) => usePresentationStore.getState().setPositions("agent-map", "all", { ...savedPositions, [id]: point });
   const selectedPosition = selectedKey ? layout.positions.get(selectedKey) : undefined;
+  const rootPosition = layout.positions.get(visible.find(node => node.isRoot)?.key ?? "");
   const centerLabel = locale.startsWith("pt") ? "Centralizar agente selecionado" : locale.startsWith("es") ? "Centrar agente seleccionado" : "Center selected agent";
   const rootStatus = new Map(roots.map(root => [root.session.id, root.status]));
   const executing = (node: AgentNode) => agentWorking(node.status) && (node.isRoot || agentWorking(rootStatus.get(node.session.id) ?? ""));
@@ -95,8 +96,8 @@ export function AgentFlowMap({ nodes, allNodes = nodes, selectedKey, onSelect, l
       const items = visible.filter(node => taskColumn(node.status) === column);
       return <section key={column} className="ad-task-column" data-column={column}><header><i className="ad-monitor-dot" data-phase={column === "attention" ? "waiting" : column === "completed" ? "done" : column} /><h3>{g[column]}</h3><span>{items.length}</span></header><SortableCollection surface="agent-board-column" context={column} items={items} allIds={allNodes.filter(node => taskColumn(node.status) === column).map(node => node.key)} getId={node => node.key} getLabel={node => node.name} render={(node, handle) => <div className="ad-board-arrange-row">{handle}<button type="button" data-drag-primary className="ad-board-task" aria-pressed={selectedKey === node.key} onClick={() => onSelect(node.key)}><span><ProviderIcon provider={node.session.runner.type} size={14} />{node.name}</span><strong>{node.task || m.noTask}</strong><small>{agentPhaseLabel(node.status, locale)} · {node.events.length} {m.tools}</small>{!node.isRoot && <small>{g.recorded}</small>}</button></div>} /></section>;
     })}</div> : <>
-      <div className="ad-flow-focus"><button type="button" className="ad-button" disabled={!selectedPosition} onClick={() => setFocusCount(count => count + 1)}><Crosshair size={13} />{centerLabel}</button><ArrangementControls surface="agent-map" context="all" /></div>
-      <GraphViewport width={layout.width} height={layout.height} label={g.map} controls={g} resetKey={effectiveSession} focusTarget={focusCount && selectedPosition ? { x: selectedPosition.x + 126, y: selectedPosition.y + 100, key: `${selectedKey}:${focusCount}` } : undefined}>
+      <div className="ad-flow-focus"><select className="ad-flow-navigate" aria-label={locale.startsWith("pt") ? "Ir ao agente" : locale.startsWith("es") ? "Ir al agente" : "Go to agent"} value={selectedKey ?? ""} onChange={event => { onSelect(event.target.value); setFocusCount(count => count + 1); }}>{!visible.some(node => node.key === selectedKey) && <option value="">—</option>}{visible.map(node => <option key={node.key} value={node.key}>{node.isRoot ? "" : "↳ "}{node.name} · {agentPhaseLabel(node.status, locale)}</option>)}</select><button type="button" className="ad-button" disabled={!selectedPosition} onClick={() => setFocusCount(count => count + 1)} title={centerLabel} aria-label={centerLabel}><Crosshair size={14} /></button><ArrangementControls surface="agent-map" context="all" /></div>
+      <GraphViewport width={layout.width} height={layout.height} label={g.map} controls={g} resetKey={effectiveSession + filterKey} readableScale={0.85} initialCenter={rootPosition ? { x: rootPosition.x + 126, y: rootPosition.y + 100 } : undefined} focusTarget={focusCount && selectedPosition ? { x: selectedPosition.x + 126, y: selectedPosition.y + 100, key: `${selectedKey}:${focusCount}` } : undefined}>
         <svg className="ad-flow-connectors" width={layout.width} height={layout.height} aria-hidden="true">
           <defs><marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
           {visible.map(node => {

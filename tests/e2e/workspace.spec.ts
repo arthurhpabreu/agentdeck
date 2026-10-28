@@ -9,6 +9,7 @@ import { chatReliabilityCases } from "./chat-reliability-cases";
 import { workspaceColorCases } from "./workspace-color-cases";
 import { continuityCases } from "./continuity-cases";
 import { performanceUiCases } from "./performance-ui-cases";
+import { chatUxCases } from "./chat-ux-cases";
 
 effortCases(setup, openSession);
 commandCases(setup);
@@ -20,6 +21,7 @@ chatReliabilityCases(setup, openSession);
 workspaceColorCases(setup);
 continuityCases(setup, openSession);
 performanceUiCases(setup, openSession);
+chatUxCases(setup, openSession);
 
 test("titlebar CLI indicator opens update management and follows confirmed results", async ({ page }) => {
   await setup(page);

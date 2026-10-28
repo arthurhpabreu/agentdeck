@@ -29,6 +29,8 @@ pub struct ChatEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
@@ -321,6 +323,12 @@ impl ChatParser {
             "agentdeck.model" => {
                 let mut event = self.event("status");
                 event.model = string(record, "model");
+                events.push(event);
+            }
+            "agentdeck.interaction" => {
+                let mut event = self.event("interaction");
+                event.interaction = record.get("interaction").cloned();
+                if let Some(id) = record["resolved"].as_str() { event.item_id = Some(id.into()); event.status = Some("resolved".into()); }
                 events.push(event);
             }
             "agentdeck.warning" => {

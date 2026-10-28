@@ -391,6 +391,8 @@ test("map drags use world coordinates under zoom and do not change the native hi
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Agent center", exact: true });
   const handle = dialog.getByRole("group", { name: "Reorder: Ada", exact: true });
+  await dialog.getByRole("combobox", { name: "Go to agent", exact: true }).selectOption("s1:a");
+  await dialog.getByRole("button", { name: "Zoom out", exact: true }).click();
   await expect(handle).toBeVisible();
   const card = handle;
   const before = await card.evaluate(element => ({ x: parseFloat((element as HTMLElement).style.left), y: parseFloat((element as HTMLElement).style.top), scale: Number(element.closest('.ad-graph-world')?.getAttribute('data-scale')) }));

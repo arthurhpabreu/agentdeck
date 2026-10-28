@@ -153,6 +153,7 @@ function WorkspaceCardExpanded({
           }}>
             {ws.name}
           </span>
+          <span className="ad-project-chat-count" title={t("workspace.openChats", { count: activity.sessions })} aria-label={t("workspace.openChats", { count: activity.sessions })}>{activity.sessions}</span>
         </span>
         <span className="ad-project-status" style={{
           display: "block",

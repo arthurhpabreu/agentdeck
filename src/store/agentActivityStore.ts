@@ -1,3 +1,4 @@
+import { useChatStore } from "./chatStore";
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { usePtyRuntimeStore } from "./ptyRuntimeStore";
@@ -57,10 +58,11 @@ export async function startActivityTracking() {
       if (!timer) timer = setTimeout(flush, 250);
     })),
     listen<{ session_id: string }>("pty-running", ({ payload: p }) => record(p.session_id, { phase: "running" }, "activity.running")),
-    listen<{ session_id: string }>("pty-waiting", ({ payload: p }) => record(p.session_id, { phase: "waiting" }, "activity.waiting")),
+    listen<{ session_id: string }>("pty-waiting", ({ payload: p }) => { if (!useChatStore.getState().threads[p.session_id]?.busy) record(p.session_id, { phase: "waiting" }, "activity.waiting"); }),
     listen<{ session_id: string; error: string }>("pty-error", ({ payload: p }) => record(p.session_id, { phase: "error", error: p.error }, "activity.error", p.error)),
-    listen<{ session_id: string; message: string }>("pty-notification", ({ payload: p }) => record(p.session_id, { phase: "waiting" }, "activity.attention", p.message)),
+    listen<{ session_id: string; message: string }>("pty-notification", ({ payload: p }) => { if (!useChatStore.getState().threads[p.session_id]?.busy) record(p.session_id, { phase: "waiting" }, "activity.attention", p.message); }),
     listen<{ session_id: string; exit_code?: number; stopped?: boolean }>("pty-exit", ({ payload: p }) => {
+      if (useChatStore.getState().threads[p.session_id]?.busy) return;
       // Keep the send guard until an in-flight stop has acknowledged completion.
       if (usePtyRuntimeStore.getState().sessions[p.session_id] !== "stopping") usePtyRuntimeStore.getState().set(p.session_id);
       const phase = p.stopped ? "stopped" : p.exit_code ? "error" : "done";

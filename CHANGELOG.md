@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Add prompt schedules inside chats, with time, weekdays, an inclusive date
+  range, saved timezone, pause/resume and removal controls.
+- Show the number of open chats beside every project name.
+- Open agent flow maps on the selected conversation at a readable scale, with
+  direct agent navigation, wheel panning and zoom preserved on resize.
+- Prevent terminal lifecycle events from marking an active structured chat as
+  waiting or complete. Recover missing completion and approval events without
+  replaying a prompt, and distinguish denied actions from pending approvals.
+- Handle native Codex approvals and questions in chat; optional questions
+  explain when the agent can continue working.
+- Reuse unchanged message rows and avoid history writes for transient status
+  and heartbeat updates.
+
 ## 0.13.0 — 2026-10-20
 
 ### Added

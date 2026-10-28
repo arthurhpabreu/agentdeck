@@ -29,6 +29,16 @@ Observability combines session lifecycle events, structured chat tools and local
 
 Each session occupies a lane. Columns position agents alongside child agents, each with an attached current-task card. A task board groups the same nodes by ready/paused, working, attention and completed state; it is an observability view, not an editable scheduler.
 
+The map opens on the selected conversation at a readable scale. Session and search filters bound its layout, agent navigation centers an individual card, and wheel panning and a 100% control complement the overview. Resizing preserves the camera. Only manually moved positions are saved.
+
+## Chat execution and prompt schedules
+
+Structured chat owns its lifecycle while a turn is active; terminal heuristics and exits cannot overwrite it. A runtime check reconciles missing native events after thirty seconds without a heartbeat, including conversations outside the visible panel. Silence itself never retries a prompt or cancels an active process. Stable message rows and transcript selection are memoized, and transient status/heartbeat changes do not schedule history writes.
+
+Codex command/file approvals and native questions remain pending until the user responds. Responses bind to the conversation, turn and native request ID, expire on provider resolution, and cannot be replayed. Optional questions explicitly allow continued work. Denied tools are distinguished from actionable approvals. Pending interactions and answers are not restored as executable requests from history.
+
+The calendar button in a Codex or Claude Code chat saves a prompt with an inclusive date range, weekdays, time and IANA timezone. Schedules persist locally and run while the app is open and the computer is awake. A busy chat or native terminal can delay an occurrence up to fifteen minutes; older occurrences are recorded as missed and never replayed in a batch. The occurrence is persisted before dispatch, failures are not retried automatically, and the user's draft is preserved. Destination changes pause the schedule, and removing a chat removes its schedules. This does not install an operating-system wake task.
+
 Native subagent states are labeled as recorded evidence. Active connector animation requires a running main session and a working corresponding agent. Animations can be paused and honor `prefers-reduced-motion`. Missing histories and unsupported providers stay explicit in the inspector.
 
 ## Local boundaries

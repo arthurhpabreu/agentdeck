@@ -32,7 +32,7 @@ test("many agents and malformed parent cycles stay searchable in a small light w
   });
   const monitor = page.getByRole("dialog", { name: "Central de agentes" });
   await monitor.getByRole("button", { name: "Atualizar atividades", exact: true }).click();
-  await expect(monitor.locator(".ad-flow-node")).toHaveCount(38);
+  await expect(monitor.locator(".ad-flow-node")).toHaveCount(37);
   await monitor.getByRole("searchbox").fill("Workstream 35");
   await expect(monitor.locator(".ad-flow-node")).toHaveCount(2);
   await monitor.getByRole("button", { name: "Agent 35 · Concluído", exact: true }).click();
@@ -50,6 +50,9 @@ test("flow map and task board share selection, session filters and accessible zo
   await setupMonitor(page);
   const monitor = page.getByRole("dialog", { name: "Central de agentes" });
   const map = monitor.getByRole("region", { name: "Mapa de fluxos", exact: true });
+  await expect(map.locator(".ad-flow-node")).toHaveCount(3);
+  await expect(map.locator("output")).toHaveText("85%");
+  await map.getByRole("combobox", { name: "Sessões", exact: true }).selectOption("all");
   await expect(map.locator(".ad-flow-node")).toHaveCount(4);
   await map.getByRole("button", { name: "Ada · Concluído", exact: true }).click();
   await expect(monitor.getByRole("heading", { name: "Ada", exact: true })).toBeVisible();
@@ -87,6 +90,34 @@ test("active delegation animates only during a running session and honors reduce
   await expect(signal).toHaveCSS("animation-name", "ad-flow-travel");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(signal).toHaveCSS("animation-name", "none");
+});
+
+test("large agent maps start readable, fit only the selected session and navigate without losing zoom on resize", async ({ page }) => {
+  await setupMonitor(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__agents = [
+      { id: "native-main", name: "Main", parentId: null, status: "running", task: "Coordinate project", events: [] },
+      ...Array.from({ length: 30 }, (_, index) => ({ id: `child-${index}`, name: `Agent ${index}`, parentId: "native-main", role: "reviewer", status: index % 3 ? "done" : "running", task: `Review module ${index}`, events: [] })),
+    ];
+  });
+  const monitor = page.getByRole("dialog", { name: "Central de agentes" });
+  await monitor.getByRole("button", { name: "Atualizar atividades", exact: true }).click();
+  const map = monitor.getByRole("region", { name: "Mapa de fluxos", exact: true });
+  await expect(map.locator(".ad-flow-node")).toHaveCount(31);
+  expect(Number(await map.locator(".ad-graph-world").getAttribute("data-scale"))).toBeGreaterThanOrEqual(.85);
+  await map.getByRole("combobox", { name: "Ir ao agente", exact: true }).selectOption("main:child-29");
+  await expect(map.locator("output")).toHaveText("100%");
+  const viewport = await map.locator(".ad-graph-viewport").boundingBox();
+  const card = await map.locator('.ad-flow-node[data-selected="true"]').boundingBox();
+  expect(card!.y).toBeGreaterThanOrEqual(viewport!.y);
+  expect(card!.y + card!.height).toBeLessThanOrEqual(viewport!.y + viewport!.height);
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await expect(map.locator("output")).toHaveText("100%");
+  await monitor.screenshot({ path: "test-results/agent-map-many-agents.png", animations: "disabled" });
+  await page.setViewportSize({ width: 560, height: 900 });
+  expect((await map.locator(".ad-graph-viewport").boundingBox())!.height).toBeGreaterThan(250);
+  await monitor.screenshot({ path: "test-results/agent-map-narrow.png", animations: "disabled" });
 });
 
 async function setupMonitor(page: Page, unavailable = false) {

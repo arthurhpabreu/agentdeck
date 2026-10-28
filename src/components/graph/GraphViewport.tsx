@@ -6,9 +6,10 @@ import "./graphViewport.css";
 export interface GraphControls { zoomIn: string; zoomOut: string; fit: string; hint: string }
 
 /** Shared world coordinates keep cards and connectors aligned while panning. */
-export function GraphViewport({ width, height, label, controls, children, resetKey = "", focusTarget }: {
+export function GraphViewport({ width, height, label, controls, children, resetKey = "", focusTarget, readableScale, initialCenter }: {
   width: number; height: number; label: string; controls: GraphControls;
   children: ReactNode; resetKey?: string; focusTarget?: { x: number; y: number; key: string };
+  readableScale?: number; initialCenter?: { x: number; y: number };
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number; id: number } | null>(null);
@@ -21,11 +22,30 @@ export function GraphViewport({ width, height, label, controls, children, resetK
   }, [width, height]);
   const fitRef = useRef(fit);
   fitRef.current = fit;
+  const initialRef = useRef({ readableScale, initialCenter, width, height });
+  initialRef.current = { readableScale, initialCenter, width, height };
   useEffect(() => {
     const box = viewport.current;
     if (!box) return;
-    const observer = new ResizeObserver(() => fitRef.current());
-    observer.observe(box); fitRef.current();
+    let initialized = false, previousWidth = 0, previousHeight = 0;
+    const observer = new ResizeObserver(() => {
+      if (!box.clientWidth || !box.clientHeight) return;
+      if (!initialized) {
+        const initial = initialRef.current;
+        if (initial.readableScale) {
+          const scale = Math.min(1, Math.max(initial.readableScale, (box.clientWidth - 48) / initial.width));
+          const center = initial.initialCenter ?? { x: initial.width / 2, y: initial.height / 2 };
+          setCamera({ scale, x: Math.max(24, (box.clientWidth - initial.width * scale) / 2), y: box.clientHeight / 2 - center.y * scale });
+        } else fitRef.current();
+        initialized = true;
+      } else {
+        // Resize preserves the user's zoom and the world point at the center.
+        const dx = (box.clientWidth - previousWidth) / 2, dy = (box.clientHeight - previousHeight) / 2;
+        setCamera(old => ({ ...old, x: old.x + dx, y: old.y + dy }));
+      }
+      previousWidth = box.clientWidth; previousHeight = box.clientHeight;
+    });
+    observer.observe(box);
     return () => observer.disconnect();
   }, [resetKey]);
   useEffect(() => {
@@ -46,8 +66,11 @@ export function GraphViewport({ width, height, label, controls, children, resetK
     const box = viewport.current;
     if (!box) return;
     const wheel = (event: WheelEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
+      if (!event.ctrlKey && !event.metaKey) {
+        setCamera(old => ({ ...old, x: old.x - (event.shiftKey ? event.deltaY : event.deltaX), y: old.y - (event.shiftKey ? 0 : event.deltaY) }));
+        return;
+      }
       const rect = box.getBoundingClientRect();
       zoom(event.deltaY < 0 ? 1.15 : 1 / 1.15, event.clientX - rect.left, event.clientY - rect.top);
     };
@@ -78,7 +101,7 @@ export function GraphViewport({ width, height, label, controls, children, resetK
     </div>
     <div className="ad-graph-toolbar" role="group" aria-label={label}>
       <span>{controls.hint.replace("Ctrl", getPrimaryModifierLabel())}</span><button type="button" onClick={() => zoom(1 / 1.2)} title={controls.zoomOut} aria-label={controls.zoomOut}><Minus size={15} /></button>
-      <output>{Math.round(camera.scale * 100)}%</output><button type="button" onClick={() => zoom(1.2)} title={controls.zoomIn} aria-label={controls.zoomIn}><Plus size={15} /></button>
+      <button type="button" className="ad-graph-actual-size" onClick={() => zoom(1 / camera.scale)} title="100%" aria-label="100%"><output>{Math.round(camera.scale * 100)}%</output></button><button type="button" onClick={() => zoom(1.2)} title={controls.zoomIn} aria-label={controls.zoomIn}><Plus size={15} /></button>
       <button type="button" onClick={fit} title={controls.fit} aria-label={controls.fit}><Maximize size={15} /></button>
     </div>
   </div>;

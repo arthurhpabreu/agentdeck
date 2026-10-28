@@ -86,3 +86,4 @@
 .ad-workspace-card[data-state=running] .ad-project-pulse { animation: ad-project-pulse 1.6s ease-in-out infinite; }
 @keyframes ad-project-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .ad-project-pulse { animation: none !important; } }
+.ad-project-chat-count { flex-shrink: 0; min-width: 20px; padding: 1px 5px; border: 1px solid var(--ci-border); border-radius: 5px; color: var(--ci-text-muted); background: var(--ci-surface); font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: center; }

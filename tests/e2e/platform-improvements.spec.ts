@@ -9,8 +9,8 @@ test("@macos inbox admits confirmed actions and completions, excludes OAuth and 
     store.recordChatAttention({ ...base, kind: "heartbeat" });
     store.recordChatAttention({ ...base, kind: "status", status: "mcp-auth-warning", text: "Miro failed" });
     store.recordChatAttention({ ...base, kind: "status", status: "diagnostic", text: "No activity" });
-    store.recordChatAttention({ ...base, kind: "tool", status: "blocked", itemId: "approval", title: "Aprovar execução" });
-    store.recordChatAttention({ ...base, kind: "done", status: "completed" });
+    store.recordChatAttention({ ...base, kind: "interaction", interaction: { id: "approval", kind: "approval", blocking: true, command: "Aprovar execução" } });
+    store.recordChatAttention({ sessionId: "session-2", turnId: "turn-2", kind: "done", status: "completed" });
     (window as any).__emitImprovement("pty-waiting", { session_id: "session-4", source: "screen-heuristic" });
     (window as any).__emitImprovement("pty-waiting", { session_id: "session-4" });
   });
@@ -18,8 +18,8 @@ test("@macos inbox admits confirmed actions and completions, excludes OAuth and 
   const inbox = page.getByRole("dialog", { name: "Precisa de você" });
   await expect(inbox.locator("article")).toHaveCount(2);
   await expect(inbox).not.toContainText("Miro");
-  await inbox.getByRole("button").filter({ hasText: "Conversa 3" }).last().click();
-  await expect(page.locator(".ad-session-tabs:visible > span")).toContainText("Conversa 3");
+  await inbox.getByRole("button").filter({ hasText: "Conversa 2" }).last().click();
+  await expect(page.locator(".ad-session-tabs:visible > span")).toContainText("Conversa 2");
   await page.getByRole("button", { name: /Precisa de você/ }).click();
   await expect(inbox.locator("article")).toHaveCount(1); // Approval remains actionable until handled.
   await page.keyboard.press("Escape");

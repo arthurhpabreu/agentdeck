@@ -208,6 +208,7 @@
   "workspace.summaryWaiting": "waiting",
   "workspace.summaryRunning": "running",
   "workspace.summarySessions": "sessions",
+  "workspace.openChats": "{{count}} open chats",
   "workspace.removeWorkspace": "Delete workspace",
   "workspace.groupAttention": "Waiting for you",
   "workspace.groupRunning": "Running",

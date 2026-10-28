@@ -99,6 +99,8 @@ pub struct ChatProcessState(
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTurnStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interactions: Option<Vec<serde_json::Value>>,
     pub running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
@@ -222,16 +224,18 @@ pub fn get_chat_turn_status(
     let state = app.state::<ChatProcessState>();
     let active = state.0.lock().map_err(|_| "Chat registry unavailable")?;
     if let Some(process) = active.get(&session_id) {
-        let child = process
+        let pid = process
             .child
             .lock()
-            .map_err(|_| "Process status unavailable")?;
+            .map_err(|_| "Process status unavailable")?.id();
+        let interactions = process.input.lock().map_err(|_| "Input unavailable")?.interaction_snapshot();
         // Registry membership remains authoritative while the worker drains final
         // output. A manual refresh never interrupts a silent but live provider.
         return Ok(ChatTurnStatus {
             running: true,
             turn_id: Some(process.turn_id.clone()),
-            pid: Some(child.id()),
+            pid: Some(pid),
+            interactions: Some(interactions),
             status: Some("running".into()),
             last_event_at: Some(process.last_output_at.load(Ordering::Relaxed)),
         });
@@ -1375,6 +1379,7 @@ pub async fn start_chat_turn(
                         request.session_id.clone(),
                         ChatTurnStatus {
                             running: false,
+                            interactions: None,
                             turn_id: Some(request.turn_id.clone()),
                             pid: Some(pid),
                             status: Some(final_status.into()),
@@ -1519,6 +1524,20 @@ pub async fn steer_chat_turn(
         events,
     );
     Ok(status.into())
+}
+
+#[tauri::command]
+pub fn respond_chat_interaction(app: tauri::AppHandle, session_id: String, turn_id: String, request_id: String, response: serde_json::Value) -> Result<(), String> {
+    let process = app.state::<ChatProcessState>().0.lock().map_err(|_| "Chat registry unavailable")?
+        .get(&session_id).cloned().ok_or("This response has already ended.")?;
+    if process.turn_id != turn_id || process.cancelled.load(Ordering::SeqCst) {
+        return Err("This response has already ended.".into());
+    }
+    process.input.lock().map_err(|_| "Input unavailable")?.respond(&request_id, &response)?;
+    let mut event = ChatEvent { session_id, turn_id, kind: "interaction".into(), item_id: Some(request_id), status: Some("resolved".into()), ..Default::default() };
+    event.text = response["decision"].as_str().map(str::to_owned);
+    emit_event(&app, &process.provider, event);
+    Ok(())
 }
 
 pub fn stop_all_chat_processes(app: &tauri::AppHandle) {

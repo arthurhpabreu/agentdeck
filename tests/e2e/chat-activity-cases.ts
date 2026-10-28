@@ -43,7 +43,7 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
       w.__emit("chat-event", { ...base, status: "waiting-background" });
       w.__emit("chat-event", { ...base, status: "blocked" });
     });
-    await expect(page.locator(".ad-chat-progress")).toContainText("Aguardando aprovação");
+    await expect(page.locator(".ad-chat-progress")).toContainText("Permissão negada");
     await page.evaluate(async () => {
       const path = "/src/store/chatStore.ts"; const store = (await import(/* @vite-ignore */ path)).useChatStore;
       store.getState().patch("session", { status: "waiting-background", compacting: true });
@@ -70,7 +70,7 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await expect(tool.locator(".ad-tool-body")).toHaveCount(0);
     await expect(tool.locator("summary")).toContainText("Executando");
     await expect(tool.locator(".ad-tool-duration")).toHaveText("1:05");
-    for (const [status, label] of [["failed", "Falhou"], ["blocked", "Aguardando aprovação"]]) {
+    for (const [status, label] of [["failed", "Falhou"], ["blocked", "Permissão negada"]]) {
       await page.evaluate(status => {
         const w = window as any;
         w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool", itemId: "terminal-visible", status });

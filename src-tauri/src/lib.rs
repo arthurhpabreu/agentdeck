@@ -219,6 +219,7 @@ pub fn run() {
             token_economy::set_token_economy_enabled,
             chat::start_chat_turn,
             chat::steer_chat_turn,
+            chat::respond_chat_interaction,
             chat::stop_chat_turn,
             chat::get_chat_turn_status,
             chat::save_chat_attachment,
