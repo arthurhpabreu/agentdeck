@@ -328,7 +328,10 @@ impl ChatParser {
             "agentdeck.interaction" => {
                 let mut event = self.event("interaction");
                 event.interaction = record.get("interaction").cloned();
-                if let Some(id) = record["resolved"].as_str() { event.item_id = Some(id.into()); event.status = Some("resolved".into()); }
+                if let Some(id) = record["resolved"].as_str() {
+                    event.item_id = Some(id.into());
+                    event.status = Some("resolved".into());
+                }
                 events.push(event);
             }
             "agentdeck.warning" => {

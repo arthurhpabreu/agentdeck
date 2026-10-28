@@ -214,23 +214,44 @@ impl LiveInput {
         self.write(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"agentdeck","version":env!("CARGO_PKG_VERSION")}}}))
     }
     pub fn respond(&mut self, id: &str, response: &Value) -> Result<(), String> {
-        let request = self.interactions.get(id).ok_or("This request is no longer pending.")?;
+        let request = self
+            .interactions
+            .get(id)
+            .ok_or("This request is no longer pending.")?;
         let method = request["method"].as_str().unwrap_or_default();
         if method.ends_with("/requestApproval") {
-            if !matches!(response["decision"].as_str(), Some("accept" | "decline" | "cancel")) {
+            if !matches!(
+                response["decision"].as_str(),
+                Some("accept" | "decline" | "cancel")
+            ) {
                 return Err("Invalid approval decision.".into());
             }
         } else {
-            let answers = response["answers"].as_object().ok_or("Answers are required.")?;
-            for question in request["params"]["questions"].as_array().ok_or("Invalid questions.")? {
-                let answer = answers.get(question["id"].as_str().unwrap_or_default())
-                    .and_then(|value| value["answers"].as_array()).ok_or("Answer each question.")?;
-                if answer.is_empty() || answer.iter().any(|value| value.as_str().is_none_or(|text| text.trim().is_empty() || text.len() > 32_768)) {
+            let answers = response["answers"]
+                .as_object()
+                .ok_or("Answers are required.")?;
+            for question in request["params"]["questions"]
+                .as_array()
+                .ok_or("Invalid questions.")?
+            {
+                let answer = answers
+                    .get(question["id"].as_str().unwrap_or_default())
+                    .and_then(|value| value["answers"].as_array())
+                    .ok_or("Answer each question.")?;
+                if answer.is_empty()
+                    || answer.iter().any(|value| {
+                        value
+                            .as_str()
+                            .is_none_or(|text| text.trim().is_empty() || text.len() > 32_768)
+                    })
+                {
                     return Err("Invalid answer.".into());
                 }
             }
         }
-        if response.to_string().len() > 128 * 1024 { return Err("Response is too large.".into()); }
+        if response.to_string().len() > 128 * 1024 {
+            return Err("Response is too large.".into());
+        }
         self.write(json!({"id":request["id"],"result":response}))?;
         self.interactions.remove(id);
         Ok(())
@@ -938,10 +959,21 @@ impl LiveProtocol {
         }
         if record.get("id").is_some() && record.get("method").is_some() {
             let method = record["method"].as_str().unwrap_or("");
-            if matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" | "item/tool/requestUserInput" | "tool/requestUserInput") {
+            if matches!(
+                method,
+                "item/commandExecution/requestApproval"
+                    | "item/fileChange/requestApproval"
+                    | "item/tool/requestUserInput"
+                    | "tool/requestUserInput"
+            ) {
                 let params = &record["params"];
-                if params["threadId"].as_str().is_some_and(|id| input.thread.as_deref() != Some(id))
-                    || params["turnId"].as_str().is_some_and(|id| input.turn.as_deref() != Some(id)) {
+                if params["threadId"]
+                    .as_str()
+                    .is_some_and(|id| input.thread.as_deref() != Some(id))
+                    || params["turnId"]
+                        .as_str()
+                        .is_some_and(|id| input.turn.as_deref() != Some(id))
+                {
                     input.write(json!({"id":record["id"],"error":{"code":-32600,"message":"Stale interaction"}}))?;
                     return Ok(());
                 }
@@ -1170,18 +1202,30 @@ mod tests {
     use super::*;
     #[test]
     fn approvals_remain_pending_until_the_user_decides_and_cannot_be_replayed() {
-        for (method, decision) in [("item/commandExecution/requestApproval", "accept"), ("item/fileChange/requestApproval", "cancel")] {
+        for (method, decision) in [
+            ("item/commandExecution/requestApproval", "accept"),
+            ("item/fileChange/requestApproval", "cancel"),
+        ] {
             let bytes = Arc::new(Mutex::new(Vec::new()));
             let req = super::super::tests::request("codex");
             let mut protocol = LiveProtocol::new(&req);
             let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
-            input.thread = Some("thread".into()); input.turn = Some("turn".into()); input.started = true;
+            input.thread = Some("thread".into());
+            input.turn = Some("turn".into());
+            input.started = true;
             let request = json!({"id":77,"method":method,"params":{"threadId":"thread","turnId":"turn","command":"cargo test"}});
             let records = protocol.ingest(&request.to_string(), &mut input);
-            assert!(records.iter().any(|record| record.contains("agentdeck.interaction")));
-            assert!(written(&bytes).is_empty(), "Never answer an approval automatically");
+            assert!(records
+                .iter()
+                .any(|record| record.contains("agentdeck.interaction")));
+            assert!(
+                written(&bytes).is_empty(),
+                "Never answer an approval automatically"
+            );
             assert!(protocol.ingest(&request.to_string(), &mut input).is_empty());
-            assert!(input.respond("77", &json!({"decision":"acceptForSession"})).is_err());
+            assert!(input
+                .respond("77", &json!({"decision":"acceptForSession"}))
+                .is_err());
             input.respond("77", &json!({"decision":decision})).unwrap();
             let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
             assert_eq!(sent, json!({"id":77,"result":{"decision":decision}}));
@@ -1193,7 +1237,9 @@ mod tests {
         let req = super::super::tests::request("codex");
         let mut protocol = LiveProtocol::new(&req);
         let mut input = LiveInput::with_writer(Box::new(Vec::new()), true);
-        input.thread = Some("thread".into()); input.turn = Some("turn".into()); input.started = true;
+        input.thread = Some("thread".into());
+        input.turn = Some("turn".into());
+        input.started = true;
         let request = json!({"id":"q","method":"item/tool/requestUserInput","params":{"threadId":"thread","turnId":"turn","isBlocking":false,"questions":[{"id":"color","header":"Color","question":"Which color?"}]}});
         let records = protocol.ingest(&request.to_string(), &mut input);
         let event: Value = serde_json::from_str(&records[0]).unwrap();
@@ -1201,7 +1247,9 @@ mod tests {
         assert!(input.respond("\"q\"", &json!({"answers":{}})).is_err());
         let resolved = protocol.ingest(&json!({"method":"serverRequest/resolved","params":{"threadId":"thread","requestId":"q"}}).to_string(), &mut input);
         assert!(resolved.iter().any(|record| record.contains("resolved")));
-        assert!(input.respond("\"q\"", &json!({"answers":{"color":{"answers":["Blue"]}}})).is_err());
+        assert!(input
+            .respond("\"q\"", &json!({"answers":{"color":{"answers":["Blue"]}}}))
+            .is_err());
         let stale = protocol.ingest(&json!({"id":3,"method":"item/fileChange/requestApproval","params":{"threadId":"other","turnId":"turn"}}).to_string(), &mut input);
         assert!(stale.is_empty());
         assert!(input.interactions.is_empty());
