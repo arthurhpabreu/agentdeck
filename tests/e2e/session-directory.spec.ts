@@ -136,6 +136,7 @@ for (const step of ["isolation", "remember"]) {
     await sidebar.getByRole("button", { name: "+ Nova sessão", exact: true }).click();
     await expect.poll(() => page.evaluate(() => typeof (window as any).__finishPreparation)).toBe("function");
     await page.getByTitle("Remover projeto", { exact: true }).click();
+    await page.locator(".ad-workspace-card").getByRole("button", { name: "Remover", exact: true }).click();
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-workspaces")!).state.workspaces.length)).toBe(0);
     await page.evaluate(() => (window as any).__finishPreparation());
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("agentdeck-worktree-recovery") ?? "{}").state?.notices?.length ?? 0)).toBe(1);

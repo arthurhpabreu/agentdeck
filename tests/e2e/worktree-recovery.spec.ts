@@ -152,6 +152,7 @@ test("worktree list and cleanup failures preserve the entry and allow an explici
 test("preserved worktrees stay discoverable after the last project is removed and the app reloads", async ({ page }) => {
   await setupRecovery(page, true);
   await page.getByTitle("Remover projeto", { exact: true }).click();
+  await page.locator(".ad-workspace-card").getByRole("button", { name: "Remover", exact: true }).click();
   await expect.poll(() => page.evaluate(() => {
     const saved = JSON.parse(localStorage.getItem("agentdeck-worktree-recovery") ?? "{}");
     return saved.state?.notices?.some((notice: any) => notice.path === "C:\\Worktrees\\dirty-session") ?? false;

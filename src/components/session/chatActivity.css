@@ -25,6 +25,19 @@
 .ad-tool-output-toggle { padding: 4px 6px; background: transparent; border: 0; border-radius: 4px; color: var(--ci-accent); cursor: pointer; font-size: 10px; }
 .ad-tool-output-toggle:hover { background: var(--ci-surface-hi); }
 .ad-tool-exit { padding: 5px 12px 8px; color: var(--ci-text-dim); font-size: 10px; }
+.ad-tool-input { border-top: 1px solid var(--ci-border); }
+.ad-tool-input:first-child { border-top: 0; }
+.ad-tool-file { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 4px 12px 2px; color: var(--ci-text-muted); font: 10px/1.5 "Cascadia Code", Consolas, monospace; }
+.ad-tool-file > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-tool-file > small { flex-shrink: 0; color: var(--ci-text-dim); font-size: 10px; }
+.ad-tool-card .ad-tool-body pre.ad-tool-diff { padding: 2px 0 8px; max-height: 320px; }
+.ad-tool-diff > span { display: block; padding: 0 12px 0 6px; }
+.ad-tool-diff > span > i { display: inline-block; width: 14px; font-style: normal; color: var(--ci-text-dim); user-select: none; }
+.ad-tool-diff > .is-add { background: var(--ci-added-bg); color: var(--ci-added-text); }
+.ad-tool-diff > .is-del { background: var(--ci-deleted-bg); color: var(--ci-deleted-text); }
+.ad-tool-diff > .is-ctx { color: var(--ci-text-muted); }
+.ad-tool-diff > .is-hunk { color: var(--ci-text-dim); }
+.ad-tool-more { margin: 0; padding: 0 12px 8px; color: var(--ci-text-dim); font-size: 10px; }
 .ad-turn-activity { max-width: 790px; margin: 10px auto; }
 .ad-chat-execution-details { width: min(100%, 790px); margin: 8px auto; color: var(--ci-text-dim); font-size: 11px; }
 .ad-chat-execution-details > summary { cursor: pointer; padding: 5px 0; }

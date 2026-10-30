@@ -137,6 +137,60 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await tool.locator("summary").click();
     await expect(tool.locator(".ad-tool-result pre")).toContainText("MORE_OUTPUT");
   });
+  test("file tools name their target and show edits and Codex patches as line diffs once opened", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool" };
+      const root = "C:\Projects\Test Project\\";
+      w.__emit("chat-event", { ...base, itemId: "claude-edit", title: "Edit", status: "running", text: JSON.stringify({ file_path: root + "src\server.ts", new_string: "const port = 8080;\nstart(port);", old_string: "const port = 3000;\nstart(port);" }) });
+      w.__emit("chat-event", { ...base, itemId: "claude-edit", output: "The file has been updated.", status: "completed" });
+      w.__emit("chat-event", { ...base, itemId: "claude-read", title: "Read", status: "completed", text: JSON.stringify({ file_path: root + "docs\guide.md" }), output: "# Guide" });
+      w.__emit("chat-event", { ...base, itemId: "codex-files", title: "Files", status: "completed", text: JSON.stringify([
+        { diff: "@@ -1,2 +1,2 @@\n-export const mode = \"dev\";\n+export const mode = \"prod\";\n export default mode;\n", kind: { move_path: null, type: "update" }, path: root + "src\config.ts" },
+        { diff: "first note\n", kind: { type: "add" }, path: root + "notes.md" },
+      ]) });
+      w.__emit("chat-event", { ...base, itemId: "partial-write", title: "Write", status: "running", text: "{\"content\":\"draft" });
+    });
+    const cards = page.locator(".ad-tool-card");
+    const edit = cards.filter({ hasText: "src/server.ts" });
+    await expect(edit.locator("summary")).toContainText("Edit");
+    await expect(edit.locator("summary .ad-tool-command-preview")).toHaveText("src/server.ts");
+    await expect(edit.locator("summary")).toContainText("Concluído");
+    await expect(edit).not.toHaveAttribute("open");
+    await expect(edit.locator(".ad-tool-body")).toHaveCount(0);
+    await edit.locator("summary").click();
+    await expect(edit.locator(".ad-tool-diff .is-del")).toHaveCount(1);
+    await expect(edit.locator(".ad-tool-diff .is-del")).toContainText("const port = 3000;");
+    await expect(edit.locator(".ad-tool-diff .is-add")).toHaveCount(1);
+    await expect(edit.locator(".ad-tool-diff .is-add")).toContainText("const port = 8080;");
+    await expect(edit.locator(".ad-tool-diff .is-ctx")).toContainText("start(port);");
+    await expect(edit.locator(".ad-tool-result")).toContainText("Resultado");
+    await expect(edit.locator(".ad-tool-result pre")).toHaveText("The file has been updated.");
+    await expect(edit.locator(".ad-tool-body")).not.toContainText("old_string");
+    const read = cards.filter({ hasText: "docs/guide.md" });
+    await expect(read.locator("summary")).toContainText("Read");
+    await read.locator("summary").click();
+    await expect(read.locator(".ad-tool-result pre")).toHaveText("# Guide");
+    const files = cards.filter({ hasText: "src/config.ts +1" });
+    await expect(files.locator("summary")).toContainText("Files");
+    await expect(files).not.toHaveAttribute("open");
+    await files.locator("summary").click();
+    await expect(files.locator(".ad-tool-file").first()).toContainText("src/config.ts");
+    await expect(files.locator(".ad-tool-file").last()).toContainText("notes.md");
+    await expect(files.locator(".ad-tool-file").last()).toContainText("Arquivo novo");
+    const patches = files.locator(".ad-tool-diff");
+    await expect(patches).toHaveCount(2);
+    await expect(patches.first().locator(".is-hunk")).toContainText("@@ -1,2 +1,2 @@");
+    await expect(patches.first().locator(".is-del")).toContainText('export const mode = "dev";');
+    await expect(patches.first().locator(".is-add")).toContainText('export const mode = "prod";');
+    await expect(patches.first().locator(".is-ctx")).toContainText("export default mode;");
+    await expect(patches.last().locator(".is-add")).toContainText("first note");
+    // Incomplete input keeps the raw rendering instead of guessing.
+    const partial = cards.filter({ has: page.locator("summary strong", { hasText: "Write" }) });
+    await expect(partial.locator("summary .ad-tool-command-preview")).toHaveCount(0);
+    await partial.locator("summary").click();
+    await expect(partial.locator(".ad-tool-result pre")).toHaveText('{"content":"draft');
+  });
   test("silent activity exposes recovery controls without claiming the agent has stopped", async ({ page }) => {
     await page.clock.install();
     await start(page);
