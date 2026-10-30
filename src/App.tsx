@@ -105,13 +105,15 @@ export default function App() {
   const startedWatcherSessionsRef = useRef<Set<string>>(new Set());
   const watchedWorkdirBySessionRef = useRef<Record<string, string>>({});
   const [frontendErrorLogs, setFrontendErrorLogs] = useState<FrontendErrorLog[]>([]);
+  // Diagnostics stay one click away; outside development they must not cover the chat as an alarm.
+  const [frontendErrorsOpen, setFrontendErrorsOpen] = useState(import.meta.env.DEV);
   const [showAgents, setShowAgents] = useState(false);
   useEffect(() => { if (activeSessionId) { useNavigationStore.getState().visit(`session:${activeSessionId}`); useAttentionStore.getState().readSession(activeSessionId); } }, [activeSessionId]);
   useEffect(() => useSessionStore.subscribe((state, previous) => { const remaining = new Set(state.sessions.map(session => session.id)); previous.sessions.forEach(session => { if (!remaining.has(session.id)) { forgetChatViewState(session.id); useAttentionStore.getState().clearSession(session.id); useSourceDeliveryStore.getState().remove(session.id); } }); }), []);
   // Projects are grouped by agent work, so record when a session starts running.
   useEffect(() => useSessionStore.subscribe((state, previous) => { if (state.sessions === previous.sessions) return; const before = new Map(previous.sessions.map(session => [session.id, session.status])); state.sessions.forEach(session => { if (session.status === "running" && before.get(session.id) !== "running") useWorkspaceStore.getState().touchWorkspace(session.workspaceId); }); }), []);
-  // A response that finishes in the conversation on screen has already been seen.
-  useEffect(() => useAttentionStore.subscribe(state => { const sessionId = useSessionStore.getState().activeSessionId; if (sessionId && document.hasFocus() && state.items.some(item => item.sessionId === sessionId && item.kind === "completed" && !item.read)) useAttentionStore.getState().readSession(sessionId); }), []);
+  // A response or error that appears in the conversation on screen has already been seen.
+  useEffect(() => useAttentionStore.subscribe(state => { const sessionId = useSessionStore.getState().activeSessionId; if (sessionId && document.hasFocus() && state.items.some(item => item.sessionId === sessionId && (item.kind === "completed" || item.kind === "error") && !item.read)) useAttentionStore.getState().readSession(sessionId); }), []);
   const frontendErrorIdRef = useRef(1);
 
   const pushFrontendErrorLog = useCallback((log: Omit<FrontendErrorLog, "id">) => {
@@ -343,12 +345,14 @@ export default function App() {
   // ── Close with Escape ───────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       if (settingsOpen) {
         closeSettings();
         return;
       }
-      if (sidebarSection !== "sessions") {
+      // Escape while typing, in an editor or in a terminal belongs to that control, not to navigation.
+      const typing = e.target instanceof Element && !!e.target.closest("textarea, input:not([type=checkbox]):not([type=radio]), [contenteditable=true], .cm-editor, .xterm");
+      if (sidebarSection !== "sessions" && !typing) {
         useWorkbenchStore.getState().resetWorkbenchMode();
         return;
       }
@@ -658,10 +662,14 @@ export default function App() {
       useAttentionStore.getState().record({ id: `terminal:${payload.session_id}:${payload.turn_id ?? activity.currentTask}`, sessionId: payload.session_id, kind: "completed", text: "", source: payload.source, at: Date.now() });
     });
     const u9 = listen<{ session_id: string; error: string }>("pty-error", ({ payload }) => {
-      useAttentionStore.getState().record({ id: `terminal-error:${payload.session_id}:${payload.error}`, sessionId: payload.session_id, kind: "error", text: payload.error.slice(0, 1200), source: "provider-hook", at: Date.now() });
+      // Each failure is a new event; an older identical error that was already read must not hide it.
+      const at = Date.now();
+      useAttentionStore.getState().record({ id: `terminal-error:${payload.session_id}:${at}`, sessionId: payload.session_id, kind: "error", text: payload.error.slice(0, 1200), source: "provider-hook", at });
     });
+    // A terminal that is working again has moved past its earlier failure.
+    const u10 = listen<{ session_id: string }>("pty-running", ({ payload }) => useAttentionStore.getState().resolveActions(payload.session_id));
     return () => {
-      [u1, u2a, u2b, u2, u3, u4, u5, u5b, u5c, u5d, u6, u7, u8, u9].forEach((p) => p.then((f) => f()).catch(() => {}));
+      [u1, u2a, u2b, u2, u3, u4, u5, u5b, u5c, u5d, u6, u7, u8, u9, u10].forEach((p) => p.then((f) => f()).catch(() => {}));
     };
   }, [appendOutput, updateSession, setDiffFiles, setScmSnapshot, setScmStatus, setScmDiffOverride, refreshSessionDiff]);
 
@@ -752,7 +760,16 @@ export default function App() {
         boxSizing: "border-box",
         background: "transparent",
       }}>
-        {frontendErrorLogs.length > 0 && (
+        {frontendErrorLogs.length > 0 && !frontendErrorsOpen && (
+          <button
+            className="ad-button ad-button-ghost"
+            onClick={() => setFrontendErrorsOpen(true)}
+            style={{ position: "fixed", left: 12, bottom: 12, zIndex: 9999, fontSize: 11 }}
+          >
+            {t("app.frontendErrors")} · {frontendErrorLogs.length}
+          </button>
+        )}
+        {frontendErrorLogs.length > 0 && frontendErrorsOpen && (
           <div style={{
             position: "fixed",
             right: 12,
@@ -789,6 +806,12 @@ export default function App() {
                   style={{ background: "none", border: "none", color: "var(--ci-text-dim)", cursor: "pointer", fontSize: 11 }}
                 >
                   {t("common.clear")}
+                </button>
+                <button
+                  onClick={() => setFrontendErrorsOpen(false)}
+                  style={{ background: "none", border: "none", color: "var(--ci-text-dim)", cursor: "pointer", fontSize: 11 }}
+                >
+                  {t("common.close")}
                 </button>
               </div>
             </div>

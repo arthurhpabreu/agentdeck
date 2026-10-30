@@ -35,9 +35,12 @@ function Interaction({ sessionId, turnId, request }: { sessionId: string; turnId
     <p>{request.blocking ? c.waiting : c.optional}</p>
     {request.reason && <p>{request.reason}</p>}{request.command && <pre>{request.command}</pre>}{request.cwd && <small>{request.cwd}</small>}
     {request.action === "fileChange" && <p>{pt ? "Alteração de arquivos" : es ? "Cambio de archivos" : "File changes"}</p>}
+    {request.action === "permissions" && <p>{pt ? "Permissões adicionais somente para esta resposta. Recusar não interrompe o agente." : es ? "Permisos adicionales solo para esta respuesta. Rechazar no detiene al agente." : "Additional permissions for this response only. Declining does not stop the agent."}</p>}
     {request.grantRoot && <p>{pt ? "Pasta solicitada" : es ? "Carpeta solicitada" : "Requested directory"}: <code>{request.grantRoot}</code></p>}
     {changes && <pre>{changes}</pre>}
-    {request.kind === "approval" ? <div className="ad-chat-interaction-actions"><button className="ad-button ad-button-primary" disabled={sending} onClick={() => void respond({ decision: "accept" })}>{c.accept}</button><button className="ad-button" disabled={sending} onClick={() => void respond({ decision: "cancel" })}>{c.deny}</button></div>
+    {request.kind === "approval" ? <div className="ad-chat-interaction-actions"><button className="ad-button ad-button-primary" disabled={sending} onClick={() => void respond({ decision: "accept" })}>{c.accept}</button>{request.action === "permissions"
+      ? <button className="ad-button" disabled={sending} onClick={() => void respond({ decision: "decline" })}>{pt ? "Recusar" : es ? "Rechazar" : "Decline"}</button>
+      : <button className="ad-button" disabled={sending} onClick={() => void respond({ decision: "cancel" })}>{c.deny}</button>}</div>
       : <form onSubmit={event => { event.preventDefault(); void respond({ answers: Object.fromEntries((request.questions ?? []).map(question => [question.id, { answers: [answers[question.id]] }])) }); }}>
         {(request.questions ?? []).map(question => <label key={question.id}><span>{question.question}</span>
           {question.options?.length && !question.isSecret ? <select required aria-label={question.question} value={answers[question.id] ?? ""} disabled={sending} onChange={event => setAnswers(old => ({ ...old, [question.id]: event.target.value }))}><option value="">{c.choose}</option>{question.options.map(option => <option key={option.label} value={option.label}>{option.label} — {option.description}</option>)}</select>

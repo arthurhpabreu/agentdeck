@@ -377,7 +377,8 @@ function processChatEvents(events: BufferedChatEvent[]) {
       const current = useChatStore.getState().threads[e.sessionId];
       const phase = e.status === "stopped" || e.status === "interrupted" ? "stopped" : current?.error || e.status === "error" ? "error" : "done";
       record(e.sessionId, { phase, endedAt: Date.now() }, `activity.${phase}`);
-      useSessionStore.getState().updateSession(e.sessionId, { status: phase === "error" ? "error" : phase === "stopped" ? "suspended" : "waiting" });
+      // A finished turn is done, not "waiting": that status means the user is needed.
+      useSessionStore.getState().updateSession(e.sessionId, { status: phase === "error" ? "error" : phase === "stopped" ? "suspended" : "done" });
       scheduleSave(250);
     }
   }
@@ -413,6 +414,24 @@ function waitCoordinationReceipt(sessionId: string, messageId: string): Promise<
       else if (!thread?.busy || !message || message.status === "failed" || thread.error) finish(false);
     };
     const timeout = setTimeout(() => finish(false), 120_000);
+    unsubscribe = useChatStore.subscribe(check);
+    check();
+  });
+}
+/** Native error when input arrives after the provider closed the turn's input stream. */
+const TURN_ENDED = "This response has already ended";
+/** Resolves true only when this turn ends successfully; stops, failures and new turns resolve false. */
+function waitTurnCompleted(sessionId: string, turnId: string): Promise<boolean> {
+  return new Promise(resolve => {
+    let done = false;
+    let unsubscribe = () => {};
+    const finish = (completed: boolean) => { if (done) return; done = true; clearTimeout(timeout); unsubscribe(); resolve(completed); };
+    const check = () => {
+      const thread = useChatStore.getState().threads[sessionId];
+      if (!thread || thread.turnId !== turnId) finish(false);
+      else if (!thread.busy) finish(thread.status === "completed" && !thread.error);
+    };
+    const timeout = setTimeout(() => finish(false), 30_000);
     unsubscribe = useChatStore.subscribe(check);
     check();
   });
@@ -485,23 +504,29 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
   const messageId=createUuid();
   const message:ChatMessage={id:`${messageId}:user`,turnId:old.turnId,role:"user",text:prompt.trim(),attachments,at:Date.now(),status:"sending",...(options?.coordination?{origin:"team" as const}:{})};
   useChatStore.getState().patch(sessionId,{draft:options?.preserveDraft?old.draft:"",inputError:undefined,messages:[...old.messages,message]});
+  // The turn ended before delivery: send the message as the next turn. The end of the turn
+  // restores an unconfirmed message into the draft; drop that copy, keep anything typed since.
+  const resendAsTurn=()=>{
+    const current=useChatStore.getState().threads[sessionId];
+    const drops = discarded.get(sessionId) ?? new Set(); drops.add(message.id); discarded.set(sessionId, drops);
+    dirty.get(sessionId)?.delete(message.id);
+    if(current) useChatStore.getState().patch(sessionId,{messages:current.messages.filter(m=>m.id!==message.id),inputError:undefined,draft:current.draft===message.text?"":current.draft});
+    return sendChatTurn(sessionId,prompt,attachments,{preserveDraft:true,coordination:options?.coordination,expectedIdentity:options?.expectedIdentity});
+  };
   try {
     await launches.get(sessionId);
     const current=useChatStore.getState().threads[sessionId];
     if (!useSessionStore.getState().sessions.some(s=>s.id===sessionId)) return false;
     if (options?.expectedIdentity && chatSessionIdentity(useSessionStore.getState().sessions.find(s=>s.id===sessionId)!) !== options.expectedIdentity) throw new Error("The receiving conversation changed before coordination delivery.");
     if (!current || current.turnId !== old.turnId || current.status === "stopped" || current.error || cancelledTurns.has(old.turnId)) throw new Error("The response was stopped or failed; resend the complement to continue.");
-    if (!current?.busy) {
-      const drops = discarded.get(sessionId) ?? new Set(); drops.add(message.id); discarded.set(sessionId, drops);
-      dirty.get(sessionId)?.delete(message.id);
-      useChatStore.getState().patch(sessionId,{messages:current.messages.filter(m=>m.id!==message.id)});
-      return sendChatTurn(sessionId,prompt,attachments,{preserveDraft:true,coordination:options?.coordination,expectedIdentity:options?.expectedIdentity});
-    }
+    if (!current?.busy) return resendAsTurn();
     const status=await invoke<string>("steer_chat_turn",{messageId,request:{sessionId,turnId:current.turnId,runnerType:session.runner.type,cliPath:session.runner.cliPath||undefined,projectPath:useWorkspaceStore.getState().workspaces.find(workspace=>workspace.id===session.workspaceId)?.path||session.workdir,workdir:session.worktreePath||session.workdir,prompt:prompt.trim(),attachments,mode:session.runner.mode==="plan"?"plan":"code"}});
     const latest=useChatStore.getState().threads[sessionId];
     if(latest) useChatStore.getState().patch(sessionId,{messages:latest.messages.map(m=>m.id===message.id && m.status==="sending"?{...m,status:status||"queued"}:m)});
     return options?.coordination ? await waitCoordinationReceipt(sessionId, message.id) : true;
   } catch(error) {
+    // As in the native CLIs, input typed while a turn finishes is not lost or reported as an error.
+    if(!options?.coordination && String(error).includes(TURN_ENDED) && await waitTurnCompleted(sessionId,old.turnId)) return resendAsTurn();
     const latest=useChatStore.getState().threads[sessionId];
     if(latest)useChatStore.getState().patch(sessionId,{messages:latest.messages.map(m=>m.id===message.id?{...m,status:"failed",title:String(error)}:m),...(!options?.coordination?{inputError:String(error),draft:latest.draft||prompt}:{})});
     return false;

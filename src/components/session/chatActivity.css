@@ -41,4 +41,6 @@
 .ad-chat-stall > div { display: flex; flex-wrap: wrap; gap: 7px; }
 .ad-chat-stall .ad-button { min-height: 28px; font-size: 11px; padding: 4px 8px; }
 .ad-chat-stall > small { display: block; margin-top: 8px; }
+.ad-chat-stall.is-alive { border-color: var(--ci-border); background: transparent; }
+.ad-chat-stall.is-alive p strong { color: var(--ci-text-muted); }
 @media (prefers-reduced-motion: reduce) { .ad-tool-card > summary .ad-tool-chevron { transition: none; } }

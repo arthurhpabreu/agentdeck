@@ -173,7 +173,7 @@ export function continuityCases(setup: (page: Page, locale?: string) => Promise<
     });
     const finished = await state(page);
     expect(finished.busy).toBe(false); expect(finished.status).toBe("completed"); expect(finished.error).toBeUndefined();
-    expect(await page.evaluate(async () => { const path = "/src/store/sessionStore.ts"; return (await import(/* @vite-ignore */ path)).useSessionStore.getState().sessions.find((s: any) => s.id === "session").status; })).toBe("waiting");
+    expect(await page.evaluate(async () => { const path = "/src/store/sessionStore.ts"; return (await import(/* @vite-ignore */ path)).useSessionStore.getState().sessions.find((s: any) => s.id === "session").status; })).toBe("done");
   });
 
   test("continuity transfer failure keeps the original draft and provider binding without creating a chat", async ({ page }) => {

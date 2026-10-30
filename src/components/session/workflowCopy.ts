@@ -3,7 +3,7 @@ const strings = {
   fullHint: ["Executa ferramentas com acesso completo em modo Código. Desative para usar as permissões da CLI.", "Runs tools with full access in Code mode. Disable to use CLI permissions.", "Ejecuta herramientas con acceso completo en modo Código. Desactiva para usar los permisos del CLI."],
   planAccess: ["O modo Planejamento permanece somente leitura.", "Plan mode remains read only.", "El modo Planificación sigue siendo de solo lectura."],
   supplement: ["Enviar complemento", "Send additional input", "Enviar complemento"],
-  liveHint: ["Você pode enviar complementos enquanto a IA trabalha.", "You can send additional input while the agent works.", "Puedes enviar complementos mientras trabaja la IA."],
+  liveHint: ["Você pode enviar complementos enquanto a IA trabalha · Esc interrompe", "You can send additional input while the agent works · Esc interrupts", "Puedes enviar complementos mientras trabaja la IA · Esc interrumpe"],
   sending: ["Enviando complemento…", "Sending additional input…", "Enviando complemento…"],
   accepted: ["Complemento entregue", "Additional input delivered", "Complemento entregado"],
   queued: ["Complemento encadeado", "Additional input queued", "Complemento encadenado"],

@@ -4,5 +4,5 @@ export interface ChatQuestion {
 }
 export interface ChatInteraction {
   id: string; kind: "approval" | "question"; blocking: boolean;
-  command?: string; cwd?: string; reason?: string; grantRoot?: string; itemId?: string; action?: "command" | "fileChange"; questions?: ChatQuestion[];
+  command?: string; cwd?: string; reason?: string; grantRoot?: string; itemId?: string; action?: "command" | "fileChange" | "permissions"; questions?: ChatQuestion[];
 }

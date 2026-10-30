@@ -252,7 +252,26 @@ impl LiveInput {
         if response.to_string().len() > 128 * 1024 {
             return Err("Response is too large.".into());
         }
-        self.write(json!({"id":request["id"],"result":response}))?;
+        let result = if method == "item/permissions/requestApproval" {
+            // Approval grants exactly the requested profile for this turn; anything else grants nothing.
+            let granted = match (
+                response["decision"].as_str(),
+                request["params"]["permissions"].as_object(),
+            ) {
+                (Some("accept"), Some(requested)) => Value::Object(
+                    requested
+                        .iter()
+                        .filter(|(_, value)| !value.is_null())
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+                _ => json!({}),
+            };
+            json!({"permissions":granted,"scope":"turn"})
+        } else {
+            response.clone()
+        };
+        self.write(json!({"id":request["id"],"result":result}))?;
         self.interactions.remove(id);
         Ok(())
     }
@@ -963,6 +982,7 @@ impl LiveProtocol {
                 method,
                 "item/commandExecution/requestApproval"
                     | "item/fileChange/requestApproval"
+                    | "item/permissions/requestApproval"
                     | "item/tool/requestUserInput"
                     | "tool/requestUserInput"
             ) {
@@ -987,20 +1007,17 @@ impl LiveProtocol {
                 }
                 return Ok(());
             }
-            let result = match method {
-                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-                    json!({"decision":"cancel"})
-                }
-                "item/permissions/requestApproval" => json!({"permissions":{},"scope":"turn"}),
-                "mcpServer/elicitation/request" => json!({"action":"cancel","content":null}),
-                "item/tool/requestUserInput" | "tool/requestUserInput" => json!({"answers":{}}),
-                _ => {
-                    input.write(json!({"id":record["id"],"error":{"code":-32601,"message":"Unsupported client request"}}))?;
-                    return Ok(());
-                }
-            };
-            input.write(json!({"id":record["id"],"result":result}))?;
-            out.push(json!({"type":"error","message":"This action requires native permission or user input. Check the access setting or continue in the native terminal."}));
+            if method == "mcpServer/elicitation/request" {
+                // MCP forms are not rendered in chat yet. Cancelling fails only that
+                // tool call; the turn continues, so this must not end it as an error.
+                input.write(json!({"id":record["id"],"result":{"action":"cancel","content":null,"_meta":null}}))?;
+                let params = &record["params"];
+                let server = params["serverName"].as_str().unwrap_or("MCP");
+                let request = params["message"].as_str().unwrap_or_default();
+                out.push(json!({"type":"agentdeck.blocked","id":format!("elicitation:{}", record["id"]),"title":format!("{server} · confirmation"),"message":format!("{server} asked for input that this chat cannot show yet, so the request was declined and the agent continued. Continue in the native terminal to answer it.{}", if request.is_empty() { String::new() } else { format!("\n\n{request}") })}));
+                return Ok(());
+            }
+            input.write(json!({"id":record["id"],"error":{"code":-32601,"message":"Unsupported client request"}}))?;
             return Ok(());
         }
         let params = &record["params"];
@@ -1150,7 +1167,60 @@ impl LiveProtocol {
 fn interaction_value(record: &Value) -> Value {
     let method = record["method"].as_str().unwrap_or_default();
     let params = &record["params"];
-    json!({"id":record["id"].to_string(),"kind":if method.ends_with("/requestApproval") {"approval"} else {"question"},"action":if method.contains("fileChange") {"fileChange"} else {"command"},"blocking":method.ends_with("/requestApproval") || params["isBlocking"] != false,"command":params["command"],"cwd":params["cwd"],"reason":params["reason"],"grantRoot":params["grantRoot"],"itemId":params["itemId"],"questions":params["questions"]})
+    let permissions = method == "item/permissions/requestApproval";
+    let action = if permissions {
+        "permissions"
+    } else if method.contains("fileChange") {
+        "fileChange"
+    } else {
+        "command"
+    };
+    let command = if permissions {
+        json!(permission_summary(&params["permissions"]))
+    } else {
+        params["command"].clone()
+    };
+    json!({"id":record["id"].to_string(),"kind":if method.ends_with("/requestApproval") {"approval"} else {"question"},"action":action,"blocking":method.ends_with("/requestApproval") || params["isBlocking"] != false,"command":command,"cwd":params["cwd"],"reason":params["reason"],"grantRoot":params["grantRoot"],"itemId":params["itemId"],"questions":params["questions"]})
+}
+/// One line per additional sandbox permission the agent asked for.
+fn permission_summary(permissions: &Value) -> String {
+    let mut lines = Vec::new();
+    if permissions["network"]["enabled"] == true {
+        lines.push("network: enabled".to_owned());
+    }
+    for access in ["read", "write"] {
+        if let Some(paths) = permissions["fileSystem"][access]
+            .as_array()
+            .filter(|paths| !paths.is_empty())
+        {
+            lines.push(format!(
+                "{access}: {}",
+                paths
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    for entry in permissions["fileSystem"]["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let path = &entry["path"];
+        let target = path["path"]
+            .as_str()
+            .or_else(|| path["pattern"].as_str())
+            .or_else(|| path["value"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| path.to_string());
+        lines.push(format!(
+            "{}: {target}",
+            entry["access"].as_str().unwrap_or("access")
+        ));
+    }
+    lines.join("\n")
 }
 fn retry_warning(params: &Value) -> Value {
     json!({"type":"agentdeck.warning", "status":"reconnecting", "message":params["error"]["message"].as_str().unwrap_or("Codex is retrying the connection. The conversation is preserved.")})
@@ -1253,6 +1323,75 @@ mod tests {
         let stale = protocol.ingest(&json!({"id":3,"method":"item/fileChange/requestApproval","params":{"threadId":"other","turnId":"turn"}}).to_string(), &mut input);
         assert!(stale.is_empty());
         assert!(input.interactions.is_empty());
+    }
+    #[test]
+    fn permission_requests_wait_for_the_user_and_grant_only_the_requested_profile_for_the_turn() {
+        for (decision, granted) in [
+            (
+                "accept",
+                json!({"network":{"enabled":true},"fileSystem":{"read":null,"write":["/tmp/out"]}}),
+            ),
+            ("decline", json!({})),
+        ] {
+            let bytes = Arc::new(Mutex::new(Vec::new()));
+            let req = super::super::tests::request("codex");
+            let mut protocol = LiveProtocol::new(&req);
+            let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+            input.thread = Some("thread".into());
+            input.turn = Some("turn".into());
+            input.started = true;
+            let request = json!({"id":9,"method":"item/permissions/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"cmd","reason":"Upload the build","permissions":{"network":{"enabled":true},"fileSystem":{"read":null,"write":["/tmp/out"]}}}});
+            let records = protocol.ingest(&request.to_string(), &mut input);
+            let event: Value = serde_json::from_str(&records[0]).unwrap();
+            assert_eq!(event["type"], "agentdeck.interaction");
+            assert_eq!(event["interaction"]["action"], "permissions");
+            assert_eq!(
+                event["interaction"]["command"],
+                "network: enabled\nwrite: /tmp/out"
+            );
+            assert!(
+                written(&bytes).is_empty(),
+                "Never grant permissions automatically"
+            );
+            assert!(records.iter().all(|record| !record.contains("\"error\"")));
+            input.respond("9", &json!({"decision":decision})).unwrap();
+            let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
+            assert_eq!(
+                sent,
+                json!({"id":9,"result":{"permissions":granted,"scope":"turn"}})
+            );
+        }
+    }
+    #[test]
+    fn mcp_elicitation_is_declined_without_failing_the_turn() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let req = super::super::tests::request("codex");
+        let mut protocol = LiveProtocol::new(&req);
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        input.thread = Some("thread".into());
+        input.turn = Some("turn".into());
+        input.started = true;
+        let request = json!({"id":12,"method":"mcpServer/elicitation/request","params":{"threadId":"thread","turnId":"turn","serverName":"figma","mode":"form","message":"Pick a file","requestedSchema":{}}});
+        let records = protocol.ingest(&request.to_string(), &mut input);
+        let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
+        assert_eq!(
+            sent,
+            json!({"id":12,"result":{"action":"cancel","content":null,"_meta":null}})
+        );
+        let mut parser = super::super::protocol::ChatParser::new("session".into(), "turn".into());
+        let events: Vec<_> = records
+            .iter()
+            .flat_map(|record| parser.parse("codex", record))
+            .collect();
+        assert!(!parser.failed, "A declined MCP form must not end the turn");
+        assert!(events.iter().all(|event| event.kind != "error"));
+        assert!(events.iter().any(|event| event.kind == "tool"
+            && event.status.as_deref() == Some("blocked")
+            && event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("Pick a file"))));
+        assert!(input.writer.is_some(), "The turn keeps its input open");
     }
     #[test]
     fn claude_coordination_receipt_requires_its_native_input_uuid_and_is_idempotent() {

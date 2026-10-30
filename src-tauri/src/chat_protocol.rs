@@ -334,6 +334,19 @@ impl ChatParser {
                 }
                 events.push(event);
             }
+            // A declined request the agent continues past: visible, but not a turn failure.
+            "agentdeck.blocked" => {
+                let mut event = self.message(
+                    "tool",
+                    record["message"]
+                        .as_str()
+                        .unwrap_or("This request needs the native terminal."),
+                );
+                event.item_id = string(record, "id");
+                event.title = string(record, "title");
+                event.status = Some("blocked".into());
+                events.push(event);
+            }
             "agentdeck.warning" => {
                 let mut event = self.message(
                     "status",
@@ -570,12 +583,16 @@ impl ChatParser {
                         record["attempt"].as_u64().unwrap_or(1)
                     )),
                     "permission_denied" => {
-                        events.push(self.permission_required());
+                        let mut denied = self.permission_required();
+                        denied.parent_id = parent.clone();
+                        events.push(denied);
                         event.status = Some("blocked".into());
                         Some("Permission required. Continue in the native terminal to approve this action.".into())
                     }
                     _ => string(record, "message"),
                 };
+                // Subagent notices stay with their agent instead of replacing the main activity.
+                event.parent_id = parent;
                 if event.text.is_some() {
                     events.push(event);
                 }
@@ -723,6 +740,14 @@ impl ChatParser {
                     }
                 }
             }
+            // A subagent result ends only that subagent: its error reaches the main agent as a
+            // tool result, and its usage and denials are already part of the main result.
+            "result" if parent.is_some() => {
+                let mut event = self.event("status");
+                event.status = Some("finishing".into());
+                event.parent_id = parent;
+                events.push(event);
+            }
             "result" => {
                 let is_error = record["is_error"].as_bool().unwrap_or(false);
                 if is_error {
@@ -797,6 +822,32 @@ mod tests {
             .all(|event| event.context_window != Some(1000000)));
         let child = parser.parse("claude-code", r#"{"type":"result","parent_tool_use_id":"child","modelUsage":{"claude-main":{"contextWindow":1000000}},"is_error":false}"#);
         assert!(child.iter().all(|event| event.context_window.is_none()));
+    }
+
+    #[test]
+    fn subagent_failures_and_denials_never_end_or_relabel_the_main_turn() {
+        let mut parser = parser();
+        let events = parser.parse("claude-code", r#"{"type":"result","parent_tool_use_id":"child","is_error":true,"result":"Subagent hit its turn limit","usage":{"input_tokens":5,"output_tokens":5},"permission_denials":[{"tool_name":"Bash"}]}"#);
+        assert!(!parser.failed);
+        assert!(events.iter().all(|event| event.kind != "error"
+            && event.parent_id.as_deref() == Some("child")
+            && event.usage.is_none()));
+        let denied = parser.parse(
+            "claude-code",
+            r#"{"type":"system","subtype":"permission_denied","parent_tool_use_id":"child"}"#,
+        );
+        assert!(!denied.is_empty());
+        assert!(denied
+            .iter()
+            .all(|event| event.parent_id.as_deref() == Some("child")));
+        let main = parser.parse(
+            "claude-code",
+            r#"{"type":"result","is_error":true,"result":"Main turn failed"}"#,
+        );
+        assert!(parser.failed);
+        assert!(main
+            .iter()
+            .any(|event| event.kind == "error" && event.parent_id.is_none()));
     }
 
     #[test]

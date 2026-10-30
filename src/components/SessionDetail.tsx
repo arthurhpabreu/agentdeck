@@ -518,7 +518,8 @@ export function SessionDetail({
   useEffect(() => {
     if (mode !== "overlay" || !visibleSessionId) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setExpandedSession(null);
+      // A chat composer consumes Escape to interrupt its running turn.
+      if (e.key === "Escape" && !e.defaultPrevented) setExpandedSession(null);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);

@@ -113,7 +113,7 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
         tools: (await import(/* @vite-ignore */ observedPath)).useAgentObservabilityStore.getState().live.session.tools,
         session: (await import(/* @vite-ignore */ sessionPath)).useSessionStore.getState().sessions.find((s: any) => s.id === "session").status };
     });
-    expect(activity.phase).toBe("done"); expect(activity.session).toBe("waiting");
+    expect(activity.phase).toBe("done"); expect(activity.session).toBe("done");
     for (const id of ["background", "started", "pending", "queued", "implicit", "child-background"]) expect(activity.tools.find((tool: any) => tool.id.endsWith(`:${id}`)).status).toBe("completed");
     expect(activity.tools.find((tool: any) => tool.id.endsWith(":denied")).status).toBe("blocked");
     expect(activity.tools.find((tool: any) => tool.id.endsWith(":failed")).status).toBe("failed");
@@ -326,5 +326,86 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
       return { sent, starts, draft:thread.draft, lastMessage:thread.messages.at(-1).text };
     });
     expect(result).toEqual({ sent:true, starts:2, draft:"Keep notes typed after the follow-up", lastMessage:"Follow-up queued during initialization" });
+  });
+
+  test("chat reliability keeps alerts truthful: a denied tool is not an error and a finished turn is done, not waiting", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session };
+      w.__emit("chat-event", { ...base, kind: "tool", itemId: "permission-required", title: "Permission required", text: "Approve in native terminal", status: "blocked" });
+      w.__emit("chat-event", { ...base, kind: "text", itemId: "after-denial", text: "Continued with a read-only alternative." });
+    });
+    const snapshot = () => page.evaluate(async () => {
+      const attention = (await import("/src/store/attentionStore.ts" as string)).useAttentionStore.getState().items.filter((item: any) => item.sessionId === "session");
+      const session = (await import("/src/store/sessionStore.ts" as string)).useSessionStore.getState().sessions.find((item: any) => item.id === "session");
+      return { kinds: attention.map((item: any) => item.kind), status: session.status };
+    });
+    expect(await snapshot()).toEqual({ kinds: [], status: "running" });
+    await page.evaluate(() => { const w = window as any; w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "done", status: "completed" }); });
+    await expect.poll(snapshot).toEqual({ kinds: ["completed"], status: "done" });
+    await expect(page.locator(".ad-chat-bottom")).toContainText("Use o terminal para login, aprovações interativas");
+    // Opening a conversation shows its error inline; actionable approvals stay until answered.
+    const unread = await page.evaluate(async () => {
+      const store = (await import("/src/store/attentionStore.ts" as string)).useAttentionStore;
+      for (const kind of ["error", "approval"]) store.getState().record({ id: `seen-${kind}`, sessionId: "other", kind, text: kind, source: "provider", at: Date.now() });
+      store.getState().readSession("other");
+      return store.getState().items.filter((item: any) => item.sessionId === "other" && !item.read).map((item: any) => item.kind);
+    });
+    expect(unread).toEqual(["approval"]);
+  });
+
+  test("chat reliability sends input that reaches a finishing turn as the next turn instead of failing", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+        if (command !== "steer_chat_turn") return original(command, args);
+        // The provider closed its input as the turn completed: the native call is rejected after done.
+        w.__emit("chat-event", { sessionId: "session", turnId: args.request.turnId, kind: "done", status: "completed" });
+        return Promise.reject("This response has already ended");
+      };
+    });
+    await page.locator(".ad-chat-composer textarea").fill("Follow-up typed as the turn ended");
+    await page.getByRole("button", { name: "Enviar complemento", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__calls.filter((call: any) => call.command === "start_chat_turn").length)).toBe(2);
+    const result = await page.evaluate(async () => {
+      const thread = (await import("/src/store/chatStore.ts" as string)).useChatStore.getState().threads.session;
+      const start = (window as any).__calls.filter((call: any) => call.command === "start_chat_turn").at(-1);
+      return { prompt: start.args.request.prompt, busy: thread.busy, draft: thread.draft, inputError: thread.inputError, copies: thread.messages.filter((m: any) => m.text === "Follow-up typed as the turn ended").map((m: any) => m.status ?? "sent") };
+    });
+    expect(result).toEqual({ prompt: "Follow-up typed as the turn ended", busy: true, draft: "", inputError: undefined, copies: ["sent"] });
+    await expect(page.locator(".ad-chat-error")).toHaveCount(0);
+  });
+
+  test("chat reliability lets Escape in the composer interrupt a running turn, like the native CLIs", async ({ page }) => {
+    await start(page);
+    await expect(page.locator(".ad-chat-footnote")).toContainText("Esc interrompe");
+    await page.locator(".ad-chat-composer textarea").press("Escape");
+    await expect(page.getByText("Resposta interrompida", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__calls.filter((call: any) => call.command === "stop_chat_turn").length)).toBe(1);
+    // Without a running turn, Escape no longer stops anything.
+    await page.locator(".ad-chat-composer textarea").press("Escape");
+    expect(await page.evaluate(() => (window as any).__calls.filter((call: any) => call.command === "stop_chat_turn").length)).toBe(1);
+  });
+
+  test("chat reliability shows extra Codex permissions as an approval that declines without stopping", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+        const result = original(command, args);
+        if (command === "respond_chat_interaction") w.__emit("chat-event", { sessionId: args.sessionId, turnId: args.turnId, kind: "interaction", status: "resolved", itemId: args.requestId });
+        return result;
+      };
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "interaction", interaction: { id: "9", kind: "approval", action: "permissions", blocking: true, command: "network: enabled", reason: "Download dependencies" } });
+    });
+    const approval = page.getByRole("region", { name: "Aprovação necessária" });
+    await expect(approval).toContainText("Recusar não interrompe o agente");
+    await expect(approval.getByRole("button", { name: "Recusar e parar", exact: true })).toHaveCount(0);
+    await approval.getByRole("button", { name: "Recusar", exact: true }).click();
+    await expect(approval).toHaveCount(0);
+    const call = await page.evaluate(() => (window as any).__calls.find((item: any) => item.command === "respond_chat_interaction"));
+    expect(call.args).toMatchObject({ requestId: "9", response: { decision: "decline" } });
+    expect(await state(page)).toMatchObject({ busy: true });
   });
 }

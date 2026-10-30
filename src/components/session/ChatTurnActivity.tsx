@@ -8,6 +8,8 @@ import { contextCopy } from "./contextCopy";
 import "./chatActivity.css";
 
 const SILENCE_NOTICE_MS = 4 * 60_000;
+// The native worker sends a heartbeat every ten seconds while the provider process lives.
+const HEARTBEAT_FRESH_MS = 30_000;
 const duration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 
 export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatThread; sessionId: string; visible: boolean }) {
@@ -19,6 +21,8 @@ export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatT
   const elapsed = Math.max(0, Math.floor((now - started) / 1000));
   const waitingForUser = thread.interactions?.some(request => request.blocking);
   const silent = !waitingForUser && now - lastActivity >= SILENCE_NOTICE_MS;
+  // Silence from a live process is usually a long command, not a stall: inform, do not warn.
+  const alive = !!thread.lastHeartbeatAt && now - thread.lastHeartbeatAt < HEARTBEAT_FRESH_MS;
   useEffect(() => {
     if (!visible || !silent) return;
     let pending = false;
@@ -43,6 +47,6 @@ export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatT
   return <div className={`ad-turn-activity ${silent ? "is-silent" : ""}`}>
     <div className="ad-chat-progress" role="status"><LoaderCircle size={16} className={waitingForUser ? "" : "ad-spin"} /><span>{waitingForUser ? (locale.startsWith("pt") ? "Aguardando sua resposta no chat" : locale.startsWith("es") ? "Esperando tu respuesta en el chat" : "Waiting for your answer in chat") : label}</span><time>{duration(elapsed)}</time></div>
     <div className="ad-turn-activity-detail"><Activity size={12} /><span title={detail}>{detail || c.activity}</span>{thread.pid && <code>{c.pid} {thread.pid}</code>}<small title={c.lastUpdate}>{Math.max(0, Math.floor((now - lastActivity) / 1000))}{c.seconds} {c.ago}</small></div>
-    {silent && <div className="ad-chat-stall"><p><strong>{c.silent} {duration(Math.max(0, Math.floor((now - lastActivity) / 1000)))}</strong><span>{waitingBackground ? c.backgroundHint : c.silentHint}</span></p><div><button type="button" className="ad-button ad-button-ghost" disabled={checking} onClick={() => void check()}><RefreshCw size={13} className={checking ? "ad-spin" : ""} />{checking ? c.checking : c.check}</button><button type="button" className="ad-button ad-button-ghost" onClick={() => void stopChatTurn(sessionId)}><Square size={12} />{chatCopy(locale).stop}</button></div>{checkNotice && <small role="status">{checkNotice}</small>}</div>}
+    {silent && <div className={`ad-chat-stall ${alive ? "is-alive" : ""}`}><p><strong>{c.silent} {duration(Math.max(0, Math.floor((now - lastActivity) / 1000)))}</strong><span>{waitingBackground ? c.backgroundHint : alive ? c.aliveHint : c.silentHint}</span></p><div><button type="button" className="ad-button ad-button-ghost" disabled={checking} onClick={() => void check()}><RefreshCw size={13} className={checking ? "ad-spin" : ""} />{checking ? c.checking : c.check}</button><button type="button" className="ad-button ad-button-ghost" onClick={() => void stopChatTurn(sessionId)}><Square size={12} />{chatCopy(locale).stop}</button></div>{checkNotice && <small role="status">{checkNotice}</small>}</div>}
   </div>;
 }

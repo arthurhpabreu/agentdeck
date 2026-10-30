@@ -156,6 +156,9 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await expect(page.locator(".ad-chat-stall").getByRole("button", { name: "Parar resposta", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Verificar processo", exact: true }).click();
     await expect(page.locator(".ad-chat-stall")).toContainText("Processo em execução");
+    // A confirmed live process is a long-running step, not a stall.
+    await expect(page.locator(".ad-chat-stall")).toHaveClass(/is-alive/);
+    await expect(page.locator(".ad-chat-stall")).toContainText("O processo continua ativo");
     await expect(page.getByText("Processo em execução", { exact: true })).toBeInViewport();
     await expect(page.locator(".ad-chat-stall")).toContainText("Sem nova atividade há");
     await page.screenshot({ path: "test-results/chat-activity-recovery.png" });
