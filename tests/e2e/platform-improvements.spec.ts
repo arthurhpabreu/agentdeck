@@ -30,12 +30,14 @@ test("@macos inbox admits confirmed actions and completions, excludes OAuth and 
 
 test("@macos a native terminal permission dialog needs you until it is answered in the terminal", async ({ page }) => {
   await setupImprovements(page);
-  await page.evaluate(() => {
-    const emit = (window as any).__emitImprovement;
-    emit("pty-notification", { session_id: "session-4", title: "", message: "Claude needs your permission to use Bash", notification_type: "permission_prompt" });
-  });
   const unread = () => page.evaluate(async () => (await import("/src/store/attentionStore.ts" as string)).useAttentionStore.getState().items.filter((item: any) => item.sessionId === "session-4" && !item.read).map((item: any) => item.kind));
-  await expect.poll(unread).toEqual(["approval"]);
+  // The app subscribes to native events asynchronously after mount (twice for a moment under
+  // development StrictMode); repeat the dialog until it is heard.
+  await expect.poll(async () => {
+    if (!(await unread()).length) await page.evaluate(() => (window as any).__emitImprovement("pty-notification", { session_id: "session-4", title: "", message: "Claude needs your permission to use Bash", notification_type: "permission_prompt" }));
+    return (await unread()).length;
+  }).toBeGreaterThan(0);
+  expect(new Set(await unread())).toEqual(new Set(["approval"]));
   await page.getByRole("button", { name: /Precisa de você/ }).click();
   await expect(page.getByRole("dialog", { name: "Precisa de você" })).toContainText("Claude needs your permission to use Bash");
   await page.keyboard.press("Escape");
