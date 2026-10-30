@@ -368,9 +368,8 @@ fn load_json_file(path: &PathBuf) -> Result<Value, String> {
     }
     // An unreadable file may be mid-write by the CLI. Never replace the user's
     // settings (permissions, environment, login method) with hooks alone.
-    serde_json::from_str(&content).map_err(|e| {
-        crate::i18n::native_text("native.parse", &format!("{} : {e}", path.display()))
-    })
+    serde_json::from_str(&content)
+        .map_err(|e| crate::i18n::native_text("native.parse", &format!("{} : {e}", path.display())))
 }
 
 /// Replace a provider file in one step so the CLI never reads a partial write.
@@ -1532,12 +1531,30 @@ mod namespace_tests {
     #[test]
     fn only_blocking_claude_dialogs_raise_terminal_attention() {
         for (payload, expected) in [
-            (serde_json::json!({"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}), Some("permission_prompt")),
-            (serde_json::json!({"notification_type":"elicitation_dialog","message":"MCP input"}), Some("elicitation_dialog")),
-            (serde_json::json!({"notification_type":"idle_prompt","message":"Claude is waiting for your input"}), None),
-            (serde_json::json!({"notification_type":"auth_success","message":"Signed in"}), None),
-            (serde_json::json!({"message":"Claude needs your permission to use Edit"}), Some("permission_prompt")),
-            (serde_json::json!({"message":"Claude is waiting for your input"}), None),
+            (
+                serde_json::json!({"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}),
+                Some("permission_prompt"),
+            ),
+            (
+                serde_json::json!({"notification_type":"elicitation_dialog","message":"MCP input"}),
+                Some("elicitation_dialog"),
+            ),
+            (
+                serde_json::json!({"notification_type":"idle_prompt","message":"Claude is waiting for your input"}),
+                None,
+            ),
+            (
+                serde_json::json!({"notification_type":"auth_success","message":"Signed in"}),
+                None,
+            ),
+            (
+                serde_json::json!({"message":"Claude needs your permission to use Edit"}),
+                Some("permission_prompt"),
+            ),
+            (
+                serde_json::json!({"message":"Claude is waiting for your input"}),
+                None,
+            ),
         ] {
             assert_eq!(blocking_notification(&payload), expected, "{payload}");
         }
@@ -1545,7 +1562,8 @@ mod namespace_tests {
 
     #[test]
     fn unreadable_provider_settings_are_never_rewritten_empty() {
-        let directory = std::env::temp_dir().join(format!("agentdeck-config-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("agentdeck-config-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&directory).unwrap();
         let toml_path = directory.join("config.toml");
         let json_path = directory.join("settings.json");
@@ -1554,7 +1572,9 @@ mod namespace_tests {
         fs::write(&json_path, "{\"permissions\": {\"allow\": [").unwrap();
         assert!(load_toml_file(&toml_path).is_err());
         assert!(load_json_file(&json_path).is_err());
-        assert!(load_toml_file(&directory.join("missing.toml")).unwrap().is_empty());
+        assert!(load_toml_file(&directory.join("missing.toml"))
+            .unwrap()
+            .is_empty());
         let mut table = toml::Table::new();
         table.insert("model".into(), toml::Value::String("gpt".into()));
         save_toml_file(&toml_path, &table).unwrap();

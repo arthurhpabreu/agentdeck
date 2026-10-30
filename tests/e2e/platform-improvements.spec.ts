@@ -28,6 +28,21 @@ test("@macos inbox admits confirmed actions and completions, excludes OAuth and 
   await expect(page.getByRole("dialog", { name: "Precisa de você" }).locator("article")).toHaveCount(1);
 });
 
+test("@macos a native terminal permission dialog needs you until it is answered in the terminal", async ({ page }) => {
+  await setupImprovements(page);
+  await page.evaluate(() => {
+    const emit = (window as any).__emitImprovement;
+    emit("pty-notification", { session_id: "session-4", title: "", message: "Claude needs your permission to use Bash", notification_type: "permission_prompt" });
+  });
+  const unread = () => page.evaluate(async () => (await import("/src/store/attentionStore.ts" as string)).useAttentionStore.getState().items.filter((item: any) => item.sessionId === "session-4" && !item.read).map((item: any) => item.kind));
+  await expect.poll(unread).toEqual(["approval"]);
+  await page.getByRole("button", { name: /Precisa de você/ }).click();
+  await expect(page.getByRole("dialog", { name: "Precisa de você" })).toContainText("Claude needs your permission to use Bash");
+  await page.keyboard.press("Escape");
+  await page.evaluate(async () => { await (await import("/src/services/ptyInput.ts" as string)).writePtyInput("session-4", "1").catch(() => {}); });
+  await expect.poll(unread).toEqual([]);
+});
+
 test("@macos file navigation reuses editor tab, resolves line, and supports persisted favorites", async ({ page }) => {
   await setupImprovements(page);
   await page.keyboard.press("Control+k"); const dialog = page.getByRole("dialog", { name: "Navegação rápida" });

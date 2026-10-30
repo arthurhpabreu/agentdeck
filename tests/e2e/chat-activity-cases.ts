@@ -141,12 +141,12 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     await start(page);
     await page.evaluate(() => {
       const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session, kind: "tool" };
-      const root = "C:\Projects\Test Project\\";
-      w.__emit("chat-event", { ...base, itemId: "claude-edit", title: "Edit", status: "running", text: JSON.stringify({ file_path: root + "src\server.ts", new_string: "const port = 8080;\nstart(port);", old_string: "const port = 3000;\nstart(port);" }) });
+      const root = "C:\\Projects\\Test Project\\";
+      w.__emit("chat-event", { ...base, itemId: "claude-edit", title: "Edit", status: "running", text: JSON.stringify({ file_path: root + "src\\server.ts", new_string: "const port = 8080;\nstart(port);", old_string: "const port = 3000;\nstart(port);" }) });
       w.__emit("chat-event", { ...base, itemId: "claude-edit", output: "The file has been updated.", status: "completed" });
-      w.__emit("chat-event", { ...base, itemId: "claude-read", title: "Read", status: "completed", text: JSON.stringify({ file_path: root + "docs\guide.md" }), output: "# Guide" });
+      w.__emit("chat-event", { ...base, itemId: "claude-read", title: "Read", status: "completed", text: JSON.stringify({ file_path: root + "docs\\guide.md" }), output: "# Guide" });
       w.__emit("chat-event", { ...base, itemId: "codex-files", title: "Files", status: "completed", text: JSON.stringify([
-        { diff: "@@ -1,2 +1,2 @@\n-export const mode = \"dev\";\n+export const mode = \"prod\";\n export default mode;\n", kind: { move_path: null, type: "update" }, path: root + "src\config.ts" },
+        { diff: "@@ -1,2 +1,2 @@\n-export const mode = \"dev\";\n+export const mode = \"prod\";\n export default mode;\n", kind: { move_path: null, type: "update" }, path: root + "src\\config.ts" },
         { diff: "first note\n", kind: { type: "add" }, path: root + "notes.md" },
       ]) });
       w.__emit("chat-event", { ...base, itemId: "partial-write", title: "Write", status: "running", text: "{\"content\":\"draft" });

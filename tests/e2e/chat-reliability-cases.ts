@@ -408,4 +408,111 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
     expect(call.args).toMatchObject({ requestId: "9", response: { decision: "decline" } });
     expect(await state(page)).toMatchObject({ busy: true });
   });
+
+  const resolveOnRespond = (page: Page) => page.evaluate(() => {
+    const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+      const result = original(command, args);
+      if (command === "respond_chat_interaction") w.__emit("chat-event", { sessionId: args.sessionId, turnId: args.turnId, kind: "interaction", status: "resolved", itemId: args.requestId });
+      return result;
+    };
+  });
+
+  test("chat reliability lets Claude tool approvals be remembered, declined to continue, or stopped, like Claude Code", async ({ page }) => {
+    await start(page);
+    await resolveOnRespond(page);
+    await page.evaluate(() => { const w = window as any; w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "interaction", interaction: { id: "perm-1", kind: "approval", action: "command", blocking: true, title: "Bash", command: "npm test", canRemember: true, provider: "claude-code" } }); });
+    const approval = page.getByRole("region", { name: "Aprovação necessária" });
+    await expect(approval).toContainText("Bash");
+    for (const name of ["Aprovar esta ação", "Aprovar nesta sessão", "Recusar e continuar", "Recusar e parar"]) await expect(approval.getByRole("button", { name, exact: true })).toBeVisible();
+    await approval.getByRole("button", { name: "Aprovar nesta sessão", exact: true }).click();
+    await expect(approval).toHaveCount(0);
+    expect((await page.evaluate(() => (window as any).__calls.find((item: any) => item.command === "respond_chat_interaction"))).args).toMatchObject({ requestId: "perm-1", response: { decision: "acceptForSession" } });
+    // Without a rule to remember, Claude offers only this-time approval.
+    await page.evaluate(() => { const w = window as any; w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "interaction", interaction: { id: "perm-2", kind: "approval", action: "fileChange", blocking: true, title: "Write", command: "notes.md", provider: "claude-code" } }); });
+    await expect(page.getByRole("region", { name: "Aprovação necessária" }).getByRole("button", { name: "Aprovar nesta sessão", exact: true })).toHaveCount(0);
+    await page.getByRole("region", { name: "Aprovação necessária" }).getByRole("button", { name: "Recusar e continuar", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__calls.filter((item: any) => item.command === "respond_chat_interaction").at(-1).args.response.decision)).toBe("decline");
+    expect(await state(page)).toMatchObject({ busy: true });
+  });
+
+  test("chat reliability approves a Claude plan in chat and leaves plan mode for the next turns", async ({ page }) => {
+    await start(page);
+    await resolveOnRespond(page);
+    await page.evaluate(async () => {
+      const sessions = (await import("/src/store/sessionStore.ts" as string)).useSessionStore;
+      const session = sessions.getState().sessions.find((item: any) => item.id === "session");
+      sessions.getState().updateSession("session", { runner: { ...session.runner, mode: "plan" } });
+      const w = window as any; w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "interaction", interaction: { id: "plan-1", kind: "approval", action: "plan", blocking: true, title: "ExitPlanMode", command: "## Plano\n\n1. Ajustar o login", provider: "claude-code" } });
+    });
+    const plan = page.getByRole("region", { name: "Plano pronto para revisão" });
+    await expect(plan.getByRole("heading", { name: "Plano" })).toBeVisible();
+    await expect(plan.getByRole("button", { name: "Continuar planejando", exact: true })).toBeVisible();
+    await plan.getByRole("button", { name: "Aprovar plano", exact: true }).click();
+    await expect(plan).toHaveCount(0);
+    expect(await page.evaluate(async () => (await import("/src/store/sessionStore.ts" as string)).useSessionStore.getState().sessions.find((item: any) => item.id === "session").runner.mode)).toBe("default");
+  });
+
+  test("chat reliability shows that a stop is interrupting and lets a second stop end the process", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      // The native side interrupts first; done arrives only once the provider ends the turn.
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => command === "stop_chat_turn" ? (w.__calls.push({ command, args }), Promise.resolve()) : original(command, args);
+    });
+    await page.getByRole("button", { name: "Parar resposta", exact: true }).first().click();
+    await expect(page.locator(".ad-chat-progress").first()).toContainText("Interrompendo");
+    await page.locator(".ad-chat-composer textarea").press("Escape");
+    expect(await page.evaluate(() => (window as any).__calls.filter((call: any) => call.command === "stop_chat_turn").length)).toBe(2);
+    await page.evaluate(() => { const w = window as any; w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "done", status: "stopped" }); });
+    await expect(page.getByText("Resposta interrompida", { exact: true })).toBeVisible();
+    expect(await state(page)).toMatchObject({ busy: false, stopRequested: undefined });
+  });
+
+  test("chat reliability recalls earlier prompts with Up and Down and mentions project files with @", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any, original = w.__TAURI_INTERNALS__.invoke;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => command === "search_session_files" ? (w.__calls.push({ command, args }), Promise.resolve({ paths: ["src/example.ts", "docs/My Notes.md"], truncated: false })) : original(command, args);
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "done", status: "completed" });
+    });
+    const input = page.locator(".ad-chat-composer textarea");
+    await input.press("ArrowUp");
+    await expect(input).toHaveValue("Verify chat event reliability");
+    await input.press("ArrowDown");
+    await expect(input).toHaveValue("");
+    await input.fill("Revise @exa");
+    const files = page.getByRole("listbox", { name: "Comandos e skills" });
+    await expect(files.getByRole("option")).toHaveCount(2);
+    await expect(page.getByRole("region", { name: "Comandos e skills" })).toContainText("Arquivos do projeto");
+    await files.getByRole("option").filter({ hasText: "My Notes" }).click();
+    await expect(input).toHaveValue('Revise @"docs/My Notes.md" ');
+    expect((await page.evaluate(() => (window as any).__calls.find((call: any) => call.command === "search_session_files"))).args).toMatchObject({ sessionId: "session", query: "exa" });
+  });
+
+  test("chat reliability turns a missing CLI or an expired sign-in into install and sign-in actions", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => { const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session }; w.__emit("chat-event", { ...base, kind: "error", text: "Invalid API key · Please run /login" }); w.__emit("chat-event", { ...base, kind: "done", status: "error" }); });
+    const banner = page.locator(".ad-chat-error").filter({ hasText: "Entre novamente no agente" });
+    await expect(banner).toContainText("O login do CLI expirou");
+    await banner.getByRole("button", { name: "Entrar novamente", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__calls.some((call: any) => call.command === "start_pty_session" && call.args.sessionId === "session"))).toBe(true);
+    const help = await page.evaluate(async () => {
+      const { providerErrorHelp } = await import("/src/services/agentAdapters.ts" as string);
+      return [providerErrorHelp("Could not start codex: program not found (os error 2)", "codex"), providerErrorHelp("Your refresh token was already used. Please log out and sign in again.", "codex"), providerErrorHelp("Model overloaded, retry later", "claude-code")];
+    });
+    expect(help).toEqual([{ kind: "install", command: "npm install -g @openai/codex" }, { kind: "login", command: "" }, undefined]);
+  });
+
+  test("chat reliability keeps provider and model choices as defaults and exposes them in Settings > Agents", async ({ page }) => {
+    await setup(page); await openSession(page);
+    await page.getByRole("button", { name: "Configurações", exact: true }).click();
+    // The title bar has its own "Agentes" button; use the one beside the other settings tabs.
+    await page.getByRole("button", { name: "Componentes", exact: true }).locator("xpath=..").getByRole("button", { name: "Agentes", exact: true }).click();
+    await expect(page.getByText("Agente padrão para novas conversas")).toBeVisible();
+    await page.getByRole("group", { name: "Provedor padrão" }).getByRole("button", { name: /Codex/ }).click();
+    expect(await page.evaluate(async () => (await import("/src/store/settingsStore.ts" as string)).useSettingsStore.getState().settings.runner.type)).toBe("codex");
+    await page.getByRole("group", { name: "Provedor padrão" }).getByRole("button", { name: /Claude Code/ }).click();
+    expect(await page.evaluate(async () => (await import("/src/store/settingsStore.ts" as string)).useSettingsStore.getState().settings.runner.type)).toBe("claude-code");
+  });
 }

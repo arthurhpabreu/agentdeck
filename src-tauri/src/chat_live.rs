@@ -301,7 +301,11 @@ impl LiveInput {
                 ),
                 _ => json!({}),
             };
-            let scope = if decision == Some("acceptForSession") { "session" } else { "turn" };
+            let scope = if decision == Some("acceptForSession") {
+                "session"
+            } else {
+                "turn"
+            };
             json!({"permissions":granted,"scope":scope})
         } else {
             response.clone()
@@ -1053,7 +1057,8 @@ impl LiveProtocol {
                 let thread = params["threadId"].as_str();
                 let other_thread = thread.is_some_and(|id| input.thread.as_deref() != Some(id));
                 // A subagent this conversation started asks on its own thread and turn.
-                let subagent = other_thread && thread.is_some_and(|id| input.child_threads.contains(id));
+                let subagent =
+                    other_thread && thread.is_some_and(|id| input.child_threads.contains(id));
                 if !subagent
                     && (other_thread
                         || params["turnId"]
@@ -1094,10 +1099,9 @@ impl LiveProtocol {
         // Remember subagent threads this conversation starts so their approvals reach the user.
         if record["method"] == "thread/started" {
             let started = &params["thread"];
-            if let (Some(id), Some(parent)) = (
-                started["id"].as_str(),
-                started["parentThreadId"].as_str(),
-            ) {
+            if let (Some(id), Some(parent)) =
+                (started["id"].as_str(), started["parentThreadId"].as_str())
+            {
                 if (input.thread.as_deref() == Some(parent) || input.child_threads.contains(parent))
                     && input.child_threads.len() < 256
                 {
@@ -1109,7 +1113,9 @@ impl LiveProtocol {
             if input.thread.as_deref().is_some_and(|t| t != thread) {
                 // Subagent activity stays out of the main transcript, but the provider
                 // can still resolve a subagent's pending request.
-                if record["method"] == "serverRequest/resolved" && input.child_threads.contains(thread) {
+                if record["method"] == "serverRequest/resolved"
+                    && input.child_threads.contains(thread)
+                {
                     let id = params["requestId"].to_string();
                     if input.interactions.remove(&id).is_some() {
                         out.push(json!({"type":"agentdeck.interaction","resolved":id}));
@@ -1303,9 +1309,14 @@ fn claude_interaction(record: &Value) -> Value {
 fn claude_decision(request: &Value, response: &Value) -> Result<Value, String> {
     let tool_use = request["tool_use_id"].clone();
     if request["tool_name"] == "AskUserQuestion" {
-        let answers = response["answers"].as_object().ok_or("Answers are required.")?;
+        let answers = response["answers"]
+            .as_object()
+            .ok_or("Answers are required.")?;
         let mut collected = serde_json::Map::new();
-        for question in request["input"]["questions"].as_array().ok_or("Invalid questions.")? {
+        for question in request["input"]["questions"]
+            .as_array()
+            .ok_or("Invalid questions.")?
+        {
             let text = question["question"].as_str().unwrap_or_default();
             let chosen: Vec<&str> = answers
                 .get(text)
@@ -1325,10 +1336,18 @@ fn claude_decision(request: &Value, response: &Value) -> Result<Value, String> {
         return Ok(json!({"behavior":"allow","updatedInput":updated,"toolUseID":tool_use}));
     }
     Ok(match response["decision"].as_str() {
-        Some("accept") => json!({"behavior":"allow","toolUseID":tool_use,"decisionClassification":"user_temporary"}),
-        Some("acceptForSession") => json!({"behavior":"allow","updatedPermissions":request["permission_suggestions"].as_array().cloned().unwrap_or_default(),"toolUseID":tool_use,"decisionClassification":"user_permanent"}),
-        Some("decline") => json!({"behavior":"deny","message":"The user declined this action. Continue without it, or ask how to proceed.","toolUseID":tool_use,"decisionClassification":"user_reject"}),
-        Some("cancel") => json!({"behavior":"deny","message":"The user declined this action and stopped the response.","interrupt":true,"toolUseID":tool_use,"decisionClassification":"user_reject"}),
+        Some("accept") => {
+            json!({"behavior":"allow","toolUseID":tool_use,"decisionClassification":"user_temporary"})
+        }
+        Some("acceptForSession") => {
+            json!({"behavior":"allow","updatedPermissions":request["permission_suggestions"].as_array().cloned().unwrap_or_default(),"toolUseID":tool_use,"decisionClassification":"user_permanent"})
+        }
+        Some("decline") => {
+            json!({"behavior":"deny","message":"The user declined this action. Continue without it, or ask how to proceed.","toolUseID":tool_use,"decisionClassification":"user_reject"})
+        }
+        Some("cancel") => {
+            json!({"behavior":"deny","message":"The user declined this action and stopped the response.","interrupt":true,"toolUseID":tool_use,"decisionClassification":"user_reject"})
+        }
         _ => return Err("Invalid approval decision.".into()),
     })
 }
@@ -1536,7 +1555,8 @@ mod tests {
         }
     }
     #[test]
-    fn claude_tool_approvals_and_questions_wait_for_the_chat_and_answer_over_the_control_protocol() {
+    fn claude_tool_approvals_and_questions_wait_for_the_chat_and_answer_over_the_control_protocol()
+    {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let req = super::super::tests::request("claude-code");
         let mut protocol = LiveProtocol::new(&req);
@@ -1547,33 +1567,64 @@ mod tests {
         assert_eq!(event["interaction"]["kind"], "approval");
         assert_eq!(event["interaction"]["command"], "npm test");
         assert_eq!(event["interaction"]["canRemember"], true);
-        assert!(written(&bytes).is_empty(), "Never answer a tool permission automatically");
+        assert!(
+            written(&bytes).is_empty(),
+            "Never answer a tool permission automatically"
+        );
         assert!(protocol.ingest(&ask.to_string(), &mut input).is_empty());
-        assert!(input.respond("perm-1", &json!({"decision":"maybe"})).is_err());
-        input.respond("perm-1", &json!({"decision":"acceptForSession"})).unwrap();
+        assert!(input
+            .respond("perm-1", &json!({"decision":"maybe"}))
+            .is_err());
+        input
+            .respond("perm-1", &json!({"decision":"acceptForSession"}))
+            .unwrap();
         let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
         assert_eq!(sent["type"], "control_response");
         assert_eq!(sent["response"]["request_id"], "perm-1");
         assert_eq!(sent["response"]["response"]["behavior"], "allow");
-        assert_eq!(sent["response"]["response"]["updatedPermissions"], ask["request"]["permission_suggestions"]);
-        assert!(sent["response"]["response"].get("updatedInput").is_none(), "Allow never rewrites the tool call");
-        assert!(input.respond("perm-1", &json!({"decision":"accept"})).is_err());
+        assert_eq!(
+            sent["response"]["response"]["updatedPermissions"],
+            ask["request"]["permission_suggestions"]
+        );
+        assert!(
+            sent["response"]["response"].get("updatedInput").is_none(),
+            "Allow never rewrites the tool call"
+        );
+        assert!(input
+            .respond("perm-1", &json!({"decision":"accept"}))
+            .is_err());
 
         bytes.lock().unwrap().clear();
         let question = json!({"type":"control_request","request_id":"ask-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which database?","header":"DB","options":[{"label":"Postgres","description":"SQL"},{"label":"SQLite","description":"File"}],"multiSelect":false}]},"tool_use_id":"toolu_2"}});
         let records = protocol.ingest(&question.to_string(), &mut input);
         let event: Value = serde_json::from_str(&records[0]).unwrap();
         assert_eq!(event["interaction"]["kind"], "question");
-        assert_eq!(event["interaction"]["questions"][0]["id"], "Which database?");
+        assert_eq!(
+            event["interaction"]["questions"][0]["id"],
+            "Which database?"
+        );
         assert!(input.respond("ask-1", &json!({"answers":{}})).is_err());
-        input.respond("ask-1", &json!({"answers":{"Which database?":{"answers":["SQLite"]}}})).unwrap();
+        input
+            .respond(
+                "ask-1",
+                &json!({"answers":{"Which database?":{"answers":["SQLite"]}}}),
+            )
+            .unwrap();
         let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
-        assert_eq!(sent["response"]["response"]["updatedInput"]["answers"], json!({"Which database?":"SQLite"}));
+        assert_eq!(
+            sent["response"]["response"]["updatedInput"]["answers"],
+            json!({"Which database?":"SQLite"})
+        );
 
         let withdrawn = json!({"type":"control_request","request_id":"perm-2","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"notes.md","content":"x"},"tool_use_id":"toolu_3"}});
         protocol.ingest(&withdrawn.to_string(), &mut input);
-        let resolved = protocol.ingest(&json!({"type":"control_cancel_request","request_id":"perm-2"}).to_string(), &mut input);
-        assert!(resolved.iter().any(|record| record.contains("\"resolved\":\"perm-2\"")));
+        let resolved = protocol.ingest(
+            &json!({"type":"control_cancel_request","request_id":"perm-2"}).to_string(),
+            &mut input,
+        );
+        assert!(resolved
+            .iter()
+            .any(|record| record.contains("\"resolved\":\"perm-2\"")));
         assert!(input.interactions.is_empty());
     }
     #[test]
@@ -1612,8 +1663,15 @@ mod tests {
         assert_eq!(sent["params"], json!({"threadId":"thread","turnId":"turn"}));
         assert!(input.submit(&req, "after-stop").is_err());
         protocol.ingest(&json!({"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"turn","status":"interrupted"}}}).to_string(), &mut input);
-        assert!(input.writer.is_none(), "The interrupted turn closes input instead of starting queued work");
-        assert_eq!(input.abort().len(), 1, "Unsent queued input is reported, not lost");
+        assert!(
+            input.writer.is_none(),
+            "The interrupted turn closes input instead of starting queued work"
+        );
+        assert_eq!(
+            input.abort().len(),
+            1,
+            "Unsent queued input is reported, not lost"
+        );
 
         let claude_bytes = Arc::new(Mutex::new(Vec::new()));
         let mut claude = LiveInput::with_writer(Box::new(Sink(claude_bytes.clone())), false);
@@ -1621,7 +1679,10 @@ mod tests {
         let sent: Value = serde_json::from_str(written(&claude_bytes).trim()).unwrap();
         assert_eq!(sent["type"], "control_request");
         assert_eq!(sent["request"]["subtype"], "interrupt");
-        assert!(claude.writer.is_none(), "Claude exits once the interrupted turn ends");
+        assert!(
+            claude.writer.is_none(),
+            "Claude exits once the interrupted turn ends"
+        );
     }
     #[test]
     fn mcp_elicitation_is_declined_without_failing_the_turn() {
