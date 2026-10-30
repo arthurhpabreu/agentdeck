@@ -159,5 +159,7 @@
 .ad-chat-interaction p { margin: 8px 0; color: var(--ci-text-muted); line-height: 1.5; }
 .ad-chat-interaction pre { overflow: auto; max-height: 140px; padding: 10px; background: var(--ci-bg); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ad-chat-interaction-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.ad-chat-interaction > strong code { font-weight: 500; color: var(--ci-text-muted); }
+.ad-chat-interaction-plan { max-height: 28vh; overflow: auto; padding: 4px 10px; border: 1px solid var(--ci-border); border-radius: 7px; background: var(--ci-bg); }
 .ad-chat-interaction form, .ad-chat-interaction label { display: grid; gap: 8px; margin-top: 10px; }
 .ad-chat-interaction :is(select,input) { width: 100%; padding: 8px; color: var(--ci-text); background: var(--ci-bg); border: 1px solid var(--ci-border); border-radius: 5px; }

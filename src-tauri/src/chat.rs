@@ -33,6 +33,8 @@ const MAX_ATTACHMENTS: usize = 12;
 const MAX_PROTOCOL_LINE: usize = 16 * 1024 * 1024;
 const MAX_PROMPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_KNOWLEDGE_CONTEXT_BYTES: usize = 16 * 1024;
+/// Time a natively interrupted turn may take to end before its process is forced.
+const STOP_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -434,6 +436,12 @@ fn validate_attachments(
     Ok(())
 }
 
+/// Claude asks the chat for approvals unless full access already allows every tool.
+fn interactive_permissions(request: &ChatTurnRequest) -> bool {
+    request.runner_type == "claude-code"
+        && (request.mode.as_deref() == Some("plan") || !request.full_access)
+}
+
 fn build_arguments(request: &ChatTurnRequest) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if request.runner_type == "codex" {
@@ -509,6 +517,11 @@ fn build_arguments(request: &ChatTurnRequest) -> Vec<String> {
             args.extend(["--permission-mode".into(), "plan".into()]);
         } else if request.full_access {
             args.extend(["--permission-mode".into(), "bypassPermissions".into()]);
+        }
+        if interactive_permissions(request) {
+            // Tool approvals, plan approval and questions reach the chat over the
+            // control protocol instead of being denied in headless mode.
+            args.extend(["--permission-prompt-tool".into(), "stdio".into()]);
         }
         if let Some(directory) = request
             .attachments
@@ -961,7 +974,8 @@ pub async fn start_chat_turn(
     }
     processes.insert(request.session_id.clone(), process.clone());
     drop(processes);
-    let parser = ChatParser::new(request.session_id.clone(), request.turn_id.clone());
+    let mut parser = ChatParser::new(request.session_id.clone(), request.turn_id.clone());
+    parser.interactive_permissions = interactive_permissions(&request);
     let mut started = parser.event("status");
     started.status = Some("started".into());
     started.pid = Some(pid);
@@ -1142,6 +1156,10 @@ pub async fn start_chat_turn(
                             }
                         }
                         for event in parser.parse(&request.runner_type, &line) {
+                            // The provider reports a turn the user interrupted as failed.
+                            if event.kind == "error" && process.cancelled.load(Ordering::SeqCst) {
+                                continue;
+                            }
                             if matches!(
                                 event.kind.as_str(),
                                 "session" | "text" | "tool" | "compaction"
@@ -1246,7 +1264,12 @@ pub async fn start_chat_turn(
                     emit_event(&app, &request.runner_type, event);
                 }
             }
-            if parser.failed && !termination_requested && exit.is_none() {
+            // An interrupted turn ends on its own; stop_chat_turn forces it after a grace period.
+            if parser.failed
+                && !termination_requested
+                && exit.is_none()
+                && !process.cancelled.load(Ordering::SeqCst)
+            {
                 termination_requested = true;
                 if let Ok(mut input) = process.input.lock() {
                     for (id, reason) in input.abort() {
@@ -1476,7 +1499,24 @@ pub fn stop_chat_turn(app: tauri::AppHandle, session_id: String) -> Result<(), S
         .get(&session_id)
         .cloned();
     if let Some(process) = process {
-        terminate_process(&process);
+        // Like Esc in the native CLIs: interrupt the turn so the provider keeps its
+        // conversation and credential files consistent. A second stop, or a turn
+        // that cannot be interrupted natively, ends the process at once.
+        let repeated = process.cancelled.swap(true, Ordering::SeqCst);
+        let interrupted = !repeated
+            && process
+                .input
+                .lock()
+                .map(|mut input| input.interrupt())
+                .unwrap_or(false);
+        if interrupted {
+            std::thread::spawn(move || {
+                std::thread::sleep(STOP_GRACE);
+                kill_process(&process);
+            });
+        } else {
+            kill_process(&process);
+        }
     }
     Ok(())
 }
@@ -2017,6 +2057,23 @@ mod tests {
                         || arg.contains("bypassPermissions"))
             );
         }
+    }
+
+    #[test]
+    fn claude_asks_the_chat_for_permissions_unless_full_access_allows_every_tool() {
+        let prompt_tool = |req: &ChatTurnRequest| {
+            build_arguments(req)
+                .windows(2)
+                .any(|pair| pair == ["--permission-prompt-tool", "stdio"])
+        };
+        let mut req = request("claude-code");
+        req.full_access = false;
+        assert!(prompt_tool(&req));
+        req.full_access = true;
+        assert!(!prompt_tool(&req));
+        req.mode = Some("plan".into());
+        assert!(prompt_tool(&req), "Plan approval reaches the chat");
+        assert!(!prompt_tool(&request("codex")));
     }
 
     #[test]

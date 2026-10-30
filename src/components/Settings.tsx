@@ -1,6 +1,9 @@
 import React, { useEffect, useId, useState } from "react";
 import { type LocaleSetting, useAppI18n } from "../i18n";
-import { useSettingsStore, type ThemeMode, isGlassTheme } from "../store/settingsStore";
+import { RUNNER_LABELS, useSettingsStore, type RunnerType, type ThemeMode, isGlassTheme } from "../store/settingsStore";
+import { getAgentAdapter } from "../services/agentAdapters";
+import { ProviderIcon } from "./ProviderIcon";
+import { AgentModelPicker } from "./session/AgentModelPicker";
 import { CliUpdates } from "./CliUpdates";
 import { AppUpdates } from "./AppUpdates";
 import { TelegramNotifications } from "./TelegramNotifications";
@@ -283,6 +286,24 @@ function ComponentsTab() {
   </section>;
 }
 
+/** Defaults for new conversations; choices made inside a chat also update them. */
+function AgentsTab() {
+  const { t } = useAppI18n();
+  const runner = useSettingsStore(state => state.settings.runner);
+  const patchRunner = useSettingsStore(state => state.patchRunner);
+  const cliPathId = useId();
+  return <section>
+    <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 6, color: C.text }}>{t("settings.agents.defaultTitle")}</h3>
+    <p style={{ fontSize: 12, color: C.textMuted, margin: "0 0 12px" }}>{t("settings.agents.defaultHint")}</p>
+    <div className="ad-agent-pills" role="group" aria-label={t("settings.agents.provider")}>{(Object.entries(RUNNER_LABELS) as [RunnerType, string][]).map(([type, label]) => <button key={type} type="button" className="ad-button" aria-pressed={type === runner.type} onClick={() => patchRunner({ type })}><ProviderIcon provider={type} size={17} />{label}</button>)}</div>
+    <div style={{ marginTop: 14 }}><AgentModelPicker runner={runner} onChange={value => patchRunner(value)} /></div>
+    <div className="ad-memory-setting" style={{ marginTop: 14 }}>
+      <label htmlFor={cliPathId}><strong>{t("settings.agents.cliPath")}</strong><small>{t("settings.agents.cliPathHint")}</small></label>
+      <input id={cliPathId} style={{ flex: 1, minWidth: 0, padding: "7px 9px", color: C.text, background: "var(--ci-bg)", border: `1px solid ${C.border}`, borderRadius: 5, font: "12px Consolas, monospace" }} spellCheck={false} value={runner.cliPath ?? ""} placeholder={getAgentAdapter(runner.type).executable} onChange={event => patchRunner({ cliPath: event.target.value })} />
+    </div>
+  </section>;
+}
+
 function SystemTab() {
   const { t } = useAppI18n();
   const { settings, patchSettings } = useSettingsStore();
@@ -382,10 +403,10 @@ function SystemTab() {
   );
 }
 
-type VisibleSettingsTab = "system" | "appearance" | "components";
+type VisibleSettingsTab = "system" | "appearance" | "components" | "agents";
 
 function resolveVisibleSettingsTab(tab: string): VisibleSettingsTab {
-  if (tab === "appearance" || tab === "components") return tab;
+  if (tab === "appearance" || tab === "components" || tab === "agents") return tab;
   return "system";
 }
 
@@ -398,6 +419,7 @@ export default function Settings() {
   const visibleTab = resolveVisibleSettingsTab(activeTab);
   const navItems: { value: VisibleSettingsTab; label: string }[] = [
     { value: "appearance", label: t("settings.tabs.appearance") },
+    { value: "agents", label: t("settings.tabs.agents") },
     { value: "components", label: t("settings.tabs.components") },
     { value: "system", label: t("settings.tabs.system") },
   ];
@@ -518,7 +540,7 @@ export default function Settings() {
             </div>
 
             <div style={{ flex: 1, minHeight: 0, overflowY: "auto", scrollbarWidth: "none", padding: 18 }}>
-              {visibleTab === "appearance" ? <AppearanceTab /> : visibleTab === "components" ? <ComponentsTab /> : <SystemTab />}
+              {visibleTab === "appearance" ? <AppearanceTab /> : visibleTab === "agents" ? <AgentsTab /> : visibleTab === "components" ? <ComponentsTab /> : <SystemTab />}
             </div>
           </div>
         </div>

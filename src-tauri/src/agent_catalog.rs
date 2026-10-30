@@ -554,8 +554,8 @@ fn native_metadata(provider: &str, cli_path: &str, workdir: &Path) -> Result<Val
         }
     })();
     drop(child.stdin.take());
-    crate::cli_updates::terminate_probe(&mut child);
-    let _ = reader.join();
+    crate::cli_updates::terminate_probe(child);
+    drop(reader);
     result.map_err(str::to_owned)
 }
 fn native_entries(provider: &str, value: &Value, entries: &mut BTreeMap<String, AgentCommand>) {
@@ -634,7 +634,9 @@ pub fn catalogue(
     let cache = CACHE.get_or_init(Default::default);
     if !force {
         if let Some((at, result)) = cache.lock().map_err(|_| "Catalogue unavailable")?.get(&key) {
-            if at.elapsed() < Duration::from_secs(30) {
+            // Each refresh starts a real CLI that loads the account login; the
+            // picker's explicit refresh (force) still reads it immediately.
+            if at.elapsed() < Duration::from_secs(600) {
                 return Ok(result.clone());
             }
         }

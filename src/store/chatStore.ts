@@ -20,7 +20,7 @@ export interface ChatAttachment { name: string; path: string; mimeType: string; 
 export interface ChatUsage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export interface ChatContinuation { sourceSessionId: string; sourceSessionName: string; archivePath: string; messageCount: number; createdAt: number; reviewedContext?: boolean }
 export interface ChatMessage { id: string; turnId: string; role: "user" | "assistant" | "tool"; text: string; at: number; order?: number; title?: string; status?: string; attachments?: ChatAttachment[]; parentId?: string; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number; origin?: "team" }
-export interface ChatThread { interactions?: ChatInteraction[]; messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; mcpAuthWarningUntil?: number; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation; historyRestored?: boolean; recoveryKind?: "provider-resumed" }
+export interface ChatThread { interactions?: ChatInteraction[]; messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; mcpAuthWarningUntil?: number; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation; historyRestored?: boolean; recoveryKind?: "provider-resumed"; stopRequested?: boolean }
 export interface ChatEvent { interaction?: ChatInteraction; sessionId: string; turnId: string; kind: "interaction" | "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; contextWindow?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
 export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number; interactions?: ChatInteraction[] }
 interface BufferedChatEvent extends ChatEvent { textDelta?: boolean; outputDelta?: boolean; receivedAt?: number }
@@ -156,7 +156,7 @@ export const useChatStore = create<{
     if (e.kind === "done") {
       const unconfirmed = [...next.messages].reverse().find(m => m.turnId === e.turnId && m.role === "user" && m.origin !== "team" && (m.status === "sending" || m.status === "queued"));
       const compactDraft = old.compacting && e.status !== "completed" ? old.messages.find(m => m.id === `${e.turnId}:user` && m.origin !== "team")?.text : undefined;
-      next = { ...next, busy: false, interactions: undefined, compacting: false, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), inputError: next.inputError || (unconfirmed ? "The provider did not confirm this additional input. Review the conversation before sending it again." : undefined), draft: old.draft || unconfirmed?.text || compactDraft || "", messages: next.messages.map(m => m.turnId === e.turnId && m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && isPendingChatTool(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
+      next = { ...next, busy: false, interactions: undefined, compacting: false, stopRequested: undefined, status: e.status, activity: undefined, error: next.error || (e.status === "error" ? "Agent process ended with an error." : undefined), inputError: next.inputError || (unconfirmed ? "The provider did not confirm this additional input. Review the conversation before sending it again." : undefined), draft: old.draft || unconfirmed?.text || compactDraft || "", messages: next.messages.map(m => m.turnId === e.turnId && m.role === "user" && (m.status === "sending" || m.status === "queued") ? { ...m, status: "failed" } : m.turnId === e.turnId && m.role === "tool" && isPendingChatTool(m.status) ? { ...m, status: e.status === "completed" ? "completed" : "interrupted" } : m) };
     }
     if (e.kind === "text" || e.kind === "tool") {
       const id = chatMessageId(e);
@@ -250,7 +250,7 @@ useChatStore.subscribe((state, old) => {
       useSessionStore.getState().updateSession(id, { status: phase });
       useAgentActivityStore.getState().record(id, { phase });
     }
-    if (before && !Object.keys(thread).some(key => !["updatedAt", "lastEventAt", "lastHeartbeatAt", "pid", "status", "activity", "diagnostic", "recoveryNotice", "interactions"].includes(key) && thread[key as keyof ChatThread] !== before[key as keyof ChatThread])) continue;
+    if (before && !Object.keys(thread).some(key => !["updatedAt", "lastEventAt", "lastHeartbeatAt", "pid", "status", "activity", "diagnostic", "recoveryNotice", "interactions", "stopRequested"].includes(key) && thread[key as keyof ChatThread] !== before[key as keyof ChatThread])) continue;
     const pending = dirty.get(id) ?? new Map();
     if (thread.messages !== before?.messages) {
       const previous = new Map(before?.messages.map(m => [m.id, m]));
@@ -464,7 +464,7 @@ export async function sendChatTurn(sessionId: string, prompt: string, attachment
   const turnId = createUuid();
   const message: ChatMessage = { id: `${turnId}:user`, turnId, role: "user", text: prompt.trim(), at: Date.now(), attachments, ...(options?.coordination ? { origin: "team" as const, status: "sending" } : {}) };
   useSourceDeliveryStore.getState().start(sessionId, { hasHistory: !!(old.messages.length || old.archivedCount || old.continuation), providerSessionId });
-  useChatStore.getState().patch(sessionId, { busy: true, interactions: undefined, providerSessionId, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined, recoveryNotice: undefined, recoveryRequired: false, status: compactBeforeTurn ? "compacting" : "starting", draft: options?.preserveDraft ? old.draft : "", messages: [...old.messages, message] });
+  useChatStore.getState().patch(sessionId, { busy: true, interactions: undefined, providerSessionId, compacting: compactBeforeTurn, contextPrompts: (old.contextPrompts ?? 0) + 1, contextTokens: budget.projectedTokens, contextTokensEstimated: true, turnInputTokens: budget.promptTokens, turnId, turnStartedAt: message.at, lastEventAt: undefined, lastHeartbeatAt: undefined, pid: undefined, activity: undefined, error: undefined, inputError: undefined, diagnostic: undefined, mcpAuthWarning: undefined, mcpAuthWarningUntil: undefined, recoveryNotice: undefined, recoveryRequired: false, stopRequested: undefined, status: compactBeforeTurn ? "compacting" : "starting", draft: options?.preserveDraft ? old.draft : "", messages: [...old.messages, message] });
   useSessionStore.getState().updateSession(sessionId, { status: "running", ...(!options?.coordination ? { currentTask: prompt.trim() } : {}) });
   if (!old.messages.length && !options?.coordination) useSessionStore.getState().setAutomaticSessionName(sessionId, prompt.trim().slice(0, 44) || attachments[0]?.name || "");
   useAgentActivityStore.getState().record(sessionId, { phase: "starting", startedAt: Date.now(), endedAt: undefined, error: undefined, command: session.runner.type === "codex" ? "codex app-server" : "claude --print", pid: undefined }, "activity.starting");
@@ -533,13 +533,14 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
   }
 }
 
+/** The first stop interrupts the turn natively; a second one ends the process at once. */
 export async function stopChatTurn(sessionId: string) {
   const thread = useChatStore.getState().threads[sessionId];
-  if (thread?.busy && thread.turnId) cancelledTurns.add(thread.turnId);
+  if (thread?.busy && thread.turnId) { cancelledTurns.add(thread.turnId); useChatStore.getState().patch(sessionId, { stopRequested: true }); }
   try { await invoke("stop_chat_turn", { sessionId }); }
   catch (error) {
     if (thread?.turnId) cancelledTurns.delete(thread.turnId);
-    if (useChatStore.getState().threads[sessionId]?.turnId === thread?.turnId) useChatStore.getState().patch(sessionId, { error: String(error) });
+    if (useChatStore.getState().threads[sessionId]?.turnId === thread?.turnId) useChatStore.getState().patch(sessionId, { error: String(error), stopRequested: undefined });
   }
 }
 

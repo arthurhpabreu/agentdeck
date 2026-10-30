@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject, type TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
-import { RefreshCw, Search, Slash, Sparkles, TerminalSquare, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { FileText, RefreshCw, Search, Slash, Sparkles, TerminalSquare, X } from "lucide-react";
 import { useAppI18n } from "../../i18n";
 import type { RunnerConfig } from "../../store/settingsStore";
 import { useCliUpdateStore } from "../../store/cliUpdateStore";
@@ -14,8 +15,10 @@ interface Props extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value
   inputRef?: RefObject<HTMLTextAreaElement | null>; native?: boolean; visible?: boolean;
   browse?: { revision: number; filter: Filter }; onCatalogue?: (value: AgentCatalogue) => void;
   shortcutsPlacement?: "above" | "below";
+  /** Enables @file mentions searched in this session's folder. */
+  sessionId?: string;
 }
-export function CommandTextarea({ value, onValueChange, runner, workdir, projectPath = workdir, inputRef, native = false, visible = true, browse, onCatalogue, shortcutsPlacement = "below", onKeyDown, onSelect, onFocus, onBlur, onPaste, ...props }: Props) {
+export function CommandTextarea({ value, onValueChange, runner, workdir, projectPath = workdir, inputRef, native = false, visible = true, browse, onCatalogue, shortcutsPlacement = "below", sessionId, onKeyDown, onSelect, onFocus, onBlur, onPaste, ...props }: Props) {
   const { locale } = useAppI18n(); const c = commandCopy(locale);
   const internal = useRef<HTMLTextAreaElement>(null); const ref = inputRef ?? internal;
   const id = useId(); const popup = useRef<HTMLDivElement>(null); const generation = useRef(0);
@@ -29,7 +32,9 @@ export function CommandTextarea({ value, onValueChange, runner, workdir, project
   const revision = useCliUpdateStore(state => state.revision);
   const token = commandToken(value, caret);
   const signature = token ? `${token.start}:${token.prefix}:${token.query}` : undefined;
-  const open = visible && !props.disabled && (browsing || focused && !!token && signature !== dismissed);
+  const fileMode = token?.prefix === "@" && !browsing;
+  const [files, setFiles] = useState<AgentCommand[]>([]);
+  const open = visible && !props.disabled && (browsing || focused && !!token && signature !== dismissed && (!fileMode || !!sessionId));
   const refresh = async (force = false) => {
     const current = ++generation.current; setLoading(true);
     try {
@@ -44,7 +49,14 @@ export function CommandTextarea({ value, onValueChange, runner, workdir, project
   useEffect(() => { if (browse) { setFilter(browse.filter); setSearch(""); setBrowsing(true); setDismissed(undefined); } }, [browse?.revision]);
   const close = () => { setBrowsing(false); setDismissed(signature); };
   const query = browsing ? search.toLocaleLowerCase() : token?.query ?? "";
-  const entries = catalogue.entries.filter(entry => !(native && entry.kind === "builtin" && ["code", "effort"].includes(entry.name)) && (filter === "all" || (filter === "skill" ? entry.kind === "skill" : entry.kind !== "skill")) && (token?.prefix !== "$" || browsing || entry.kind === "skill") && `${entry.name} ${entry.invocation} ${entry.description}`.toLocaleLowerCase().includes(query)).sort((a, b) => Number(b.name.toLocaleLowerCase().startsWith(query)) - Number(a.name.toLocaleLowerCase().startsWith(query)) || a.name.localeCompare(b.name));
+  // As in Claude Code and Codex, @ inserts a project file path; quoted only when it has spaces.
+  useEffect(() => {
+    if (!fileMode || !open || !sessionId) return;
+    let cancelled = false;
+    const timer = setTimeout(() => { void invoke<{ paths: string[] }>("search_session_files", { sessionId, query: token?.query ?? "" }).then(result => { if (!cancelled) setFiles((result?.paths ?? []).slice(0, 50).map(path => ({ name: path, invocation: `@${/\s/.test(path) ? JSON.stringify(path) : path}`, description: "", kind: "command", source: "file", transport: "chat", argumentHint: "" }))); }).catch(() => { if (!cancelled) setFiles([]); }); }, 120);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [fileMode, open, sessionId, token?.query]);
+  const entries = fileMode ? files : catalogue.entries.filter(entry => !(native && entry.kind === "builtin" && ["code", "effort"].includes(entry.name)) && (filter === "all" || (filter === "skill" ? entry.kind === "skill" : entry.kind !== "skill")) && (token?.prefix !== "$" || browsing || entry.kind === "skill") && `${entry.name} ${entry.invocation} ${entry.description}`.toLocaleLowerCase().includes(query)).sort((a, b) => Number(b.name.toLocaleLowerCase().startsWith(query)) - Number(a.name.toLocaleLowerCase().startsWith(query)) || a.name.localeCompare(b.name));
   useEffect(() => { setActive(0); }, [query, filter, catalogue, token?.prefix]);
   useLayoutEffect(() => {
     if (!open) return;
@@ -103,14 +115,14 @@ export function CommandTextarea({ value, onValueChange, runner, workdir, project
     }} onKeyDown={event => { if (!keyboard(event)) onKeyDown?.(event); }} />
     {shortcutsPlacement === "below" && shortcuts}
     {open && createPortal(<div className="ad-command-picker" ref={popup} style={position} role="region" aria-label={c.title}>
-      <header><strong><Slash size={14} />{c.title}</strong><button type="button" className="ad-icon-button" aria-label={c.refresh} disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={14} className={loading ? "ad-spin" : ""} /></button><button type="button" className="ad-icon-button" aria-label={c.close} onClick={() => { close(); ref.current?.focus(); }}><X size={14} /></button></header>
-      <div className="ad-command-filters">{(["all", "command", "skill"] as const).map(kind => <button type="button" key={kind} aria-pressed={filter === kind} onClick={() => setFilter(kind)}>{kind === "all" ? c.all : kind === "command" ? c.commands : c.skills}</button>)}</div>
+      <header><strong>{fileMode ? <FileText size={14} /> : <Slash size={14} />}{fileMode ? c.files : c.title}</strong>{!fileMode && <button type="button" className="ad-icon-button" aria-label={c.refresh} disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={14} className={loading ? "ad-spin" : ""} /></button>}<button type="button" className="ad-icon-button" aria-label={c.close} onClick={() => { close(); ref.current?.focus(); }}><X size={14} /></button></header>
+      {!fileMode && <div className="ad-command-filters">{(["all", "command", "skill"] as const).map(kind => <button type="button" key={kind} aria-pressed={filter === kind} onClick={() => setFilter(kind)}>{kind === "all" ? c.all : kind === "command" ? c.commands : c.skills}</button>)}</div>}
       {browsing && <label className="ad-command-search"><Search size={14} /><input autoFocus aria-label={c.search} placeholder={c.search} value={search} onChange={event => setSearch(event.target.value)} onKeyDown={keyboard} /></label>}
-      {loading && <p className="ad-command-feedback" role="status">{c.loading}</p>}
-      {!!catalogue.warnings.length && <p className="ad-command-feedback" role="status">{catalogue.warnings.includes("cli_catalogue_unavailable") ? c.unavailable : c.limit}</p>}
+      {loading && !fileMode && <p className="ad-command-feedback" role="status">{c.loading}</p>}
+      {!!catalogue.warnings.length && !fileMode && <p className="ad-command-feedback" role="status">{catalogue.warnings.includes("cli_catalogue_unavailable") ? c.unavailable : c.limit}</p>}
       <div className="ad-command-list" id={`${id}-list`} role="listbox" aria-label={c.title}>{entries.map((entry, index) => <button type="button" className="ad-command-option" role="option" aria-selected={index === active} id={`${id}-${index}`} key={`${entry.invocation}:${entry.path ?? entry.source}`} onPointerDown={event => event.preventDefault()} onMouseMove={() => setActive(index)} onClick={() => select(entry)} title={entry.path || entry.description}>
-        {entry.kind === "skill" ? <Sparkles size={17} /> : <Slash size={17} />}<span><strong>{entry.invocation}{entry.argumentHint && <small> {entry.argumentHint}</small>}</strong>{entry.description && <em>{entry.description}</em>}<small>{c[entry.kind]} · {c[entry.source as "user"] || entry.source} {entry.transport === "native" && !native && !["help", "skills", "model", "effort", "fast", "plan", "code", "status"].includes(entry.name) && <>· <TerminalSquare size={10} /> {c.native}</>}</small></span>
-      </button>)}{!entries.length && !loading && <p className="ad-command-feedback">{filter === "skill" ? c.noSkills : c.empty}</p>}</div><footer>{c.hint}<span>{entries.length}</span></footer>
+        {entry.source === "file" ? <FileText size={17} /> : entry.kind === "skill" ? <Sparkles size={17} /> : <Slash size={17} />}<span><strong>{entry.invocation}{entry.argumentHint && <small> {entry.argumentHint}</small>}</strong>{entry.description && <em>{entry.description}</em>}{entry.source !== "file" && <small>{c[entry.kind]} · {c[entry.source as "user"] || entry.source} {entry.transport === "native" && !native && !["help", "skills", "model", "effort", "fast", "plan", "code", "status"].includes(entry.name) && <>· <TerminalSquare size={10} /> {c.native}</>}</small>}</span>
+      </button>)}{!entries.length && (fileMode || !loading) && <p className="ad-command-feedback">{fileMode ? c.noFiles : filter === "skill" ? c.noSkills : c.empty}</p>}</div><footer>{c.hint}<span>{entries.length}</span></footer>
     </div>, document.body)}
   </div>;
 }

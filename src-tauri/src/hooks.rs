@@ -363,7 +363,25 @@ fn load_json_file(path: &PathBuf) -> Result<Value, String> {
     let content = fs::read_to_string(path).map_err(|e| {
         crate::i18n::native_text("native.read", &format!("{} : {e}", path.display()))
     })?;
-    Ok(serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})))
+    if content.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    // An unreadable file may be mid-write by the CLI. Never replace the user's
+    // settings (permissions, environment, login method) with hooks alone.
+    serde_json::from_str(&content).map_err(|e| {
+        crate::i18n::native_text("native.parse", &format!("{} : {e}", path.display()))
+    })
+}
+
+/// Replace a provider file in one step so the CLI never reads a partial write.
+fn write_replacing(path: &PathBuf, content: &str) -> Result<(), String> {
+    let temporary = path.with_extension("agentdeck-tmp");
+    fs::write(&temporary, content)
+        .and_then(|_| fs::rename(&temporary, path))
+        .map_err(|e| {
+            let _ = fs::remove_file(&temporary);
+            crate::i18n::native_text("native.write", &format!("{} : {e}", path.display()))
+        })
 }
 
 fn ensure_hooks_object<'a>(
@@ -556,8 +574,7 @@ fn save_json_file(path: &PathBuf, json: &Value) -> Result<(), String> {
     let output = serde_json::to_string_pretty(json).map_err(|e| {
         crate::i18n::native_text("native.serialize", &format!("{} : {e}", path.display()))
     })?;
-    fs::write(path, output)
-        .map_err(|e| crate::i18n::native_text("native.write", &format!("{} : {e}", path.display())))
+    write_replacing(path, &output)
 }
 
 fn strip_managed_hooks(root: &mut Value, source: HookSource) -> bool {
@@ -709,9 +726,11 @@ fn load_toml_file(path: &PathBuf) -> Result<toml::Table, String> {
     if content.trim().is_empty() {
         Ok(toml::Table::new())
     } else {
-        Ok(content
-            .parse::<toml::Table>()
-            .unwrap_or_else(|_| toml::Table::new()))
+        // Never rewrite an unparsed Codex config as empty: it holds the user's
+        // login method, models, MCP servers and trusted projects.
+        content.parse::<toml::Table>().map_err(|e| {
+            crate::i18n::native_text("native.parse", &format!("{} : {e}", path.display()))
+        })
     }
 }
 
@@ -725,8 +744,7 @@ fn save_toml_file(path: &PathBuf, table: &toml::Table) -> Result<(), String> {
     let output = toml::to_string_pretty(table).map_err(|e| {
         crate::i18n::native_text("native.serialize", &format!("{} : {e}", path.display()))
     })?;
-    fs::write(path, output)
-        .map_err(|e| crate::i18n::native_text("native.write", &format!("{} : {e}", path.display())))
+    write_replacing(path, &output)
 }
 
 fn ensure_codex_feature_flag() -> Result<String, String> {
@@ -1203,6 +1221,20 @@ fn is_completion_hook(source: HookSource, event: &str, json: &Value) -> bool {
     }
 }
 
+/// Claude's permission and MCP dialogs wait for the user; idle reminders and
+/// sign-in confirmations do not. Older CLIs omit the type but name the permission.
+fn blocking_notification(json: &Value) -> Option<&'static str> {
+    match json["notification_type"].as_str() {
+        Some("permission_prompt") => Some("permission_prompt"),
+        Some("elicitation_dialog") => Some("elicitation_dialog"),
+        Some(_) => None,
+        None => json["message"]
+            .as_str()
+            .filter(|message| message.to_ascii_lowercase().contains("permission"))
+            .map(|_| "permission_prompt"),
+    }
+}
+
 fn hook_session_id(json: &Value) -> Option<String> {
     json.get("agentdeck_session_id")
         .and_then(Value::as_str)
@@ -1282,6 +1314,18 @@ fn dispatch_hook_event(app: &tauri::AppHandle, source: HookSource, json: &Value)
                         prompt: hook_prompt(json).map(str::to_owned),
                     },
                 );
+            }
+            "Notification" => {
+                if let Some(notification_type) = blocking_notification(json) {
+                    emit_session_lifecycle(
+                        app,
+                        routing,
+                        SessionLifecycleSignal::Attention {
+                            message: json["message"].as_str().unwrap_or_default().to_owned(),
+                            notification_type: notification_type.to_owned(),
+                        },
+                    );
+                }
             }
             "StopFailure" => {
                 let translated_unknown_error =
@@ -1484,6 +1528,40 @@ pub fn send_notification(
 #[cfg(test)]
 mod namespace_tests {
     use super::*;
+
+    #[test]
+    fn only_blocking_claude_dialogs_raise_terminal_attention() {
+        for (payload, expected) in [
+            (serde_json::json!({"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}), Some("permission_prompt")),
+            (serde_json::json!({"notification_type":"elicitation_dialog","message":"MCP input"}), Some("elicitation_dialog")),
+            (serde_json::json!({"notification_type":"idle_prompt","message":"Claude is waiting for your input"}), None),
+            (serde_json::json!({"notification_type":"auth_success","message":"Signed in"}), None),
+            (serde_json::json!({"message":"Claude needs your permission to use Edit"}), Some("permission_prompt")),
+            (serde_json::json!({"message":"Claude is waiting for your input"}), None),
+        ] {
+            assert_eq!(blocking_notification(&payload), expected, "{payload}");
+        }
+    }
+
+    #[test]
+    fn unreadable_provider_settings_are_never_rewritten_empty() {
+        let directory = std::env::temp_dir().join(format!("agentdeck-config-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let toml_path = directory.join("config.toml");
+        let json_path = directory.join("settings.json");
+        // A file caught mid-write by the CLI, or with syntax this parser rejects.
+        fs::write(&toml_path, "model = \"gpt\"\n[mcp_servers.half").unwrap();
+        fs::write(&json_path, "{\"permissions\": {\"allow\": [").unwrap();
+        assert!(load_toml_file(&toml_path).is_err());
+        assert!(load_json_file(&json_path).is_err());
+        assert!(load_toml_file(&directory.join("missing.toml")).unwrap().is_empty());
+        let mut table = toml::Table::new();
+        table.insert("model".into(), toml::Value::String("gpt".into()));
+        save_toml_file(&toml_path, &table).unwrap();
+        assert_eq!(load_toml_file(&toml_path).unwrap(), table);
+        assert!(!toml_path.with_extension("agentdeck-tmp").exists());
+        fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn hook_receiver_bounds_payloads_and_keeps_unicode() {

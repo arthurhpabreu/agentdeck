@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useAttentionStore } from "../store/attentionStore";
 
 interface InputTask { bytes: Uint8Array; offset: number; resolve: () => void; reject: (error: unknown) => void }
 const queues = new Map<string, { normal: InputTask[]; control: InputTask[]; running: boolean }>();
@@ -6,6 +7,8 @@ function base64(bytes: Uint8Array) { const chunks: string[] = []; for (let offse
 
 /** Large pastes yield between byte chunks. Interrupt input gets a slot at the next boundary. */
 export function writePtyInput(sessionId: string, data: string): Promise<void> {
+  // Typing in the terminal answers its permission dialog.
+  useAttentionStore.getState().resolveTerminalPrompt(sessionId);
   return new Promise((resolve, reject) => {
     const queue = queues.get(sessionId) ?? { normal: [], control: [], running: false };
     queues.set(sessionId, queue);

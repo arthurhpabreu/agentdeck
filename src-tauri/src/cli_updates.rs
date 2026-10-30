@@ -220,17 +220,35 @@ pub fn installed_version(executable: &str) -> Option<String> {
         .and_then(|text| version(&text))
 }
 
-pub fn terminate_probe(child: &mut std::process::Child) {
-    #[cfg(windows)]
-    {
-        let _ = crate::util::background_command("taskkill.exe")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+/// Seconds a finished provider probe may take to exit on its own before it is forced.
+const PROBE_EXIT_GRACE: Duration = Duration::from_secs(15);
+
+/// A provider probe can be renewing the account's rotating OAuth token when its
+/// answer arrives. Killing it then consumes the old refresh token without saving
+/// the new one (or truncates the credential file), which signs the CLI out.
+/// Close its input so it exits by itself; force only a probe that outlives the
+/// grace period. Waiting happens in the background, so callers never block.
+pub fn terminate_probe(mut child: std::process::Child) {
+    drop(child.stdin.take());
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + PROBE_EXIT_GRACE;
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                _ => return,
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = crate::util::background_command("taskkill.exe")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    });
 }
 
 fn npm_command() -> Result<(String, Vec<String>), String> {

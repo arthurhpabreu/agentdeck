@@ -56,6 +56,8 @@ pub struct ChatParser {
     tool_blocks: HashMap<(String, u64), ToolInput>,
     sequence: u64,
     pub failed: bool,
+    /// Tool permissions are answered in the chat, so a denial was the user's own choice.
+    pub interactive_permissions: bool,
     saw_text: bool,
     context_input: u64,
     main_model: Option<String>,
@@ -195,6 +197,7 @@ impl ChatParser {
             tool_blocks: HashMap::new(),
             sequence: 0,
             failed: false,
+            interactive_permissions: false,
             saw_text: false,
             context_input: 0,
             main_model: None,
@@ -582,6 +585,7 @@ impl ChatParser {
                         "Retrying connection ({})…",
                         record["attempt"].as_u64().unwrap_or(1)
                     )),
+                    "permission_denied" if self.interactive_permissions => None,
                     "permission_denied" => {
                         let mut denied = self.permission_required();
                         denied.parent_id = parent.clone();
@@ -770,9 +774,10 @@ impl ChatParser {
                         events.push(event);
                     }
                 }
-                if record["permission_denials"]
-                    .as_array()
-                    .is_some_and(|items| !items.is_empty())
+                if !self.interactive_permissions
+                    && record["permission_denials"]
+                        .as_array()
+                        .is_some_and(|items| !items.is_empty())
                 {
                     events.push(self.permission_required());
                     let mut event = self.message("status", "Some tools need permission. Continue in the native terminal to approve them.");

@@ -36,7 +36,7 @@ export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatT
   const activeTools = useMemo(() => thread.messages.filter(m => m.turnId === thread.turnId && m.role === "tool" && ["running", "in_progress", "inProgress", "started"].includes(m.status ?? "running")), [thread.messages, thread.turnId]);
   const latestTool = activeTools[activeTools.length - 1];
   const waitingBackground = thread.status === "waiting-background";
-  const label = thread.compacting ? contextCopy(locale).compacting : thread.status === "blocked" ? c.blocked : waitingBackground ? c.waitingBackground : thread.status === "reasoning" ? c.thinking : thread.status === "finishing" ? c.finishing : thread.status === "responding" ? c.responding : thread.status === "starting" ? c.starting : latestTool ? `${latestTool.title || c.command} · ${c.running}` : c.working;
+  const label = thread.stopRequested ? c.stopping : thread.compacting ? contextCopy(locale).compacting : thread.status === "blocked" ? c.blocked : waitingBackground ? c.waitingBackground : thread.status === "reasoning" ? c.thinking : thread.status === "finishing" ? c.finishing : thread.status === "responding" ? c.responding : thread.status === "starting" ? c.starting : latestTool ? `${latestTool.title || c.command} · ${c.running}` : c.working;
   const detail = latestTool?.command || thread.activity;
   const check = async () => {
     setChecking(true); setCheckNotice("");

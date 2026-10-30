@@ -127,8 +127,34 @@ pub(super) struct LiveInput {
     compacting: bool,
     transport_failure: Arc<Mutex<Option<String>>>,
     interactions: HashMap<String, Value>,
+    /// Codex subagent threads started by this conversation; their approvals are real.
+    child_threads: std::collections::HashSet<String>,
+    /// The user stopped this turn: queued input must not start another one.
+    interrupted: bool,
 }
 impl LiveInput {
+    /// End the active turn the way the native Esc does, keeping the provider's
+    /// state consistent. Returns false when there is no native turn to interrupt.
+    pub fn interrupt(&mut self) -> bool {
+        if self.writer.is_none() || self.compacting {
+            return false;
+        }
+        self.interrupted = true;
+        self.sequence += 1;
+        if self.codex {
+            let (Some(thread), Some(turn)) = (self.thread.clone(), self.turn.clone()) else {
+                return false;
+            };
+            // Codex completes the turn as interrupted; stdin closes after that.
+            self.write(json!({"id":self.sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn}})).is_ok()
+        } else {
+            let request = json!({"type":"control_request","request_id":format!("agentdeck-interrupt-{}", self.sequence),"request":{"subtype":"interrupt"}});
+            let sent = self.write(request).is_ok();
+            // Closing input after the request lets Claude exit once the turn stops.
+            self.writer.take();
+            sent
+        }
+    }
     pub fn interaction_snapshot(&self) -> Vec<Value> {
         self.interactions.values().map(interaction_value).collect()
     }
@@ -195,6 +221,8 @@ impl LiveInput {
             compacting: false,
             transport_failure: Arc::new(Mutex::new(None)),
             interactions: HashMap::new(),
+            child_threads: Default::default(),
+            interrupted: false,
         }
     }
     pub fn write_text(&mut self, text: &str) -> Result<(), String> {
@@ -218,11 +246,18 @@ impl LiveInput {
             .interactions
             .get(id)
             .ok_or("This request is no longer pending.")?;
+        if request["type"] == "control_request" {
+            let decision = claude_decision(&request["request"], response)?;
+            self.write(json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":decision}}))?;
+            self.interactions.remove(id);
+            return Ok(());
+        }
         let method = request["method"].as_str().unwrap_or_default();
         if method.ends_with("/requestApproval") {
+            // The native clients also offer approval for the rest of the session.
             if !matches!(
                 response["decision"].as_str(),
-                Some("accept" | "decline" | "cancel")
+                Some("accept" | "acceptForSession" | "decline" | "cancel")
             ) {
                 return Err("Invalid approval decision.".into());
             }
@@ -253,12 +288,11 @@ impl LiveInput {
             return Err("Response is too large.".into());
         }
         let result = if method == "item/permissions/requestApproval" {
-            // Approval grants exactly the requested profile for this turn; anything else grants nothing.
-            let granted = match (
-                response["decision"].as_str(),
-                request["params"]["permissions"].as_object(),
-            ) {
-                (Some("accept"), Some(requested)) => Value::Object(
+            // Approval grants exactly the requested profile, for this turn or the
+            // session as chosen; anything else grants nothing.
+            let decision = response["decision"].as_str();
+            let granted = match (decision, request["params"]["permissions"].as_object()) {
+                (Some("accept" | "acceptForSession"), Some(requested)) => Value::Object(
                     requested
                         .iter()
                         .filter(|(_, value)| !value.is_null())
@@ -267,7 +301,8 @@ impl LiveInput {
                 ),
                 _ => json!({}),
             };
-            json!({"permissions":granted,"scope":"turn"})
+            let scope = if decision == Some("acceptForSession") { "session" } else { "turn" };
+            json!({"permissions":granted,"scope":scope})
         } else {
             response.clone()
         };
@@ -276,7 +311,7 @@ impl LiveInput {
         Ok(())
     }
     pub fn submit(&mut self, request: &ChatTurnRequest, id: &str) -> Result<&'static str, String> {
-        if self.writer.is_none() {
+        if self.writer.is_none() || self.interrupted {
             return Err("This response has already ended".into());
         }
         if self.queued.len() + self.pending.len() + self.claude_pending >= 24 {
@@ -363,6 +398,10 @@ impl LiveInput {
         self.update_claude_pending();
     }
     fn start_queued(&mut self) -> Result<(), String> {
+        if self.interrupted {
+            self.writer.take();
+            return Ok(());
+        }
         if self.compacting
             || self.turn.is_some()
             || self.initial_pending
@@ -586,6 +625,30 @@ impl LiveProtocol {
         input: &mut LiveInput,
         out: &mut Vec<Value>,
     ) -> Result<(), String> {
+        // With --permission-prompt-tool stdio, Claude asks the chat to approve tools
+        // and to answer AskUserQuestion, as its own terminal dialog would.
+        if record["type"] == "control_request" {
+            let id = record["request_id"].as_str().unwrap_or_default().to_owned();
+            if record["request"]["subtype"] != "can_use_tool" || id.is_empty() {
+                input.write(json!({"type":"control_response","response":{"subtype":"error","request_id":record["request_id"],"error":"Unsupported control request"}}))?;
+                return Ok(());
+            }
+            if !input.interactions.contains_key(&id) {
+                if input.interactions.len() >= 32 || record.to_string().len() > 128 * 1024 {
+                    return Err("Too many or oversized pending interactions.".into());
+                }
+                out.push(json!({"type":"agentdeck.interaction","interaction":interaction_value(&record)}));
+                input.interactions.insert(id, record);
+            }
+            return Ok(());
+        }
+        if record["type"] == "control_cancel_request" {
+            let id = record["request_id"].as_str().unwrap_or_default().to_owned();
+            if input.interactions.remove(&id).is_some() {
+                out.push(json!({"type":"agentdeck.interaction","resolved":id}));
+            }
+            return Ok(());
+        }
         let top_level = !crate::notification::completion::is_child_event(&record);
         let task_frame = record["type"] == "system"
             && record["subtype"].as_str().is_some_and(|subtype| {
@@ -987,12 +1050,15 @@ impl LiveProtocol {
                     | "tool/requestUserInput"
             ) {
                 let params = &record["params"];
-                if params["threadId"]
-                    .as_str()
-                    .is_some_and(|id| input.thread.as_deref() != Some(id))
-                    || params["turnId"]
-                        .as_str()
-                        .is_some_and(|id| input.turn.as_deref() != Some(id))
+                let thread = params["threadId"].as_str();
+                let other_thread = thread.is_some_and(|id| input.thread.as_deref() != Some(id));
+                // A subagent this conversation started asks on its own thread and turn.
+                let subagent = other_thread && thread.is_some_and(|id| input.child_threads.contains(id));
+                if !subagent
+                    && (other_thread
+                        || params["turnId"]
+                            .as_str()
+                            .is_some_and(|id| input.turn.as_deref() != Some(id)))
                 {
                     input.write(json!({"id":record["id"],"error":{"code":-32600,"message":"Stale interaction"}}))?;
                     return Ok(());
@@ -1002,8 +1068,12 @@ impl LiveProtocol {
                     if input.interactions.len() >= 32 || record.to_string().len() > 128 * 1024 {
                         return Err("Too many or oversized pending interactions.".into());
                     }
-                    input.interactions.insert(id.clone(), record.clone());
-                    out.push(json!({"type":"agentdeck.interaction","interaction":interaction_value(record)}));
+                    let mut stored = record.clone();
+                    if subagent {
+                        stored["agentdeckSubagent"] = json!(true);
+                    }
+                    out.push(json!({"type":"agentdeck.interaction","interaction":interaction_value(&stored)}));
+                    input.interactions.insert(id.clone(), stored);
                 }
                 return Ok(());
             }
@@ -1021,8 +1091,30 @@ impl LiveProtocol {
             return Ok(());
         }
         let params = &record["params"];
+        // Remember subagent threads this conversation starts so their approvals reach the user.
+        if record["method"] == "thread/started" {
+            let started = &params["thread"];
+            if let (Some(id), Some(parent)) = (
+                started["id"].as_str(),
+                started["parentThreadId"].as_str(),
+            ) {
+                if (input.thread.as_deref() == Some(parent) || input.child_threads.contains(parent))
+                    && input.child_threads.len() < 256
+                {
+                    input.child_threads.insert(id.to_owned());
+                }
+            }
+        }
         if let Some(thread) = params["threadId"].as_str() {
             if input.thread.as_deref().is_some_and(|t| t != thread) {
+                // Subagent activity stays out of the main transcript, but the provider
+                // can still resolve a subagent's pending request.
+                if record["method"] == "serverRequest/resolved" && input.child_threads.contains(thread) {
+                    let id = params["requestId"].to_string();
+                    if input.interactions.remove(&id).is_some() {
+                        out.push(json!({"type":"agentdeck.interaction","resolved":id}));
+                    }
+                }
                 return Ok(());
             }
         }
@@ -1164,7 +1256,86 @@ impl LiveProtocol {
         Ok(())
     }
 }
+/// The chat card for a Claude `can_use_tool` request, in the same shape as Codex approvals.
+fn claude_interaction(record: &Value) -> Value {
+    let request = &record["request"];
+    let input = &request["input"];
+    let tool = request["tool_name"].as_str().unwrap_or("Tool");
+    let (kind, action, detail) = match tool {
+        "AskUserQuestion" => ("question", "question", Value::Null),
+        "ExitPlanMode" => ("approval", "plan", input["plan"].clone()),
+        "Bash" | "PowerShell" => ("approval", "command", input["command"].clone()),
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => (
+            "approval",
+            "fileChange",
+            input["file_path"]
+                .as_str()
+                .or_else(|| input["notebook_path"].as_str())
+                .map(Value::from)
+                .unwrap_or(Value::Null),
+        ),
+        _ => (
+            "approval",
+            "tool",
+            json!(super::protocol::bounded_text(
+                &serde_json::to_string_pretty(input).unwrap_or_default(),
+                4_096
+            )),
+        ),
+    };
+    let questions: Vec<Value> = input["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|question| {
+            let text = question["question"].as_str()?;
+            Some(json!({"id":text,"header":question["header"],"question":text,"options":question["options"],"multiSelect":question["multiSelect"] == true}))
+        })
+        .collect();
+    let reason = request["decision_reason"]
+        .as_str()
+        .or_else(|| request["description"].as_str())
+        .or_else(|| request["blocked_path"].as_str());
+    json!({"id":record["request_id"],"kind":kind,"action":action,"blocking":true,"title":request["display_name"].as_str().unwrap_or(tool),"command":detail,"reason":reason,"cwd":input["cwd"],"itemId":request["tool_use_id"],"questions":if questions.is_empty() { Value::Null } else { Value::Array(questions) },"canRemember":request["permission_suggestions"].as_array().is_some_and(|items| !items.is_empty()),"provider":"claude-code"})
+}
+/// Claude's permission answer for a chat decision. Allow never rewrites the tool
+/// call (the CLI refuses changed calls), except to add AskUserQuestion answers.
+fn claude_decision(request: &Value, response: &Value) -> Result<Value, String> {
+    let tool_use = request["tool_use_id"].clone();
+    if request["tool_name"] == "AskUserQuestion" {
+        let answers = response["answers"].as_object().ok_or("Answers are required.")?;
+        let mut collected = serde_json::Map::new();
+        for question in request["input"]["questions"].as_array().ok_or("Invalid questions.")? {
+            let text = question["question"].as_str().unwrap_or_default();
+            let chosen: Vec<&str> = answers
+                .get(text)
+                .and_then(|value| value["answers"].as_array())
+                .ok_or("Answer each question.")?
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|answer| !answer.trim().is_empty() && answer.len() <= 32_768)
+                .collect();
+            if chosen.is_empty() {
+                return Err("Invalid answer.".into());
+            }
+            collected.insert(text.to_owned(), json!(chosen.join(", ")));
+        }
+        let mut updated = request["input"].clone();
+        updated["answers"] = Value::Object(collected);
+        return Ok(json!({"behavior":"allow","updatedInput":updated,"toolUseID":tool_use}));
+    }
+    Ok(match response["decision"].as_str() {
+        Some("accept") => json!({"behavior":"allow","toolUseID":tool_use,"decisionClassification":"user_temporary"}),
+        Some("acceptForSession") => json!({"behavior":"allow","updatedPermissions":request["permission_suggestions"].as_array().cloned().unwrap_or_default(),"toolUseID":tool_use,"decisionClassification":"user_permanent"}),
+        Some("decline") => json!({"behavior":"deny","message":"The user declined this action. Continue without it, or ask how to proceed.","toolUseID":tool_use,"decisionClassification":"user_reject"}),
+        Some("cancel") => json!({"behavior":"deny","message":"The user declined this action and stopped the response.","interrupt":true,"toolUseID":tool_use,"decisionClassification":"user_reject"}),
+        _ => return Err("Invalid approval decision.".into()),
+    })
+}
 fn interaction_value(record: &Value) -> Value {
+    if record["type"] == "control_request" {
+        return claude_interaction(record);
+    }
     let method = record["method"].as_str().unwrap_or_default();
     let params = &record["params"];
     let permissions = method == "item/permissions/requestApproval";
@@ -1180,7 +1351,7 @@ fn interaction_value(record: &Value) -> Value {
     } else {
         params["command"].clone()
     };
-    json!({"id":record["id"].to_string(),"kind":if method.ends_with("/requestApproval") {"approval"} else {"question"},"action":action,"blocking":method.ends_with("/requestApproval") || params["isBlocking"] != false,"command":command,"cwd":params["cwd"],"reason":params["reason"],"grantRoot":params["grantRoot"],"itemId":params["itemId"],"questions":params["questions"]})
+    json!({"id":record["id"].to_string(),"kind":if method.ends_with("/requestApproval") {"approval"} else {"question"},"action":action,"blocking":method.ends_with("/requestApproval") || params["isBlocking"] != false,"command":command,"cwd":params["cwd"],"reason":params["reason"],"grantRoot":params["grantRoot"],"itemId":params["itemId"],"questions":params["questions"],"subagent":record["agentdeckSubagent"] == true})
 }
 /// One line per additional sandbox permission the agent asked for.
 fn permission_summary(permissions: &Value) -> String {
@@ -1274,6 +1445,8 @@ mod tests {
     fn approvals_remain_pending_until_the_user_decides_and_cannot_be_replayed() {
         for (method, decision) in [
             ("item/commandExecution/requestApproval", "accept"),
+            ("item/commandExecution/requestApproval", "acceptForSession"),
+            ("item/commandExecution/requestApproval", "decline"),
             ("item/fileChange/requestApproval", "cancel"),
         ] {
             let bytes = Arc::new(Mutex::new(Vec::new()));
@@ -1294,7 +1467,7 @@ mod tests {
             );
             assert!(protocol.ingest(&request.to_string(), &mut input).is_empty());
             assert!(input
-                .respond("77", &json!({"decision":"acceptForSession"}))
+                .respond("77", &json!({"decision":"acceptAlways"}))
                 .is_err());
             input.respond("77", &json!({"decision":decision})).unwrap();
             let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
@@ -1361,6 +1534,94 @@ mod tests {
                 json!({"id":9,"result":{"permissions":granted,"scope":"turn"}})
             );
         }
+    }
+    #[test]
+    fn claude_tool_approvals_and_questions_wait_for_the_chat_and_answer_over_the_control_protocol() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let req = super::super::tests::request("claude-code");
+        let mut protocol = LiveProtocol::new(&req);
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), false);
+        let ask = json!({"type":"control_request","request_id":"perm-1","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"npm test"},"tool_use_id":"toolu_1","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm test"}],"behavior":"allow","destination":"session"}]}});
+        let records = protocol.ingest(&ask.to_string(), &mut input);
+        let event: Value = serde_json::from_str(&records[0]).unwrap();
+        assert_eq!(event["interaction"]["kind"], "approval");
+        assert_eq!(event["interaction"]["command"], "npm test");
+        assert_eq!(event["interaction"]["canRemember"], true);
+        assert!(written(&bytes).is_empty(), "Never answer a tool permission automatically");
+        assert!(protocol.ingest(&ask.to_string(), &mut input).is_empty());
+        assert!(input.respond("perm-1", &json!({"decision":"maybe"})).is_err());
+        input.respond("perm-1", &json!({"decision":"acceptForSession"})).unwrap();
+        let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
+        assert_eq!(sent["type"], "control_response");
+        assert_eq!(sent["response"]["request_id"], "perm-1");
+        assert_eq!(sent["response"]["response"]["behavior"], "allow");
+        assert_eq!(sent["response"]["response"]["updatedPermissions"], ask["request"]["permission_suggestions"]);
+        assert!(sent["response"]["response"].get("updatedInput").is_none(), "Allow never rewrites the tool call");
+        assert!(input.respond("perm-1", &json!({"decision":"accept"})).is_err());
+
+        bytes.lock().unwrap().clear();
+        let question = json!({"type":"control_request","request_id":"ask-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which database?","header":"DB","options":[{"label":"Postgres","description":"SQL"},{"label":"SQLite","description":"File"}],"multiSelect":false}]},"tool_use_id":"toolu_2"}});
+        let records = protocol.ingest(&question.to_string(), &mut input);
+        let event: Value = serde_json::from_str(&records[0]).unwrap();
+        assert_eq!(event["interaction"]["kind"], "question");
+        assert_eq!(event["interaction"]["questions"][0]["id"], "Which database?");
+        assert!(input.respond("ask-1", &json!({"answers":{}})).is_err());
+        input.respond("ask-1", &json!({"answers":{"Which database?":{"answers":["SQLite"]}}})).unwrap();
+        let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
+        assert_eq!(sent["response"]["response"]["updatedInput"]["answers"], json!({"Which database?":"SQLite"}));
+
+        let withdrawn = json!({"type":"control_request","request_id":"perm-2","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"notes.md","content":"x"},"tool_use_id":"toolu_3"}});
+        protocol.ingest(&withdrawn.to_string(), &mut input);
+        let resolved = protocol.ingest(&json!({"type":"control_cancel_request","request_id":"perm-2"}).to_string(), &mut input);
+        assert!(resolved.iter().any(|record| record.contains("\"resolved\":\"perm-2\"")));
+        assert!(input.interactions.is_empty());
+    }
+    #[test]
+    fn codex_subagent_approvals_reach_the_user_but_unknown_threads_stay_stale() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let req = super::super::tests::request("codex");
+        let mut protocol = LiveProtocol::new(&req);
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        input.thread = Some("thread".into());
+        input.turn = Some("turn".into());
+        input.started = true;
+        protocol.ingest(&json!({"method":"thread/started","params":{"thread":{"id":"child","parentThreadId":"thread"}}}).to_string(), &mut input);
+        let child = protocol.ingest(&json!({"id":40,"method":"item/commandExecution/requestApproval","params":{"threadId":"child","turnId":"child-turn","command":"pytest"}}).to_string(), &mut input);
+        let event: Value = serde_json::from_str(&child[0]).unwrap();
+        assert_eq!(event["interaction"]["subagent"], true);
+        assert!(written(&bytes).is_empty());
+        let resolved = protocol.ingest(&json!({"method":"serverRequest/resolved","params":{"threadId":"child","requestId":40}}).to_string(), &mut input);
+        assert!(resolved.iter().any(|record| record.contains("resolved")));
+        let stranger = protocol.ingest(&json!({"id":41,"method":"item/commandExecution/requestApproval","params":{"threadId":"elsewhere","turnId":"t","command":"rm"}}).to_string(), &mut input);
+        assert!(stranger.is_empty());
+        assert!(written(&bytes).contains("Stale interaction"));
+    }
+    #[test]
+    fn stopping_interrupts_the_native_turn_and_queued_input_never_starts_another() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let req = super::super::tests::request("codex");
+        let mut protocol = LiveProtocol::new(&req);
+        let mut input = LiveInput::with_writer(Box::new(Sink(bytes.clone())), true);
+        input.thread = Some("thread".into());
+        input.turn = Some("turn".into());
+        input.started = true;
+        input.queued.push_back(Message::new("late", json!([])));
+        assert!(input.interrupt());
+        let sent: Value = serde_json::from_str(written(&bytes).trim()).unwrap();
+        assert_eq!(sent["method"], "turn/interrupt");
+        assert_eq!(sent["params"], json!({"threadId":"thread","turnId":"turn"}));
+        assert!(input.submit(&req, "after-stop").is_err());
+        protocol.ingest(&json!({"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"turn","status":"interrupted"}}}).to_string(), &mut input);
+        assert!(input.writer.is_none(), "The interrupted turn closes input instead of starting queued work");
+        assert_eq!(input.abort().len(), 1, "Unsent queued input is reported, not lost");
+
+        let claude_bytes = Arc::new(Mutex::new(Vec::new()));
+        let mut claude = LiveInput::with_writer(Box::new(Sink(claude_bytes.clone())), false);
+        assert!(claude.interrupt());
+        let sent: Value = serde_json::from_str(written(&claude_bytes).trim()).unwrap();
+        assert_eq!(sent["type"], "control_request");
+        assert_eq!(sent["request"]["subtype"], "interrupt");
+        assert!(claude.writer.is_none(), "Claude exits once the interrupted turn ends");
     }
     #[test]
     fn mcp_elicitation_is_declined_without_failing_the_turn() {

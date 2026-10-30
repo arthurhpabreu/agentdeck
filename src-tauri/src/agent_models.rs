@@ -164,8 +164,8 @@ fn claude_catalogue(cli_path: &str) -> Result<Vec<AgentModel>, String> {
         }
     });
     let result = receiver.recv_timeout(Duration::from_secs(10));
-    crate::cli_updates::terminate_probe(&mut child);
-    let _ = reader.join();
+    crate::cli_updates::terminate_probe(child);
+    drop(reader);
     let models = result.map_err(|_| {
         "Claude model catalogue unavailable. Check the CLI installation and sign-in, then refresh."
     })?;
@@ -281,8 +281,8 @@ fn codex_catalogue(cli_path: &str, workdir: &str) -> Result<Vec<AgentModel>, Str
         Ok((models, config))
     })();
     drop(child.stdin.take());
-    crate::cli_updates::terminate_probe(&mut child);
-    let _ = reader.join();
+    crate::cli_updates::terminate_probe(child);
+    drop(reader);
     let (values, config) = result?;
     let models = parse_codex_models(&values, version.as_deref(), config.as_ref());
     if models.is_empty() {

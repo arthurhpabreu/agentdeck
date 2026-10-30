@@ -659,7 +659,14 @@ export default function App() {
       if (payload.source !== "codex" && payload.source !== "claude-code") return;
       const activity = useSessionStore.getState().sessions.find(s => s.id === payload.session_id);
       if (!activity || useChatStore.getState().threads[payload.session_id]?.busy) return;
+      useAttentionStore.getState().resolveTerminalPrompt(payload.session_id);
       useAttentionStore.getState().record({ id: `terminal:${payload.session_id}:${payload.turn_id ?? activity.currentTask}`, sessionId: payload.session_id, kind: "completed", text: "", source: payload.source, at: Date.now() });
+    });
+    // A native terminal dialog (tool permission, MCP form) blocks the agent until answered there.
+    const u11 = listen<{ session_id: string; message: string; notification_type: string }>("pty-notification", ({ payload }) => {
+      if (useChatStore.getState().threads[payload.session_id]?.busy) return;
+      const at = Date.now();
+      useAttentionStore.getState().record({ id: `terminal-dialog:${payload.session_id}:${at}`, sessionId: payload.session_id, kind: payload.notification_type === "elicitation_dialog" ? "question" : "approval", text: payload.message.slice(0, 1200), source: "terminal-dialog", at });
     });
     const u9 = listen<{ session_id: string; error: string }>("pty-error", ({ payload }) => {
       // Each failure is a new event; an older identical error that was already read must not hide it.
@@ -669,7 +676,7 @@ export default function App() {
     // A terminal that is working again has moved past its earlier failure.
     const u10 = listen<{ session_id: string }>("pty-running", ({ payload }) => useAttentionStore.getState().resolveActions(payload.session_id));
     return () => {
-      [u1, u2a, u2b, u2, u3, u4, u5, u5b, u5c, u5d, u6, u7, u8, u9, u10].forEach((p) => p.then((f) => f()).catch(() => {}));
+      [u1, u2a, u2b, u2, u3, u4, u5, u5b, u5c, u5d, u6, u7, u8, u9, u10, u11].forEach((p) => p.then((f) => f()).catch(() => {}));
     };
   }, [appendOutput, updateSession, setDiffFiles, setScmSnapshot, setScmStatus, setScmDiffOverride, refreshSessionDiff]);
 

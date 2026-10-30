@@ -188,7 +188,7 @@ fn codex_instructions(cli: &str, cwd: &str, original: &[String]) -> Result<Strin
         .spawn()
         .map_err(|_| ERROR)?;
     let Some(output) = child.stdout.take() else {
-        crate::cli_updates::terminate_probe(&mut child);
+        crate::cli_updates::terminate_probe(child);
         return Err(ERROR.into());
     };
     let (sender, receiver) = mpsc::sync_channel(2);
@@ -237,8 +237,8 @@ fn codex_instructions(cli: &str, cwd: &str, original: &[String]) -> Result<Strin
         Err(ERROR.into())
     })();
     drop(child.stdin.take());
-    crate::cli_updates::terminate_probe(&mut child);
-    let _ = reader.join();
+    crate::cli_updates::terminate_probe(child);
+    drop(reader);
     result
 }
 

@@ -17,7 +17,8 @@ export function fallbackCommands(runner: RunnerConfig): AgentCommand[] {
 export async function loadAgentCommands(runner: RunnerConfig, workdir: string, project = workdir, force = false): Promise<AgentCatalogue> {
   const key = keyFor(runner, workdir, project);
   const saved = cache.get(key);
-  if (!force && saved && Date.now() - saved.at < 30_000) return saved.result;
+  // Matches the native ten-minute cache: every refresh starts a real CLI process.
+  if (!force && saved && Date.now() - saved.at < 600_000) return saved.result;
   if (pending.has(key)) return pending.get(key)!;
   const request = invoke<AgentCatalogue>("list_agent_commands", { runnerType: runner.type, cliPath: runner.cliPath || null, workdir, projectPath: project, force }).then(value => {
     const result: AgentCatalogue = value && Array.isArray(value.entries) ? value : { entries: fallbackCommands(runner), warnings: ["cli_catalogue_unavailable"] };
@@ -29,7 +30,7 @@ export async function loadAgentCommands(runner: RunnerConfig, workdir: string, p
   return request;
 }
 export function commandToken(value: string, caret: number) {
-  const match = value.slice(0, caret).match(/(?:^|\s)([/\$])([^\s]*)$/);
+  const match = value.slice(0, caret).match(/(?:^|\s)([/\$@])([^\s]*)$/);
   if (!match) return undefined;
   return { start: caret - match[1].length - match[2].length, end: caret, prefix: match[1], query: match[2].toLocaleLowerCase() };
 }

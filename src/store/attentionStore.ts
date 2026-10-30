@@ -14,7 +14,8 @@ export const useAttentionStore = create<{
   read: (id: string) => void;
   clearSession: (sessionId: string) => void;
   resolveActions: (sessionId: string) => void;
-}>()(persist((set) => ({
+  resolveTerminalPrompt: (sessionId: string) => void;
+}>()(persist((set, get) => ({
   items: [],
   record: item => set(state => state.items.some(existing => existing.id === item.id) ? state : { items: [...state.items, { ...item, read: false }].slice(-500) }),
   // Opening a conversation shows its result and error inline; approvals and questions stay until answered.
@@ -22,6 +23,8 @@ export const useAttentionStore = create<{
   read: id => set(state => ({ items: state.items.map(item => item.id === id ? { ...item, read: true } : item) })),
   clearSession: sessionId => set(state => ({ items: state.items.filter(item => item.sessionId !== sessionId) })),
   resolveActions: sessionId => set(state => ({ items: state.items.map(item => item.sessionId === sessionId && item.kind !== "completed" && !item.read ? { ...item, read: true } : item) })),
+  // A native dialog is answered in the terminal itself; called on every keystroke, so it writes only when needed.
+  resolveTerminalPrompt: sessionId => { if (get().items.some(item => item.sessionId === sessionId && item.source === "terminal-dialog" && !item.read)) set(state => ({ items: state.items.map(item => item.sessionId === sessionId && item.source === "terminal-dialog" && !item.read ? { ...item, read: true } : item) })); },
 }), { name: "agentdeck-attention-v1", storage: createJSONStorage(() => mirroredPersistStorage) }));
 
 /**

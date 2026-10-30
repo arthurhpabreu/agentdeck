@@ -44,3 +44,10 @@ export function createAgentSessionArgs(id: RunnerType, resumeSessionId = "", mod
 export function supportsAgentResume(id: RunnerType) {
   return getAgentAdapter(id).supportsResume;
 }
+
+/** Failures the user fixes outside the conversation: a missing CLI or an expired sign-in. */
+export function providerErrorHelp(error: string, id: RunnerType): { kind: "install" | "login"; command: string } | undefined {
+  if (/could not start [\w-]+:.*(os error 2|not found|cannot find|no such file)/i.test(error)) return { kind: "install", command: getAgentAdapter(id).installCommand };
+  if (/not logged in|please run \/login|invalid api key|oauth token (?:has )?expired|authentication_error|\b401\b|unauthori[sz]ed|refresh[_ ]token|token_expired|(?:log|sign) ?in again|re-?authenticate/i.test(error)) return { kind: "login", command: id === "claude-code" ? "/login" : "" };
+  return undefined;
+}

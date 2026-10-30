@@ -59,6 +59,11 @@ pub enum SessionLifecycleSignal {
     Error {
         message: String,
     },
+    /// The native CLI shows a dialog that blocks the agent until the user answers.
+    Attention {
+        message: String,
+        notification_type: String,
+    },
 }
 
 fn normalize_workdir(path: &str) -> String {
@@ -194,6 +199,17 @@ pub fn emit_session_lifecycle(
                     &sid,
                     turn_id.as_deref(),
                     prompt.as_deref(),
+                );
+            }
+        }
+        SessionLifecycleSignal::Attention {
+            message,
+            notification_type,
+        } => {
+            for sid in session_ids {
+                let _ = app.emit(
+                    "pty-notification",
+                    serde_json::json!({ "session_id": sid, "title": "", "message": message.clone(), "notification_type": notification_type.clone() }),
                 );
             }
         }
