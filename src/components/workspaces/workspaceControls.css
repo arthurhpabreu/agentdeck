@@ -28,6 +28,11 @@
 .ad-project-color-dialog h2 { font-size: 16px; margin: 0 0 18px; overflow-wrap: anywhere; }
 .ad-workspace-select { flex: 1; min-width: 0; padding: 0; text-align: start; border: 0; border-radius: 5px; background: transparent; cursor: pointer; }
 .ad-workspace-card:focus-within .ad-workspace-actions { opacity: 1 !important; pointer-events: auto !important; }
+.ad-project-remove-confirm { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px 8px; padding-inline-start: 32px; font-size: 11px; cursor: default; }
+.ad-project-remove-confirm > span { flex: 1 1 auto; min-width: 0; color: var(--ci-deleted-text); }
+.ad-project-remove-confirm > button { padding: 3px 2px; border: 0; background: none; color: var(--ci-text-muted); font: inherit; font-weight: 600; cursor: pointer; }
+.ad-project-remove-confirm > button.is-danger { color: var(--ci-red); }
+.ad-project-remove-confirm > button:hover { opacity: .8; }
 /* Navigator: projects beside the active project's sessions when wide, stacked when narrow.
    Each pane scrolls on its own, so sessions never sit below the whole project list. */
 .ad-navigator { flex: 1; min-height: 0; display: flex; container: ad-navigator / inline-size; }

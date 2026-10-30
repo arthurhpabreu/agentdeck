@@ -1,7 +1,7 @@
 import { NewWorkspaceForm } from "./workspaces/NewWorkspaceForm";
 import { WorkspaceColorControl } from "./workspaces/WorkspaceColorPicker";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { formatRelativeTime, useAppI18n } from "../i18n";
@@ -81,21 +81,36 @@ function useProjectActivity(workspaces: Workspace[]) {
 
 // ── Single workspace card in the expanded state ───────────────
 function WorkspaceCardExpanded({
-  ws, activity, isActive, onClick, onRemove,
+  ws, activity, isActive, isRemoveConfirming, onClick, onCancelRemove, onRemove,
 }: {
   ws: Workspace;
   activity: ProjectActivity;
   isActive: boolean;
+  isRemoveConfirming: boolean;
   onClick: () => void;
+  onCancelRemove: () => void;
+  /** First call arms the confirmation; the explicit confirm button calls it again to remove. */
   onRemove: () => void;
 }) {
   const { t, locale } = useAppI18n();
   const [hovered, setHovered] = useState(false);
   const row = useRef<HTMLDivElement>(null);
+  const removeButton = useRef<HTMLButtonElement>(null), cancelButton = useRef<HTMLButtonElement>(null), restoreFocus = useRef(false);
+  const confirmMessageId = useId();
   // Search and notifications can switch projects while this row is scrolled away.
   useEffect(() => { if (isActive) row.current?.scrollIntoView({ block: "nearest" }); }, [isActive]);
+  // Focus starts on Cancel, so an extra Enter never removes; leaving the confirmation disarms it.
+  useEffect(() => {
+    if (isRemoveConfirming) cancelButton.current?.focus();
+    else if (restoreFocus.current) removeButton.current?.focus();
+    restoreFocus.current = false;
+  }, [isRemoveConfirming]);
+  const cancelRemove = (refocus: boolean) => { restoreFocus.current = refocus; onCancelRemove(); };
   const color = getWorkspaceColor(ws.color);
   const showActions = hovered || isActive;
+  const removeMessage = activity.sessions === 0 ? t("workspace.removeConfirmEmpty")
+    : activity.sessions === 1 ? t("workspace.removeConfirmOne")
+    : t("workspace.removeConfirmMany", { count: activity.sessions });
   const status = activity.attentionKind
     ? `${t(ATTENTION_LABEL[activity.attentionKind])}${activity.attention > 1 ? ` · ${activity.attention}` : ""}`
     : activity.running
@@ -116,11 +131,12 @@ function WorkspaceCardExpanded({
         display: "flex",
         alignItems: "center",
         gap: 8,
+        flexWrap: isRemoveConfirming ? "wrap" : undefined,
         minHeight: 32,
         padding: "6px 8px 6px 10px",
         borderRadius: 3,
-        background: isActive ? "var(--ci-list-active-bg)" : hovered ? "var(--ci-list-hover-bg)" : "transparent",
-        border: "1px solid transparent",
+        background: isRemoveConfirming ? "var(--ci-deleted-bg)" : isActive ? "var(--ci-list-active-bg)" : hovered ? "var(--ci-list-hover-bg)" : "transparent",
+        border: isRemoveConfirming ? "1px solid rgba(255,59,48,0.24)" : "1px solid transparent",
         cursor: "pointer",
         transition: "background 0.12s, border-color 0.12s",
       }}
@@ -167,7 +183,17 @@ function WorkspaceCardExpanded({
         </span>
       </button>
 
-      <div className="ad-workspace-actions" style={{
+      {isRemoveConfirming ? (
+        // Mouse down keeps focus inside, so WebKit (which does not focus clicked buttons) cannot disarm it before the click.
+        <div role="group" aria-labelledby={confirmMessageId} className="ad-project-remove-confirm" data-no-drag
+          onMouseDown={e => e.preventDefault()}
+          onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelRemove(true); } }}
+          onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) onCancelRemove(); }}>
+          <span id={confirmMessageId}>{removeMessage}</span>
+          <button type="button" className="is-danger" onClick={e => { e.stopPropagation(); onRemove(); }}>{t("workspace.confirmRemove")}</button>
+          <button ref={cancelButton} type="button" onClick={e => { e.stopPropagation(); cancelRemove(true); }}>{t("common.cancel")}</button>
+        </div>
+      ) : <div className="ad-workspace-actions" style={{
         display: "flex",
         alignItems: "center",
         gap: 4,
@@ -177,6 +203,8 @@ function WorkspaceCardExpanded({
         transition: "opacity 0.12s",
       }}>
         <button
+          ref={removeButton}
+          type="button"
           onClick={(e) => { e.stopPropagation(); onRemove(); }}
           title={t("workspace.removeWorkspace")}
           style={{
@@ -190,7 +218,7 @@ function WorkspaceCardExpanded({
             flexShrink: 0,
           }}
         ><X size={12} /></button>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -217,6 +245,7 @@ export function WorkspaceStack() {
   // The first project is added inline; later ones in a dialog above the lists.
   const [form, setForm] = useState<"inline" | "dialog" | null>(workspaces.length === 0 ? "inline" : null);
   const addButton = useRef<HTMLButtonElement>(null);
+  const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const groups = useMemo(() => GROUPS.map(group => {
     const members = sorted.filter(ws => activity.get(ws.id)?.group === group);
     // Stale projects keep the user's arrangement; active ones follow the latest work.
@@ -230,6 +259,7 @@ export function WorkspaceStack() {
     usePresentationStore.getState().setView(COLLAPSED_VIEW, [...next].join(","));
   };
   const handleRemove = async (id: string) => {
+    setPendingRemoveId(null);
     const sessionsToRemove = useSessionStore
       .getState()
       .sessions
@@ -270,7 +300,8 @@ export function WorkspaceStack() {
   };
   const card = (ws: Workspace, handle?: ReactNode) => <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
     {handle}<div style={{ flex: 1, minWidth: 0 }}><WorkspaceCardExpanded ws={ws} activity={activity.get(ws.id)!} isActive={ws.id === activeWorkspaceId}
-      onClick={() => openWorkspace(ws.id)} onRemove={() => void handleRemove(ws.id)} /></div>
+      isRemoveConfirming={pendingRemoveId === ws.id} onClick={() => { setPendingRemoveId(null); openWorkspace(ws.id); }} onCancelRemove={() => setPendingRemoveId(null)}
+      onRemove={() => { if (pendingRemoveId === ws.id) void handleRemove(ws.id); else setPendingRemoveId(ws.id); }} /></div>
   </div>;
 
   return <nav className="ad-nav-projects" aria-label={t("workspace.title")}>

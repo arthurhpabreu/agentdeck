@@ -96,7 +96,7 @@ test("action buttons cannot start a drag and movement before the hold threshold 
   await setup(page);
   const projects = page.locator('[data-surface="projects"]');
   const row = projects.locator('[data-sortable-id="p2"]');
-  const remove = row.getByTitle("Delete workspace", { exact: true });
+  const remove = row.getByTitle("Remove project", { exact: true });
   const action = (await remove.boundingBox())!;
   await page.mouse.move(action.x + action.width / 2, action.y + action.height / 2);
   await page.mouse.down(); await page.waitForTimeout(220);

@@ -110,7 +110,10 @@ and [Claude Agent SDK commands](https://code.claude.com/docs/en/agent-sdk/slash-
 ## Terminal activity and recovery
 
 Tool cards show the command, working directory, available output and exit status
-reported by the provider. Tool details start collapsed, including running, failed
+reported by the provider. File, search, fetch and subagent tools name their file,
+pattern, URL or task in the summary; edits and Codex file changes open as a
+red/green line diff and writes as a content preview. Input that cannot be parsed
+completely is shown as received. Tool details start collapsed, including running, failed
 and approval-blocked tools. Click the summary to open or close a card; incoming
 output and status changes preserve your choice. Long output starts with its latest
 lines and can be expanded or copied. Codex streams output deltas;

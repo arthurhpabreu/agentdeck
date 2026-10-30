@@ -239,3 +239,39 @@ test("sessions stay in view below a long project list and move beside it in a wi
   expect(sessionBox.height).toBeGreaterThan(600);
   await page.screenshot({ path: "test-results/navigator-side-by-side.png", animations: "disabled" });
 });
+
+test("removing a project needs an explicit confirmation that states how many chats go with it", async ({ page }) => {
+  await setupNavigation(page);
+  const projects = page.getByRole("navigation", { name: "Projetos", exact: true });
+  const beta = projects.locator(".ad-workspace-card").filter({ hasText: "Beta project" });
+  const confirmation = beta.getByRole("group", { name: "Remover este projeto e 2 chats?", exact: true });
+  const arm = async () => { await beta.hover(); await beta.getByTitle("Remover projeto", { exact: true }).click(); };
+  const saved = () => page.evaluate(() => ({
+    workspaces: JSON.parse(localStorage.getItem("agentdeck-workspaces")!).state.workspaces.map((ws: any) => ws.id).sort(),
+    sessions: JSON.parse(localStorage.getItem("agentdeck-sessions")!).state.sessions.map((session: any) => session.id).sort(),
+    marked: (window as any).__navigationCalls.filter((call: any) => call.command === "mark_deleted_items").length,
+  }));
+  const untouched = { workspaces: ["alpha", "archive", "beta"], sessions: ["alpha-review", "beta-review", "beta-tests"], marked: 0 };
+  await arm();
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation.getByRole("button", { name: "Cancelar", exact: true })).toBeFocused();
+  expect(await saved()).toEqual(untouched);
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toHaveCount(0);
+  await expect(beta.getByTitle("Remover projeto", { exact: true })).toBeFocused();
+  await arm();
+  await confirmation.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(confirmation).toHaveCount(0);
+  await arm();
+  await expect(confirmation).toBeVisible();
+  await projects.getByRole("heading", { name: "Projetos", exact: true }).click();
+  await expect(confirmation).toHaveCount(0);
+  expect(await saved()).toEqual(untouched);
+  await arm();
+  await confirmation.getByRole("button", { name: "Remover", exact: true }).click();
+  await expect(beta).toHaveCount(0);
+  await expect.poll(saved).toEqual({ workspaces: ["alpha", "archive"], sessions: ["alpha-review"], marked: 1 });
+  const archive = projects.locator(".ad-workspace-card").filter({ hasText: "Empty archive" });
+  await archive.hover(); await archive.getByTitle("Remover projeto", { exact: true }).click();
+  await expect(archive.getByRole("group", { name: "Remover este projeto? Ele não tem chats.", exact: true })).toBeVisible();
+});
