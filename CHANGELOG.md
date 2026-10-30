@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.0 — 2026-10-30
+
+- Keep chat alerts truthful: a finished turn is done rather than "waiting",
+  denied tools no longer raise errors, opening a chat clears its seen errors,
+  and silence from a live process reads as a long step instead of a stall.
+- Answer Claude Code tool approvals, plan approval and agent questions inside
+  the chat when full access is off; approve Codex actions for the session,
+  decline and continue, and answer subagent and extra-permission requests.
+- Stop and Escape interrupt the native turn first, as in the CLIs, and force
+  the process only after a grace period or a second stop. Input sent as a turn
+  ends starts the next turn instead of failing.
+- Keep CLI sign-ins valid: metadata probes let the CLI exit by itself instead
+  of killing it mid token renewal, run less often, and unreadable Codex or
+  Claude settings are never rewritten empty.
+- Recall earlier prompts with Up/Down, mention project files with `@`, see the
+  file and diff behind each edit, confirm project removal, and get install and
+  sign-in actions for a missing CLI or expired login. Settings gains an Agents
+  tab whose defaults follow the choices made in chats.
+
 ## 0.15.0 — 2026-10-28
 
 - Add prompt schedules inside chats, with time, weekdays, an inclusive date
