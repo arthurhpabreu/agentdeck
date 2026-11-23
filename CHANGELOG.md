@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.1 — 2026-11-23
+
+- Reopening a conversation shows the reply in progress or the one that
+  finished while you were away. Scrolling up pauses automatic following so
+  you can read earlier messages.
+- Jumping to the latest reply exits search or archived history and returns
+  keyboard focus to the live conversation.
+- Chat recovers recent reply text and completion status when an update is
+  missed. The activity indicator follows the transition from running a
+  command to writing a reply.
+
 ## 0.16.0 — 2026-10-30
 
 - Keep chat alerts truthful: a finished turn is done rather than "waiting",
