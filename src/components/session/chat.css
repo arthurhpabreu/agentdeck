@@ -89,7 +89,8 @@
 .ad-chat-error { padding: 9px 12px; border: 1px solid var(--ci-yellow-bdr); background: var(--ci-yellow-bg); color: var(--ci-yellow-dark); border-radius: 10px; margin-bottom: 10px; font-size: 12px; max-height: 150px; overflow: auto; overflow-wrap: anywhere; }
 .ad-chat-error p { margin: 5px 0; white-space: pre-wrap; user-select: text; } .ad-chat-error .ad-button { padding: 4px 8px; margin-top: 5px; margin-right: 5px; }
 .ad-chat-search { display: flex; gap: 10px; align-items: center; padding: 6px 20px; border-bottom: 1px solid var(--ci-border); } .ad-chat-search input { flex: 1; height: 30px; border: 0; background: transparent; color: var(--ci-text); font-size: 12px; }
-.ad-latest { position: absolute; bottom: 210px; right: 30px; border-radius: 50%; padding: 8px; box-shadow: 0 3px 12px #0002; }
+.ad-chat-latest-anchor { position: relative; flex: 0 0 0; }
+.ad-latest { position: absolute; bottom: 12px; right: 30px; border-radius: 50%; padding: 8px; box-shadow: 0 3px 12px #0002; }
 .ad-drop-overlay { position: absolute; inset: 8px; border: 2px dashed var(--ci-accent); border-radius: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px; background: color-mix(in srgb, var(--ci-bg) 95%, transparent); color: var(--ci-accent); pointer-events: none; z-index: 30; }
 .ad-sketch-dialog { width: min(860px, 90vw); margin: auto; border: 1px solid var(--ci-border-med); border-radius: 16px; padding: 16px; background: var(--ci-surface); color: var(--ci-text); }
 .ad-sketch-dialog::backdrop { background: #0008; } .ad-sketch-dialog header, .ad-sketch-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; } .ad-sketch-dialog canvas { width: 100%; margin: 14px 0; border-radius: 8px; touch-action: none; cursor: crosshair; } .ad-sketch-dialog footer { justify-content: flex-end; }

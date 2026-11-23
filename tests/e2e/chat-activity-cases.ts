@@ -39,6 +39,14 @@ export function chatActivityCases(setup: (page: Page, locale?: string) => Promis
     const renewed = await page.evaluate(async () => { const path = "/src/store/chatStore.ts"; return (await import(/* @vite-ignore */ path)).useChatStore.getState().threads.session; });
     expect(renewed.busy).toBe(true); expect(renewed.status).toBe("running"); expect(renewed.activity).toBeUndefined();
     await page.evaluate(() => {
+      const w = window as any;
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "text", itemId: "answer", text: "Resposta em andamento" });
+    });
+    await page.clock.runFor(50);
+    await expect(page.locator(".ad-chat-progress")).toContainText("Escrevendo resposta");
+    await expect(page.locator(".ad-turn-activity-detail")).not.toContainText("render-video");
+    await expect(tool.locator("summary")).toContainText("Executando");
+    await page.evaluate(() => {
       const w = window as any; const base = { sessionId: "session", turnId: w.__chatTurns.session, kind: "status" };
       w.__emit("chat-event", { ...base, status: "waiting-background" });
       w.__emit("chat-event", { ...base, status: "blocked" });

@@ -8,6 +8,84 @@ export function chatUxCases(setup: (page: Page) => Promise<void>, open: (page: P
     await page.getByRole("button", { name: "Enviar", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Architecture review" })).toBeVisible();
   }
+  test("chat UX follows the live tail across viewport changes and returns to new output after visiting the editor", async ({ page }) => {
+    await start(page);
+    const transcript = page.locator(".ad-chat-scroll");
+    const distanceToBottom = () => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop);
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "text", itemId: "report", text: "Parágrafo de revisão.\n\n".repeat(65) });
+    });
+    await expect(transcript.getByText("Parágrafo de revisão.", { exact: true }).last()).toBeVisible();
+    await expect.poll(distanceToBottom).toBeLessThanOrEqual(1);
+
+    const viewport = page.viewportSize()!;
+    await page.setViewportSize({ width: viewport.width, height: viewport.height - 160 });
+    await expect.poll(distanceToBottom).toBeLessThanOrEqual(1);
+    await transcript.evaluate(el => { el.scrollTop = 120; });
+    await expect(page.locator(".ad-latest")).toBeVisible();
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__emit("chat-event", { sessionId: "session", turnId: w.__chatTurns.session, kind: "text", itemId: "report", text: "\n\nEm andamento.", delta: true });
+    });
+    await expect(transcript).toContainText("Em andamento.");
+    await expect(transcript).toHaveJSProperty("scrollTop", 120);
+
+    await page.evaluate(async () => (await import("/src/services/workbenchCommands.ts" as string)).showExplorer("session"));
+    await expect(transcript).toHaveCount(0);
+    await page.evaluate(() => {
+      const w = window as any, base = { sessionId: "session", turnId: w.__chatTurns.session };
+      w.__emit("chat-event", { ...base, kind: "text", itemId: "report", text: "\n\nResposta concluída no editor.", delta: true });
+      w.__emit("chat-event", { ...base, kind: "done", status: "completed" });
+    });
+    await expect.poll(async () => (await state(page)).busy).toBe(false);
+    await page.evaluate(async () => (await import("/src/services/workbenchCommands.ts" as string)).showSessionSurface("session"));
+    await expect(transcript.getByText("Resposta concluída no editor.", { exact: true })).toBeInViewport();
+    await expect.poll(distanceToBottom).toBeLessThanOrEqual(1);
+
+    await transcript.evaluate(el => { el.scrollTop = 180; });
+    await expect(page.locator(".ad-latest")).toBeVisible();
+    await page.evaluate(async () => (await import("/src/services/workbenchCommands.ts" as string)).showExplorer("session"));
+    await expect(transcript).toHaveCount(0);
+    await page.evaluate(async () => (await import("/src/services/workbenchCommands.ts" as string)).showSessionSurface("session"));
+    await expect(transcript).toHaveJSProperty("scrollTop", 180);
+  });
+
+  test("chat UX returns directly from archived pages and ignores an older page requested before returning live", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any, base = { sessionId: "session", turnId: w.__chatTurns.session };
+      for (let i = 0; i < 100; i++) {
+        w.__emit("chat-event", { ...base, kind: "text", itemId: `history-${i}`, text: `Página da conversa ${i}` });
+      }
+      w.__emit("chat-event", { ...base, kind: "done", status: "completed" });
+    });
+    const transcript = page.locator(".ad-chat-scroll"), older = transcript.locator(".ad-chat-history button").first();
+    const latest = page.locator(".ad-latest");
+    await older.click();
+    await expect(transcript.getByText("Página da conversa 0", { exact: true })).toBeVisible();
+    await latest.click();
+    const tail = transcript.getByText("Página da conversa 99", { exact: true });
+    await expect(tail).toBeInViewport();
+    await expect(transcript).toBeFocused();
+
+    await transcript.evaluate(el => { el.scrollTop = 0; });
+    await expect(latest).toBeVisible();
+    await page.evaluate(() => {
+      document.querySelector<HTMLButtonElement>(".ad-chat-history button")!.click();
+      document.querySelector<HTMLButtonElement>(".ad-latest")!.click();
+    });
+    // A subsequent IndexedDB read completes after the pending earlier-page transaction.
+    await page.evaluate(async () => { await (await import("/src/services/chatHistory.ts" as string)).readChatHistory("session"); });
+    await expect(tail).toBeInViewport();
+    await page.getByRole("button", { name: "Buscar", exact: true }).click();
+    await page.locator(".ad-chat-search input").fill("Página da conversa 0");
+    await expect(transcript.getByText("Página da conversa 0", { exact: true })).toBeVisible();
+    await latest.click();
+    await expect(tail).toBeInViewport();
+    await expect(page.locator(".ad-chat-search")).toHaveCount(0);
+  });
+
   test("chat UX ignores terminal waiting hooks during a structured response and preserves latest interleaved activity", async ({ page }) => {
     await start(page);
     await page.evaluate(() => {

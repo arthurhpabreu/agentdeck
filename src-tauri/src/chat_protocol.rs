@@ -45,6 +45,8 @@ pub struct ChatEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub delta: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub final_messages: Vec<ChatEvent>,
 }
 
 pub struct ChatParser {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowDown, ArrowRight, ArrowUp, Download, FileText, FolderOpen, ImagePlus, LoaderCircle, Paperclip, Pencil, Plus, Search, ShieldCheck, Square, Target, TerminalSquare, X } from "lucide-react";
 import { useAppI18n } from "../../i18n";
@@ -51,20 +51,29 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   const [historyPage, setHistoryPage] = useState<ChatMessage[] | undefined>(retainedView.historyPage);
   const [searchResults, setSearchResults] = useState<ChatMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const historyRequest = useRef(0);
   const [continuing, setContinuing] = useState(false); const continuingRef = useRef(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>(retainedView.attachments);
   const [uploading, setUploading] = useState(false); const uploadingRef = useRef(false);
   const [error, setError] = useState(""); const [menu, setMenu] = useState(false);
   const [showGoal, setShowGoal] = useState(!!thread.goal); const [sketch, setSketch] = useState(false);
   const [search, setSearch] = useState<string | null>(retainedView.search); const [dragging, setDragging] = useState(false); const dragDepth = useRef(0);
-  const [follow, setFollow] = useState(retainedView.follow);
+  const [follow, setFollowState] = useState(retainedView.follow);
+  const setFollow = useCallback((value: boolean) => {
+    retainedView.follow = value;
+    setFollowState(value);
+  }, [retainedView]);
+  const browsing = historyPage !== undefined || search !== null;
+  const wasVisible = useRef(false);
+  const restoreScrollTop = useRef<number | "latest" | undefined>(undefined);
+  const activityRevision = `${thread.turnId ?? ""}/${thread.nextMessageOrder ?? 0}/${thread.lastEventAt ?? 0}/${thread.busy}`;
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const filesRef = useRef<HTMLInputElement>(null);
   const addContextRef = useRef<HTMLDivElement>(null);
   // Up/Down recall earlier prompts like the native CLIs; the unsent draft returns at the end.
   const recall = useRef<{ index: number; draft: string } | null>(null);
   const attachmentsRef = useRef(attachments); attachmentsRef.current = attachments;
   const patch = (value: Parameters<ReturnType<typeof useChatStore.getState>["patch"]>[1]) => useChatStore.getState().patch(session.id, value);
-  retainedView.attachments = attachments; retainedView.follow = follow; retainedView.historyPage = historyPage; retainedView.search = search;
+  retainedView.attachments = attachments; retainedView.historyPage = historyPage; retainedView.search = search;
   useEffect(() => () => {
     // Keep saved files and draft metadata across renderer eviction, release image blobs.
     retainedView.attachments = attachmentsRef.current.map(({ preview, ...file }) => {
@@ -72,7 +81,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
       return file;
     });
   }, [retainedView]);
-  useEffect(() => { const scroll = scrollRef.current; if (scroll && !retainedView.follow) scroll.scrollTop = retainedView.scrollTop; inputRef.current?.setSelectionRange(retainedView.selectionStart, retainedView.selectionEnd); }, []);
+  useEffect(() => { inputRef.current?.setSelectionRange(retainedView.selectionStart, retainedView.selectionEnd); }, []);
   useEffect(() => {
     if (!menu) return;
     const dismiss = (event: PointerEvent) => { if (!addContextRef.current?.contains(event.target as Node)) setMenu(false); };
@@ -81,14 +90,46 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
     return () => { document.removeEventListener("pointerdown", dismiss); document.removeEventListener("keydown", escape); };
   }, [menu]);
   useEffect(() => { if (visible && !thread.messages.length) inputRef.current?.focus(); }, [visible]);
-  useEffect(() => { if (follow && visible) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }, [thread.messages, thread.busy, follow, visible]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scroll = scrollRef.current;
-    if (!scroll || !follow || !visible) return;
-    const observer = new ResizeObserver(() => scroll.scrollTo({ top: scroll.scrollHeight }));
+    const opening = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (!scroll || !visible) return;
+    if (opening) {
+      const activityWhileAway = retainedView.lastVisibleActivity !== undefined && retainedView.lastVisibleActivity !== activityRevision;
+      if (!browsing && (thread.busy || activityWhileAway)) setFollow(true);
+      restoreScrollTop.current = browsing || !retainedView.follow ? retainedView.scrollTop : "latest";
+    }
+    retainedView.lastVisibleActivity = activityRevision;
+    if (!browsing && retainedView.follow && restoreScrollTop.current === undefined) scroll.scrollTop = scroll.scrollHeight;
+  }, [activityRevision, browsing, follow, retainedView, setFollow, thread.busy, thread.messages, visible]);
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || !visible) return;
+    const observer = new ResizeObserver(() => {
+      if (!scroll.clientHeight) return;
+      // React can commit the portal before its host has reattached to the editor layout.
+      if (restoreScrollTop.current !== undefined) {
+        scroll.scrollTop = restoreScrollTop.current === "latest" ? scroll.scrollHeight : restoreScrollTop.current;
+        restoreScrollTop.current = undefined;
+      } else if (!browsing && retainedView.follow) scroll.scrollTop = scroll.scrollHeight;
+    });
+    // Composer and window changes resize the viewport even when the transcript is unchanged.
+    observer.observe(scroll);
     Array.from(scroll.children).forEach(child => observer.observe(child));
     return () => observer.disconnect();
-  }, [follow, visible, thread.busy, thread.messages.length > 0, !!thread.diagnostic]);
+  }, [browsing, retainedView, visible, thread.busy, thread.messages.length > 0, !!thread.diagnostic]);
+  const cancelHistoryRead = () => { historyRequest.current++; setLoadingHistory(false); };
+  useEffect(() => () => { historyRequest.current++; }, []);
+  const returnToLatest = (focusTranscript = false) => {
+    cancelHistoryRead();
+    restoreScrollTop.current = undefined;
+    setSearch(null); setHistoryPage(undefined); setFollow(true);
+    const scroll = scrollRef.current;
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    if (focusTranscript) scroll?.focus({ preventScroll: true });
+  };
+  const toggleSearch = () => { cancelHistoryRead(); setSearch(search === null ? "" : null); };
   useEffect(() => {
     if (!search) { setSearchResults([]); return; }
     let cancelled = false;
@@ -111,7 +152,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   };
   const submit = async () => {
     if (nativeLive || uploading || !worktreeReady || (!thread.draft.trim() && !attachments.length)) return;
-    setError(""); setFollow(true); setSearch(null); setHistoryPage(undefined); setMenu(false);
+    setError(""); returnToLatest(); setMenu(false);
     try {
       if (thread.draft.trimStart().startsWith('/')) {
         if (attachments.length) throw new Error(commandCopy(locale).attachments);
@@ -154,24 +195,38 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
   };
   const switchProvider = (type: RunnerType) => { if (type === session.runner.type || nativeLive || thread.busy) return; useSettingsStore.getState().patchRunner({ type }); useSessionStore.getState().updateSession(session.id, { runner: useSettingsStore.getState().getRunnerConfigForType(type), providerSessionId: undefined }); patch({ providerSessionId: undefined, lastSentGoal: undefined, lastUsage: undefined, resolvedModel: undefined, contextPrompts: 0, contextTokens: 0, contextTokensEstimated: true, contextWindow: undefined, turnInputTokens: undefined, compactionCount: 0, lastCompactedAt: undefined, lastCompactionId: undefined, compacting: false, mcpAuthWarning: undefined, recoveryNotice: undefined, recoveryRequired: false }); if (type === "gemini") onNative(); };
   const filtered = useMemo(() => boundedChatMessages(search ? [...new Map([...searchResults.filter(m => matchesChatMessage(m, search)), ...thread.messages.filter(m => matchesChatMessage(m, search))].map(m => [m.id, m])).values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)) : historyPage ?? thread.messages), [search, searchResults, thread.messages, historyPage]);
-  const earlier = !search && (filtered[0]?.order ?? 0) > 0;
+  const earlier = search === null && (filtered[0]?.order ?? 0) > 0;
   // A missing CLI or expired sign-in is fixed in the native terminal, not by retrying.
   const help = !error && !thread.inputError && thread.error ? providerErrorHelp(thread.error, session.runner.type) : undefined;
   const loadEarlier = async () => {
-    if (loadingHistory) return; setLoadingHistory(true);
-    try { await persistChatHistory(); const messages = await readChatHistory(session.id, filtered[0]?.order); if (messages.length) { setHistoryPage(messages); setFollow(false); scrollRef.current?.scrollTo({ top: 0 }); } }
-    catch { setError(context.historyError); } finally { setLoadingHistory(false); }
+    if (loadingHistory) return;
+    const request = ++historyRequest.current;
+    setLoadingHistory(true);
+    try {
+      await persistChatHistory();
+      const messages = await readChatHistory(session.id, filtered[0]?.order);
+      if (request !== historyRequest.current || !messages.length) return;
+      setHistoryPage(messages); setFollow(false);
+      retainedView.scrollTop = 0;
+      scrollRef.current?.scrollTo({ top: 0 });
+    } catch { if (request === historyRequest.current) setError(context.historyError); }
+    finally { if (request === historyRequest.current) setLoadingHistory(false); }
   };
   return <section className="ad-chat" aria-label={c.chat} onDragEnter={e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); dragDepth.current++; setDragging(true); } }} onDragOver={e => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }} onDragLeave={e => { e.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }} onDrop={e => { e.preventDefault(); dragDepth.current = 0; setDragging(false); void addFiles(Array.from(e.dataTransfer.files)); }}>
-    {!!thread.messages.length && <header className="ad-chat-heading"><span><ProviderIcon provider={session.runner.type} size={18} /><strong>{RUNNER_LABELS[session.runner.type]}</strong><small title={thread.resolvedModel ? modelCopy(locale).reported : undefined}>{thread.resolvedModel || modelDisplayName(session.runner, session.worktreePath || session.workdir) || t("chat.defaultModel")}</small></span><div><button className="ad-icon-button" title={c.search} aria-label={c.search} onClick={() => setSearch(search === null ? "" : null)}><Search size={16} /></button><button className="ad-icon-button" title={c.export} aria-label={c.export} onClick={exportChat}><Download size={16} /></button>{session.runner.type !== "gemini" && <button className="ad-icon-button" title={context.continueHint} aria-label={continuing ? context.continuing : context.continueChat} disabled={nativeLive || thread.busy || continuing || uploading || !!attachments.length} onClick={() => void continueChat()}>{continuing ? <LoaderCircle size={16} className="ad-spin" /> : <ArrowRight size={16} />}</button>}</div></header>}
+    {!!thread.messages.length && <header className="ad-chat-heading"><span><ProviderIcon provider={session.runner.type} size={18} /><strong>{RUNNER_LABELS[session.runner.type]}</strong><small title={thread.resolvedModel ? modelCopy(locale).reported : undefined}>{thread.resolvedModel || modelDisplayName(session.runner, session.worktreePath || session.workdir) || t("chat.defaultModel")}</small></span><div><button className="ad-icon-button" title={c.search} aria-label={c.search} onClick={toggleSearch}><Search size={16} /></button><button className="ad-icon-button" title={c.export} aria-label={c.export} onClick={exportChat}><Download size={16} /></button>{session.runner.type !== "gemini" && <button className="ad-icon-button" title={context.continueHint} aria-label={continuing ? context.continuing : context.continueChat} disabled={nativeLive || thread.busy || continuing || uploading || !!attachments.length} onClick={() => void continueChat()}>{continuing ? <LoaderCircle size={16} className="ad-spin" /> : <ArrowRight size={16} />}</button>}</div></header>}
     {search !== null && <div className="ad-chat-search"><Search size={16} /><input autoFocus aria-label={c.searching} placeholder={c.searching} value={search} onChange={e => setSearch(e.target.value)} /><button className="ad-icon-button" aria-label={c.cancel} onClick={() => setSearch(null)}><X size={15} /></button></div>}
-    <div className={`ad-chat-scroll ${!thread.messages.length ? "is-empty" : ""}`} ref={scrollRef} onScroll={e => { const el = e.currentTarget; retainedView.scrollTop = el.scrollTop; setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 90); }}>
+    <div className={`ad-chat-scroll ${!thread.messages.length ? "is-empty" : ""}`} tabIndex={-1} ref={scrollRef} onScroll={e => {
+      const el = e.currentTarget;
+      if (!visible || !el.clientHeight || restoreScrollTop.current !== undefined) return;
+      retainedView.scrollTop = el.scrollTop;
+      if (!browsing) setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 90);
+    }}>
       {!thread.messages.length ? <div className="ad-chat-welcome">
         <div className="ad-chat-logo"><img src="/agentdeck-logo.jpg" alt="Agentdeck" /></div><span className="ad-eyebrow">{CHAT_BRAND}</span><h2>{c.ready}</h2><p>{c.intro}</p>
         <div className="ad-agent-pills" role="group" aria-label={t("agents.title")}>{(Object.entries(RUNNER_LABELS) as [RunnerType, string][]).map(([type, label]) => <button key={type} className="ad-button" disabled={nativeLive || thread.busy} aria-pressed={type === session.runner.type} onClick={() => switchProvider(type)}><ProviderIcon provider={type} size={17} />{label}</button>)}</div>
         {session.providerSessionId && <p className="ad-hint">{c.restore}</p>}
       </div> : <div className="ad-chat-messages" role="log" aria-label={c.chat}>
-        {(earlier || historyPage || search) && <div className="ad-chat-history"><small>{search ? context.searchLimit : context.page}</small>{earlier && <button className="ad-button ad-button-ghost" disabled={loadingHistory} onClick={() => void loadEarlier()}>{context.older}</button>}{historyPage && <button className="ad-button ad-button-ghost" onClick={() => { setHistoryPage(undefined); setFollow(true); }}>{context.latest}</button>}</div>}
+        {(earlier || historyPage || search) && <div className="ad-chat-history"><small>{search ? context.searchLimit : context.page}</small>{earlier && <button className="ad-button ad-button-ghost" disabled={loadingHistory} onClick={() => void loadEarlier()}>{context.older}</button>}{historyPage && <button className="ad-button ad-button-ghost" onClick={() => returnToLatest(true)}>{context.latest}</button>}</div>}
         {filtered.map(message => <ChatMessageRow key={message.id} message={message} session={session} busy={thread.busy} turnId={thread.turnId} onError={setError} />)}
         {search && !filtered.length && <p className="ad-hint">{c.noMatch}</p>}
       </div>}
@@ -179,7 +234,7 @@ export function StructuredChat({ session, visible, onNative, nativeLive = false 
       <ChatExecutionDetails key={thread.turnId} diagnostic={thread.diagnostic} />
       {(thread.status === "stopped" || thread.status === "interrupted") && !thread.busy && <p className="ad-chat-progress">{c.stopped}</p>}
     </div>
-    {!follow && thread.messages.length > 0 && <button className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => { setFollow(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><ArrowDown size={16} /></button>}
+    {(!follow || browsing || loadingHistory) && thread.messages.length > 0 && <div className="ad-chat-latest-anchor"><button type="button" className="ad-latest ad-button" aria-label={c.latest} title={c.latest} onClick={() => returnToLatest(true)}><ArrowDown size={16} /></button></div>}
     <div className="ad-chat-bottom">
       {thread.busy && thread.turnId && !!thread.interactions?.length && <ChatInteractions sessionId={session.id} turnId={thread.turnId} requests={thread.interactions} />}
       <ChatRecoveryControl session={session} visible={visible} disabled={nativeLive || uploading || !!attachments.length} />

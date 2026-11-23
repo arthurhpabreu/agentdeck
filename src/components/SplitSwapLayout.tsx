@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useAppI18n } from "../i18n";
 import { resetWorkbenchMode } from "../services/workbenchCommands";
 import { useSessionStore } from "../store/sessionStore";
+import { useWorkbenchStore } from "../store/workbenchStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 
 const SessionDetail = lazy(() => import("./SessionDetail").then(module => ({ default: module.SessionDetail })));
@@ -18,10 +19,11 @@ export function SplitSwapProvider({ children, sessionDetailEmptyState }: { child
   const sessions = useSessionStore(state => state.sessions);
   const expandedSessionId = useSessionStore(state => state.expandedSessionId);
   const activeWorkspaceId = useWorkspaceStore(state => state.activeWorkspaceId);
+  const showingConversation = useWorkbenchStore(state => state.centerSurface === "session");
   const session = sessions.find(item => item.id === expandedSessionId && item.workspaceId === activeWorkspaceId);
   return <SessionContainer.Provider value={container}>
     {children}
-    {createPortal(<Suspense fallback={sessionDetailEmptyState ?? null}><SessionDetail mode="embedded" showPanelHeader={false} emptyState={sessionDetailEmptyState} openSessionId={session?.id ?? null} /></Suspense>, container)}
+    {createPortal(<Suspense fallback={sessionDetailEmptyState ?? null}><SessionDetail mode="embedded" showPanelHeader={false} emptyState={sessionDetailEmptyState} openSessionId={showingConversation ? session?.id ?? null : null} /></Suspense>, container)}
   </SessionContainer.Provider>;
 }
 

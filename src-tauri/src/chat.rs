@@ -112,6 +112,84 @@ pub struct ChatTurnStatus {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_event_at: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub final_messages: Vec<ChatEvent>,
+}
+
+/// Normalized text snapshots for a missed WebView delivery.
+#[derive(Default)]
+struct RecentAssistantMessages {
+    messages: Vec<ChatEvent>,
+    evicted: bool,
+}
+
+impl RecentAssistantMessages {
+    fn record(&mut self, event: &ChatEvent) {
+        let Some(text) = event.text.as_deref() else {
+            return;
+        };
+        if event.kind != "text" || event.parent_id.is_some() {
+            return;
+        }
+        let previous = self
+            .messages
+            .iter()
+            .position(|item| item.item_id == event.item_id);
+        // After eviction a delta for an unknown id could be a suffix. A full
+        // item (including a new empty start) establishes its prefix again.
+        if self.evicted && event.delta && previous.is_none() {
+            return;
+        }
+        const MAX_BYTES: usize = 512 * 1024;
+        let previous_bytes = previous
+            .and_then(|index| self.messages[index].text.as_ref())
+            .map_or(0, String::len);
+        if text.len() > MAX_BYTES || event.delta && previous_bytes + text.len() > MAX_BYTES {
+            if let Some(index) = previous {
+                self.messages.remove(index);
+            }
+            self.evicted = true;
+            return;
+        }
+        match previous {
+            Some(index) if event.delta => {
+                self.messages[index]
+                    .text
+                    .get_or_insert_default()
+                    .push_str(text);
+            }
+            Some(index) => self.messages[index] = event.clone(),
+            None => {
+                let mut snapshot = event.clone();
+                snapshot.delta = false;
+                self.messages.push(snapshot);
+            }
+        }
+        let mut bytes: usize = self
+            .messages
+            .iter()
+            .filter_map(|item| item.text.as_ref())
+            .map(String::len)
+            .sum();
+        while self.messages.len() > 8 || bytes > MAX_BYTES {
+            bytes -= self.messages.remove(0).text.map_or(0, |text| text.len());
+            self.evicted = true;
+        }
+    }
+
+    fn into_messages(self) -> Vec<ChatEvent> {
+        self.messages
+            .into_iter()
+            .filter(|event| event.text.as_deref().is_some_and(|text| !text.is_empty()))
+            .collect()
+    }
+}
+
+fn drained_after_exit(age: Duration, closed: usize, queue_empty: bool) -> bool {
+    // Even after a completion record, slow consumers can have late diagnostics
+    // and final output queued. Descendants can inherit the pipes and keep them
+    // busy indefinitely, so keep a hard deadline for that case.
+    closed >= 2 || (queue_empty && age >= Duration::from_secs(2)) || age >= Duration::from_secs(60)
 }
 
 fn now_millis() -> u64 {
@@ -245,6 +323,7 @@ pub fn get_chat_turn_status(
             interactions: Some(interactions),
             status: Some("running".into()),
             last_event_at: Some(process.last_output_at.load(Ordering::Relaxed)),
+            final_messages: Vec::new(),
         });
     }
     let completed = state
@@ -1042,6 +1121,7 @@ pub async fn start_chat_turn(
         let mut exit: Option<ExitStatus> = None;
         let mut exited_at: Option<Instant> = None;
         let mut visible_messages: Vec<(String, String)> = Vec::new();
+        let mut final_messages = RecentAssistantMessages::default();
         let mut capture_stream = crate::memory_capture::StreamCapture::default();
         let mut live = live::LiveProtocol::new(&request);
         let launched_at = Instant::now();
@@ -1055,7 +1135,9 @@ pub async fn start_chat_turn(
             crate::notification::completion::CompletionEvidence::default();
         let mut initial_context_delivered = false;
         loop {
-            match receiver.recv_timeout(Duration::from_millis(40)) {
+            let output = receiver.recv_timeout(Duration::from_millis(40));
+            let queue_empty = output.is_err();
+            match output {
                 Ok(ProcessOutput::Stdout(line)) => {
                     if !initial_context_delivered {
                         if let Some(memory) = &memory {
@@ -1174,6 +1256,7 @@ pub async fn start_chat_turn(
                                     .store(now_millis(), Ordering::Relaxed);
                             }
                             if event.kind == "text" && event.parent_id.is_none() {
+                                final_messages.record(&event);
                                 let id = event.item_id.clone().unwrap_or_default();
                                 if let Some((_, text)) =
                                     visible_messages.iter_mut().find(|(key, _)| key == &id)
@@ -1333,9 +1416,7 @@ pub async fn start_chat_turn(
                     _ => {}
                 }
             }
-            if exit.is_some()
-                && (closed >= 2
-                    || exited_at.is_some_and(|time| time.elapsed() > Duration::from_secs(2)))
+            if exited_at.is_some_and(|time| drained_after_exit(time.elapsed(), closed, queue_empty))
             {
                 break;
             }
@@ -1385,8 +1466,18 @@ pub async fn start_chat_turn(
         } else {
             "completed"
         };
+        if cancelled || parser.failed || !successful_exit {
+            // Reset failed delivery before a new turn can claim the session.
+            crate::memory_runtime::reset(
+                &app,
+                &project_path,
+                &request.session_id,
+                &request.runner_type,
+            );
+        }
         // Retain a bounded completion record so the UI can recover a missed done
         // event. Remove only our generation; a late worker cannot remove a new turn.
+        let final_messages = final_messages.into_messages();
         let state = app.state::<ChatProcessState>();
         if let Ok(mut processes) = state.0.lock() {
             if processes
@@ -1412,6 +1503,7 @@ pub async fn start_chat_turn(
                             pid: Some(pid),
                             status: Some(final_status.into()),
                             last_event_at: Some(process.last_output_at.load(Ordering::Relaxed)),
+                            final_messages: final_messages.clone(),
                         },
                     );
                 }
@@ -1419,15 +1511,9 @@ pub async fn start_chat_turn(
             }
         }
         let mut done = parser.event("done");
-        if cancelled || parser.failed || !successful_exit {
-            // A pipe write alone does not prove the model accepted the context (login/spawn errors).
-            crate::memory_runtime::reset(
-                &app,
-                &project_path,
-                &request.session_id,
-                &request.runner_type,
-            );
-        }
+        done.status = Some(final_status.into());
+        done.final_messages = final_messages;
+        emit_event(&app, &request.runner_type, done);
         if !cancelled && !parser.failed && successful_exit {
             if let Some((_, answer)) = visible_messages.last() {
                 crate::memory_runtime::capture(
@@ -1463,8 +1549,6 @@ pub async fn start_chat_turn(
                 events,
             );
         }
-        done.status = Some(final_status.into());
-        emit_event(&app, &request.runner_type, done);
         let drained = process
             .input
             .lock()
@@ -1655,6 +1739,79 @@ pub fn uses_workdir(app: &tauri::AppHandle, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_drains_buffered_protocol_before_expiring_inherited_pipes() {
+        let slow_frame = Duration::from_secs(4);
+        assert!(!drained_after_exit(slow_frame, 1, false));
+        assert!(drained_after_exit(slow_frame, 1, true));
+        assert!(drained_after_exit(Duration::from_secs(60), 0, false));
+        assert!(!drained_after_exit(Duration::ZERO, 1, true));
+        assert!(drained_after_exit(Duration::ZERO, 2, false));
+    }
+
+    #[test]
+    fn completion_snapshot_replays_only_current_complete_top_level_messages() {
+        let mut snapshot = RecentAssistantMessages::default();
+        let mut parser = ChatParser::new("session".into(), "turn".into());
+        for line in [
+            r#"{"type":"item.completed","item":{"type":"agent_message","id":"answer","text":"Initial"}}"#,
+            r#"{"type":"item.updated","delta":true,"item":{"type":"agent_message","id":"answer","text":" draft"}}"#,
+            r#"{"type":"item.completed","item":{"type":"agent_message","id":"child","parent_id":"p","text":"Child text"}}"#,
+        ] {
+            for event in parser.parse("codex", line) {
+                snapshot.record(&event);
+            }
+        }
+        assert_eq!(snapshot.messages.len(), 1);
+        assert_eq!(snapshot.messages[0].text.as_deref(), Some("Initial draft"));
+        assert!(!snapshot.messages[0].delta);
+        let final_record = r#"{"type":"item.completed","item":{"type":"agent_message","id":"answer","text":"Final answer"}}"#;
+        let event = parser.parse("codex", final_record).pop().unwrap();
+        snapshot.record(&event);
+        snapshot.record(&event);
+        let messages = snapshot.into_messages();
+        let mut done = parser.event("done");
+        done.final_messages = messages.clone();
+        let status = ChatTurnStatus {
+            final_messages: messages.clone(),
+            ..Default::default()
+        };
+        let payload = serde_json::to_value(done).unwrap();
+        assert_eq!(
+            payload["finalMessages"],
+            serde_json::to_value(status).unwrap()["finalMessages"]
+        );
+        assert_eq!(payload["finalMessages"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["finalMessages"][0]["itemId"], "answer");
+        assert_eq!(payload["finalMessages"][0]["delta"], false);
+        assert_eq!(payload["finalMessages"][0]["text"], "Final answer");
+    }
+
+    #[test]
+    fn delta_only_output_recovers_without_replaying_an_evicted_prefix() {
+        let mut snapshot = RecentAssistantMessages::default();
+        let mut parser = ChatParser::new("session".into(), "turn".into());
+        let mut last_delta = ChatEvent::default();
+        for part in ["First ", "answer"] {
+            let record = serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":part},"index":0}});
+            last_delta = parser
+                .parse("claude-code", &record.to_string())
+                .pop()
+                .unwrap();
+            snapshot.record(&last_delta);
+        }
+        assert_eq!(snapshot.messages[0].text.as_deref(), Some("First answer"));
+        assert!(!snapshot.messages[0].delta);
+        let oversized = ChatEvent {
+            text: Some("a".repeat(512 * 1024 + 1)),
+            ..last_delta.clone()
+        };
+        snapshot.record(&oversized);
+        snapshot.record(&last_delta);
+        assert!(snapshot.into_messages().is_empty());
+    }
+
     #[cfg(windows)]
     fn completion_fixture_command(role: &str, prefix: &Path) -> std::process::Command {
         let mut command = background_command(std::env::current_exe().unwrap());

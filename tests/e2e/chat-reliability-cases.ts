@@ -229,6 +229,79 @@ export function chatReliabilityCases(setup: (page: Page, locale?: string) => Pro
     await expect(page.locator(".ad-chat-error[role=alert]")).toContainText("Agent process ended with an error.");
     await expect(page.getByRole("button", { name: "Tentar novamente", exact: true })).toBeVisible();
   });
+  test("chat reliability restores missed final text on return to the window without a new prompt", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any;
+      const turnId = w.__chatTurns.session;
+      const base = { sessionId: "session", turnId, kind: "text", delta: false };
+      w.__emit("chat-event", { ...base, kind: "heartbeat" });
+      const invoke = w.__TAURI_INTERNALS__.invoke;
+      w.__checksOnResume = 0;
+      w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+        if (command !== "get_chat_turn_status") return invoke(command, args);
+        w.__checksOnResume++;
+        return new Promise(resolve => {
+          w.__finishCheck = () => resolve({ turnId, running: false, status: "completed", finalMessages: [
+            { ...base, itemId: "earlier", text: "Earlier reply missed altogether." },
+            { ...base, itemId: "answer", text: "Recovered complete answer." },
+            { ...base, turnId: "other", itemId: "answer", text: "Other turn" },
+            { ...base, itemId: "final", text: "Everything finished in the background." },
+          ] });
+        });
+      };
+      document.dispatchEvent(new Event("visibilitychange"));
+      if (w.__checksOnResume !== 1) throw new Error("Returning to the visible document did not check the turn");
+      window.dispatchEvent(new Event("focus"));
+      w.__finishCheck();
+    });
+    await expect(page.getByText("Everything finished in the background.", { exact: true })).toBeVisible();
+    await expect(page.locator(".ad-turn-activity")).toHaveCount(0);
+    const thread = await state(page);
+    const answers = ["Earlier reply missed altogether.", "Recovered complete answer.", "Everything finished in the background."];
+    expect(thread.messages.filter((message: any) => message.role === "assistant").map((message: any) => message.text)).toEqual(answers);
+    const archived = await page.evaluate(async () => {
+      const { persistChatHistory } = await import("/src/store/chatStore.ts" as string);
+      const { readChatHistory } = await import("/src/services/chatHistory.ts" as string);
+      await persistChatHistory();
+      return (await readChatHistory("session")).filter((message: any) => message.role === "assistant").map((message: any) => message.text);
+    });
+    expect(archived).toEqual(answers);
+    expect(thread.draft).toBe("");
+    expect(await page.evaluate(() => (window as any).__checksOnResume)).toBe(1);
+  });
+  test("chat reliability checks a reopened conversation even after a fresh heartbeat", async ({ page }) => {
+    await start(page);
+    await page.evaluate(async () => (await import("/src/services/workbenchCommands.ts" as string)).showExplorer("session"));
+    await expect(page.locator(".ad-chat-scroll")).toHaveCount(0);
+    await page.evaluate(async () => {
+      const w = window as any;
+      const base = { sessionId: "session", turnId: w.__chatTurns.session };
+      w.__emit("chat-event", { ...base, kind: "heartbeat" });
+      w.__chatTurnStatus = { ...base, running: false, status: "completed", finalMessages: [
+        { ...base, kind: "text", itemId: "answer", text: "Finished while reading the editor." },
+      ] };
+      (await import("/src/services/workbenchCommands.ts" as string)).showSessionSurface("session");
+    });
+    await expect(page.getByText("Finished while reading the editor.", { exact: true })).toBeVisible();
+    await expect(page.locator(".ad-turn-activity")).toHaveCount(0);
+  });
+  test("chat reliability completes a buffered answer with the final event and ignores late copies", async ({ page }) => {
+    await start(page);
+    await page.evaluate(() => {
+      const w = window as any;
+      const base = { sessionId: "session", turnId: w.__chatTurns.session, itemId: "tail" };
+      w.__emit("chat-event", { ...base, kind: "text", delta: true, text: "Partial" });
+      const done = { ...base, kind: "done", status: "completed", finalMessages: [{ ...base, kind: "text", delta: false, text: "Partial answer now complete." }] };
+      w.__emit("chat-event", done);
+      w.__emit("chat-event", done);
+      w.__emit("chat-event", { ...base, kind: "text", delta: true, text: " obsolete" });
+    });
+    await expect(page.getByText("Partial answer now complete.", { exact: true })).toBeVisible();
+    const thread = await state(page);
+    expect(thread.busy).toBe(false);
+    expect(thread.messages.filter((message: any) => message.id.endsWith(":tail")).map((message: any) => message.text)).toEqual(["Partial answer now complete."]);
+  });
   test("chat reliability separates heartbeat liveness from meaningful activity and rejects stale native status", async ({ page }) => {
     await start(page);
     const lastEventAt = await page.evaluate(async () => {

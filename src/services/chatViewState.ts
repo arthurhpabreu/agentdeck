@@ -1,6 +1,6 @@
 import type { ChatAttachment, ChatMessage } from "../store/chatStore";
 export interface PendingChatAttachment extends ChatAttachment { preview?: string }
-export interface ChatViewState { attachments: PendingChatAttachment[]; scrollTop: number; follow: boolean; selectionStart: number; selectionEnd: number; historyPage?: ChatMessage[]; search: string | null }
+export interface ChatViewState { attachments: PendingChatAttachment[]; scrollTop: number; follow: boolean; lastVisibleActivity?: string; selectionStart: number; selectionEnd: number; historyPage?: ChatMessage[]; search: string | null }
 const views = new Map<string, ChatViewState>();
 export function getChatViewState(sessionId: string): ChatViewState {
   let value = views.get(sessionId);

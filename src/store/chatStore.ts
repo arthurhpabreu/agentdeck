@@ -21,9 +21,9 @@ export interface ChatUsage { inputTokens: number; cachedInputTokens: number; out
 export interface ChatContinuation { sourceSessionId: string; sourceSessionName: string; archivePath: string; messageCount: number; createdAt: number; reviewedContext?: boolean }
 export interface ChatMessage { id: string; turnId: string; role: "user" | "assistant" | "tool"; text: string; at: number; order?: number; title?: string; status?: string; attachments?: ChatAttachment[]; parentId?: string; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number; origin?: "team" }
 export interface ChatThread { interactions?: ChatInteraction[]; messages: ChatMessage[]; draft: string; goal?: string; lastSentGoal?: string; busy: boolean; turnId?: string; error?: string; inputError?: string; status?: string; providerSessionId?: string; updatedAt?: number; diagnostic?: string; lastUsage?: ChatUsage; totalUsage?: ChatUsage; meteredTurns?: number; lastUsageTurnId?: string; resolvedModel?: string; nextMessageOrder?: number; archivedCount?: number; compactionPolicy?: CompactionPolicy; contextPrompts?: number; contextTokens?: number; contextTokensEstimated?: boolean; contextWindow?: number; turnInputTokens?: number; compactionCount?: number; compacting?: boolean; lastCompactionId?: string; lastCompactedAt?: number; turnStartedAt?: number; lastEventAt?: number; lastHeartbeatAt?: number; activity?: string; pid?: number; mcpAuthWarning?: string; mcpAuthWarningUntil?: number; recoveryNotice?: string; recoveryRequired?: boolean; continuation?: ChatContinuation; historyRestored?: boolean; recoveryKind?: "provider-resumed"; stopRequested?: boolean }
-export interface ChatEvent { interaction?: ChatInteraction; sessionId: string; turnId: string; kind: "interaction" | "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; contextWindow?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number }
-export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number; interactions?: ChatInteraction[] }
-interface BufferedChatEvent extends ChatEvent { textDelta?: boolean; outputDelta?: boolean; receivedAt?: number }
+export interface ChatEvent { interaction?: ChatInteraction; sessionId: string; turnId: string; kind: "interaction" | "text" | "tool" | "status" | "session" | "error" | "done" | "input" | "compaction" | "heartbeat"; text?: string; itemId?: string; title?: string; status?: string; providerSessionId?: string; delta?: boolean; pid?: number; parentId?: string; usage?: unknown; model?: string; contextTokens?: number; contextWindow?: number; command?: string; output?: string; cwd?: string; exitCode?: number; elapsedSeconds?: number; finalMessages?: ChatEvent[] }
+export interface ChatTurnStatus { turnId?: string; running: boolean; pid?: number; status?: string; lastEventAt?: number; interactions?: ChatInteraction[]; finalMessages?: ChatEvent[] }
+interface BufferedChatEvent extends ChatEvent { textDelta?: boolean; outputDelta?: boolean; receivedAt?: number; insertBeforeId?: string }
 const MESSAGE_TEXT_LIMIT = 524_288;
 const MCP_AUTH_WARNING_TTL = 8_000;
 // Runtime deduplication survives dismissals and tab switches, but never a reload.
@@ -129,7 +129,7 @@ export const useChatStore = create<{
     if (passiveDiagnostic && e.text && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
     if (e.kind === "status" && !e.parentId && !connectionNotice && !passiveDiagnostic) {
       next.status = e.status ?? old.status;
-      if (old.status === "waiting-background" && e.status && e.status !== old.status) next.activity = undefined;
+      if (next.status !== old.status) next.activity = undefined;
       if (e.text && e.status !== "reasoning") next.activity = e.text.slice(0, 240);
       if (e.status === "compacting") next.compacting = true;
       if (e.text && e.status !== "reasoning" && old.diagnostic?.split("\n").pop() !== e.text) next.diagnostic = ((old.diagnostic ? old.diagnostic + "\n" : "") + e.text).slice(-8000);
@@ -165,15 +165,22 @@ export const useChatStore = create<{
       const progressReplay = e.kind === "tool" && isTerminalChatTool(previous?.status) && isPendingChatTool(e.status);
       const text = e.text === undefined ? previous?.text ?? "" : (e.textDelta ?? (e.delta && e.output === undefined)) ? (previous?.text ?? "") + e.text : e.text;
       const output = e.output === undefined ? previous?.output : (e.outputDelta ?? e.delta) ? (previous?.output ?? "") + e.output : e.output;
-      const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? at, order: previous?.order ?? old.nextMessageOrder ?? 0, title: e.title ?? previous?.title, status: e.kind === "tool" ? mergeChatToolStatus(previous?.status, e.status) : e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, command: e.command ?? previous?.command, output: output === undefined ? undefined : boundedOutput(output), cwd: e.cwd ?? previous?.cwd, exitCode: e.exitCode ?? previous?.exitCode, elapsedSeconds: e.elapsedSeconds ?? previous?.elapsedSeconds, text: boundedText(text) };
-      if (!previous) next.nextMessageOrder = (old.nextMessageOrder ?? 0) + 1;
+      const anchorIndex = !previous && e.insertBeforeId ? old.messages.findIndex(m => m.id === e.insertBeforeId) : -1;
+      const anchorOrder = old.messages[anchorIndex]?.order;
+      // Insert before a known later reply without renumbering archived IndexedDB rows.
+      let order = previous?.order ?? old.nextMessageOrder ?? 0;
+      if (anchorOrder !== undefined) order = (anchorOrder + Math.max(anchorOrder - 1, old.messages[anchorIndex - 1]?.order ?? -1)) / 2;
+      const message: ChatMessage = { id, turnId: e.turnId, role: e.kind === "tool" ? "tool" : "assistant", at: previous?.at ?? at, order, title: e.title ?? previous?.title, status: e.kind === "tool" ? mergeChatToolStatus(previous?.status, e.status) : e.status ?? previous?.status, parentId: e.parentId ?? previous?.parentId, command: e.command ?? previous?.command, output: output === undefined ? undefined : boundedOutput(output), cwd: e.cwd ?? previous?.cwd, exitCode: e.exitCode ?? previous?.exitCode, elapsedSeconds: e.elapsedSeconds ?? previous?.elapsedSeconds, text: boundedText(text) };
+      if (!previous && anchorOrder === undefined) next.nextMessageOrder = order + 1;
       const added = e.output !== undefined ? e.outputDelta ?? e.delta ? e.output : e.output.slice(previous?.output?.length ?? 0) : e.text !== undefined ? e.textDelta ?? e.delta ? e.text : e.text.slice(previous?.text.length ?? 0) : "";
       if (added && !message.parentId && !measuredContext) { next.contextTokens = (next.contextTokens ?? 0) + estimateTokens(added); next.contextTokensEstimated = true; }
       if (!e.parentId && !progressReplay) {
         if (e.kind === "tool") { next.activity = (message.command || message.title || message.text).slice(0, 240); next.status = message.status === "blocked" ? "blocked" : "tool"; }
         else { next.status = "responding"; next.activity = undefined; }
       }
-      next.messages = index < 0 ? [...old.messages, message] : old.messages.map((m, i) => i === index ? message : m);
+      if (previous) next.messages = old.messages.map((m, i) => i === index ? message : m);
+      else if (anchorIndex >= 0) next.messages = [...old.messages.slice(0, anchorIndex), message, ...old.messages.slice(anchorIndex)];
+      else next.messages = [...old.messages, message];
     }
     if (threads === s.threads) threads = { ...threads };
     threads[e.sessionId] = next;
@@ -321,6 +328,24 @@ function enqueueChatEvent(incoming: BufferedChatEvent) {
   const e = incoming.receivedAt === undefined ? { ...incoming, receivedAt: Date.now() } : incoming;
   const waiting = deferredEvents.get(e.sessionId);
   if (waiting) { waiting.push(e); return; }
+  if (e.kind === "done" && e.finalMessages?.length) {
+    // Finish any pending deltas before comparing them with the provider's final text.
+    flushChatEvents();
+    const thread = useChatStore.getState().threads[e.sessionId];
+    if (!thread?.busy || thread.turnId !== e.turnId) return;
+    const recovered: BufferedChatEvent[] = [];
+    let insertBeforeId: string | undefined;
+    for (let i = e.finalMessages.length - 1; i >= 0; i--) {
+      const message = e.finalMessages[i];
+      if (message.kind !== "text" || message.sessionId !== e.sessionId || message.turnId !== e.turnId || message.delta || message.parentId || typeof message.text !== "string") continue;
+      const existing = thread.messages.find(item => item.id === chatMessageId(message));
+      if (existing?.text !== message.text) recovered.unshift({ ...message, receivedAt: e.receivedAt, insertBeforeId });
+      if (existing) insertBeforeId = existing.id;
+    }
+    for (const message of recovered) enqueueChatEvent(message);
+    enqueueChatEvent({ ...e, finalMessages: undefined });
+    return;
+  }
   const id = chatMessageId(e);
   if ((e.kind !== "text" && e.kind !== "tool") || !evictedActiveMessages.get(e.sessionId)?.has(id)) { acceptChatEvent(e); return; }
   flushChatEvents();
@@ -526,7 +551,10 @@ async function sendChatSupplement(sessionId:string,prompt:string,attachments:Cha
     return options?.coordination ? await waitCoordinationReceipt(sessionId, message.id) : true;
   } catch(error) {
     // As in the native CLIs, input typed while a turn finishes is not lost or reported as an error.
-    if(!options?.coordination && String(error).includes(TURN_ENDED) && await waitTurnCompleted(sessionId,old.turnId)) return resendAsTurn();
+    if(!options?.coordination && String(error).includes(TURN_ENDED)) {
+      void refreshChatTurnStatus(sessionId).catch(() => {});
+      if(await waitTurnCompleted(sessionId,old.turnId)) return resendAsTurn();
+    }
     const latest=useChatStore.getState().threads[sessionId];
     if(latest)useChatStore.getState().patch(sessionId,{messages:latest.messages.map(m=>m.id===message.id?{...m,status:"failed",title:String(error)}:m),...(!options?.coordination?{inputError:String(error),draft:latest.draft||prompt}:{})});
     return false;
@@ -544,18 +572,28 @@ export async function stopChatTurn(sessionId: string) {
   }
 }
 
-/** Verify the native process without treating a quiet model as a failed turn. */
+const statusChecks = new Map<string, Promise<ChatTurnStatus>>();
+/** Share a status check between window activation, chat selection and the watchdog. */
 export async function refreshChatTurnStatus(sessionId: string): Promise<ChatTurnStatus | undefined> {
   const before = useChatStore.getState().threads[sessionId];
   if (!before?.busy || !before.turnId || launches.has(sessionId)) return undefined;
+  const turnId = before.turnId;
+  const pending = statusChecks.get(turnId);
+  if (pending) return pending;
+  const request = reconcileChatTurnStatus(sessionId, turnId, before.interactions).finally(() => statusChecks.delete(turnId));
+  statusChecks.set(turnId, request);
+  return request;
+}
+
+async function reconcileChatTurnStatus(sessionId: string, turnId: string, previousInteractions: ChatThread["interactions"]): Promise<ChatTurnStatus> {
   const status = await invoke<ChatTurnStatus>("get_chat_turn_status", { sessionId });
   const current = useChatStore.getState().threads[sessionId];
-  if (!current?.busy || current.turnId !== before.turnId || launches.has(sessionId)) return status;
+  if (!current?.busy || current.turnId !== turnId || launches.has(sessionId)) return status;
   if (!status || typeof status.running !== "boolean") throw new Error("Invalid chat process status.");
   if (status.turnId && status.turnId !== current.turnId) return status;
   if (status.running) {
     useChatStore.getState().patch(sessionId, { lastHeartbeatAt: Date.now(), ...(status.pid ? { pid: status.pid } : {}), ...(status.status && status.status !== "running" ? { status: status.status } : {}) });
-    if (status.interactions && current.interactions === before.interactions) {
+    if (status.interactions && current.interactions === previousInteractions) {
       useChatStore.getState().patch(sessionId, { interactions: status.interactions });
       for (const previous of current.interactions ?? []) if (!status.interactions.some(request => request.id === previous.id)) recordChatAttention({ sessionId, turnId: current.turnId!, kind: "interaction", status: "resolved", itemId: previous.id });
       for (const interaction of status.interactions) recordChatAttention({ sessionId, turnId: current.turnId!, kind: "interaction", interaction });
@@ -563,7 +601,7 @@ export async function refreshChatTurnStatus(sessionId: string): Promise<ChatTurn
   } else {
     flushChatEvents();
     const latest = useChatStore.getState().threads[sessionId];
-    if (latest?.busy && latest.turnId === before.turnId) enqueueChatEvent({ sessionId, turnId: before.turnId, kind: "done", status: status.status || "interrupted" });
+    if (latest?.busy && latest.turnId === turnId) enqueueChatEvent({ sessionId, turnId, kind: "done", status: status.status || "interrupted", finalMessages: status.finalMessages });
   }
   return status;
 }

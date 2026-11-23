@@ -24,20 +24,14 @@ export function ChatTurnActivity({ thread, sessionId, visible }: { thread: ChatT
   // Silence from a live process is usually a long command, not a stall: inform, do not warn.
   const alive = !!thread.lastHeartbeatAt && now - thread.lastHeartbeatAt < HEARTBEAT_FRESH_MS;
   useEffect(() => {
-    if (!visible || !silent) return;
-    let pending = false;
-    const timer = setInterval(() => {
-      if (pending) return;
-      pending = true;
-      void refreshChatTurnStatus(sessionId).catch(() => { /* Manual verification stays available. */ }).finally(() => { pending = false; });
-    }, 15_000);
-    return () => clearInterval(timer);
-  }, [visible, silent, sessionId]);
+    if (visible) void refreshChatTurnStatus(sessionId).catch(() => { /* The runtime retries. */ });
+  }, [visible, sessionId, thread.turnId]);
   const activeTools = useMemo(() => thread.messages.filter(m => m.turnId === thread.turnId && m.role === "tool" && ["running", "in_progress", "inProgress", "started"].includes(m.status ?? "running")), [thread.messages, thread.turnId]);
   const latestTool = activeTools[activeTools.length - 1];
   const waitingBackground = thread.status === "waiting-background";
   const label = thread.stopRequested ? c.stopping : thread.compacting ? contextCopy(locale).compacting : thread.status === "blocked" ? c.blocked : waitingBackground ? c.waitingBackground : thread.status === "reasoning" ? c.thinking : thread.status === "finishing" ? c.finishing : thread.status === "responding" ? c.responding : thread.status === "starting" ? c.starting : latestTool ? `${latestTool.title || c.command} · ${c.running}` : c.working;
-  const detail = latestTool?.command || thread.activity;
+  const showToolDetail = thread.status === "tool" || thread.status === "running" || waitingBackground;
+  const detail = (showToolDetail && latestTool?.command) || thread.activity;
   const check = async () => {
     setChecking(true); setCheckNotice("");
     try { const status = await refreshChatTurnStatus(sessionId); if (status?.running) setCheckNotice(c.alive); }

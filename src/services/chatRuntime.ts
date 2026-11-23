@@ -3,16 +3,24 @@ import { refreshChatTurnStatus, useChatStore } from "../store/chatStore";
 /** A lost final event must recover even when its conversation is not on screen. */
 export function startChatRuntime() {
   if (!("__TAURI_INTERNALS__" in window)) return;
-  const pending = new Set<string>();
-  const check = () => {
+  const check = (resumed: boolean) => {
     const now = Date.now();
     for (const [id, thread] of Object.entries(useChatStore.getState().threads)) {
-      if (!thread.busy || pending.has(id) || now - (thread.lastHeartbeatAt ?? thread.lastEventAt ?? thread.turnStartedAt ?? now) < 30_000) continue;
-      pending.add(id);
-      void refreshChatTurnStatus(id).catch(() => {}).finally(() => pending.delete(id));
+      if (!thread.busy) continue;
+      // Heartbeats prove the process is alive, but cannot confirm delivery of its output.
+      const quietFor = now - (thread.lastEventAt ?? thread.turnStartedAt ?? now);
+      if (resumed || thread.status === "finishing" || quietFor >= 15_000) {
+        void refreshChatTurnStatus(id).catch(() => {});
+      }
     }
   };
-  const timer = setInterval(check, 15_000);
-  window.addEventListener("focus", check);
-  return () => { clearInterval(timer); window.removeEventListener("focus", check); };
+  const resume = () => { if (!document.hidden) check(true); };
+  const timer = setInterval(() => check(false), 10_000);
+  window.addEventListener("focus", resume);
+  document.addEventListener("visibilitychange", resume);
+  return () => {
+    clearInterval(timer);
+    window.removeEventListener("focus", resume);
+    document.removeEventListener("visibilitychange", resume);
+  };
 }
